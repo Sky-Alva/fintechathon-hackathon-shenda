@@ -1,0 +1,13 @@
+services:
+  bank:
+    build: ./bank
+    ports:
+      - "8000:8000"
+    environment:
+      # Guards /admin (reset, Bank clock, audit). Override in .env for anything shared.
+      BANK_ADMIN_KEY: ${BANK_ADMIN_KEY:-demo-admin-key}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/clock')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
