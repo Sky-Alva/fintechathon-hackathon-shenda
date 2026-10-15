@@ -10,6 +10,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from bank.money import from_cents
 from bank.registry import BankModule, Operation, OperationContext, ReadOnly, Tier
 from bank.sessions import hash_password
 
@@ -83,7 +84,7 @@ def query_balance(ctx: OperationContext, _: QueryBalanceInput) -> QueryBalanceOu
                 account_id=row["account_id"],
                 kind=row["kind"],
                 name=row["name"],
-                balance=Decimal(row["balance_cents"]).scaleb(-2),
+                balance=from_cents(row["balance_cents"]),
             )
             for row in rows
         ]
