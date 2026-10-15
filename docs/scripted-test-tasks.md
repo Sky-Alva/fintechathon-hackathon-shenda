@@ -35,7 +35,7 @@ approvals:                         # how the simulated Customer answers, in the 
 expect:
   operations_run:                  # must each have run at least once (order not checked)
     - name: transfer
-      input: {payee_id: PAY-LM-003, amount: "200.00"}   # optional; subset match
+      input: {payee_id: PAY-LM-002, amount: "200.00"}   # optional; subset match
   operations_not_run:              # must never have run (refused attempts are fine)
     - name: transfer
       input: {amount: "900.00"}

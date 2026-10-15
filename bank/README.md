@@ -18,7 +18,8 @@ Demo logins: `liming` / `demo1234` and `hanmei` / `demo1234`. Admin calls need t
 |------|-----|------|
 | `POST /sessions` `{username, password}` | anyone | Log in. Returns `session_id`, `session_token` and the Customer. |
 | `GET /operations` | anyone | Operation catalogue: bilingual descriptions, input/output JSON Schemas, tier rule, reversibility. |
-| `POST /operations/{name}` `{input}` | `Authorization: Bearer <session_token>` | Call an Operation through the policy gate. |
+| `POST /operations/{name}` `{input, confirmation_token?}` | `Authorization: Bearer <session_token>` | Call an Operation through the policy gate. |
+| `POST /confirmations` `{operations: [{operation, input}]}` | `Authorization: Bearer <session_token>` | Issue Confirmation tokens for the Yellow Operations on a Plan card. |
 | `GET /clock` | anyone | Read the Bank clock. |
 | `POST /admin/reset` | admin | Restore seed data (also ends every session and clears the audit log). |
 | `PUT /admin/clock` `{now}` | admin | Set the Bank clock. |
@@ -27,9 +28,11 @@ Demo logins: `liming` / `demo1234` and `hanmei` / `demo1234`. Admin calls need t
 
 A successful call returns `{operation, tier, output}`. Every refusal returns `{"refusal": {"reason", "message", "detail"}}`, where `reason` is one of the values of `RefusalReason` in `src/bank/registry.py`.
 
+The full contract for declaring and calling Operations, including Confirmation, is [docs/operation-definition.md](../docs/operation-definition.md).
+
 ## Adding a Scenario module
 
-A module is a `BankModule` (`src/bank/registry.py`): its SQL schema, its seed function and its `Operation`s. Add it to `MODULES` in `src/bank/app.py`. Each Operation declares its reversibility: `ReadOnly()` for queries, `Irreversible()`, or `ReversedBy(operation, build_input)`. `src/bank/customers.py` is the worked example. Handlers hold business logic only; tiers, approvals, session limits and audit are the policy gate's job (`src/bank/policy.py`). Money is stored as integer cents and returned as a `Decimal` (a string with two decimals in JSON). Use `ctx.now`, never the system clock.
+A module is a `BankModule` (`src/bank/registry.py`): its SQL schema, its seed function and its `Operation`s. Add it to `MODULES` in `src/bank/app.py`. Each Operation declares its reversibility: `ReadOnly()` for queries, `Irreversible()`, or `ReversedBy(operation, build_input)`. `src/bank/customers.py` (Green, fixed tier) and `src/bank/transfers.py` (tier rule) are the worked examples. Handlers hold business logic only; tiers, approvals, session limits and audit are the policy gate's job (`src/bank/policy.py`). Money is stored as integer cents and returned as a `Decimal` (a string with two decimals in JSON); use `bank.money` (`Amount`, `to_cents`, `from_cents`). Use `ctx.now`, never the system clock.
 
 ## Tests
 

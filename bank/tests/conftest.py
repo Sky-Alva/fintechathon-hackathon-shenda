@@ -42,9 +42,42 @@ def login_session(
 
 
 def call(
-    client: TestClient, headers: dict[str, str], operation: str, input: dict[str, Any] | None = None
+    client: TestClient,
+    headers: dict[str, str],
+    operation: str,
+    input: dict[str, Any] | None = None,
+    confirmation_token: str | None = None,
 ) -> httpx.Response:
+    body: dict[str, Any] = {"input": input or {}}
+    if confirmation_token is not None:
+        body["confirmation_token"] = confirmation_token
+    response: httpx.Response = client.post(f"/operations/{operation}", headers=headers, json=body)
+    return response
+
+
+def request_confirmations(
+    client: TestClient, headers: dict[str, str], *operations: tuple[str, dict[str, Any]]
+) -> httpx.Response:
+    """Ask the Bank for one Confirmation token per (operation, input), as a Plan card would."""
     response: httpx.Response = client.post(
-        f"/operations/{operation}", headers=headers, json={"input": input or {}}
+        "/confirmations",
+        headers=headers,
+        json={"operations": [{"operation": name, "input": input} for name, input in operations]},
     )
     return response
+
+
+def confirm(
+    client: TestClient, headers: dict[str, str], operation: str, input: dict[str, Any]
+) -> str:
+    """Get a Confirmation token for one Operation, as if the Customer approved it."""
+    response = request_confirmations(client, headers, (operation, input))
+    assert response.status_code == 200, response.text
+    token: str = response.json()["confirmations"][0]["confirmation_token"]
+    return token
+
+
+def balance(client: TestClient, headers: dict[str, str], account_id: str) -> str:
+    accounts = call(client, headers, "query_balance").json()["output"]["accounts"]
+    found: str = next(a["balance"] for a in accounts if a["account_id"] == account_id)
+    return found
