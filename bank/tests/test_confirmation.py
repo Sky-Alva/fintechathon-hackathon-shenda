@@ -207,17 +207,12 @@ def test_a_refused_transfer_does_not_use_up_its_token(client: TestClient) -> Non
 # --- Daily Transfer Total -------------------------------------------------------------
 
 
-def test_two_600_transfers_make_the_second_one_red(client: TestClient) -> None:
+def test_a_yellow_token_is_not_enough_once_the_transfer_has_become_red(
+    client: TestClient,
+) -> None:
     headers = login(client, "hanmei")
-    first, second = (
-        c["confirmation_token"]
-        for c in request_confirmations(
-            client,
-            headers,
-            ("transfer", transfer(HUSBAND, "600.00")),
-            ("transfer", transfer(HUSBAND, "600.00")),
-        ).json()["confirmations"]
-    )
+    first = confirm(client, headers, "transfer", transfer(HUSBAND, "600.00"))
+    second = confirm(client, headers, "transfer", transfer(HUSBAND, "600.00"))
     call(client, headers, "transfer", transfer(HUSBAND, "600.00"), first)
 
     response = call(client, headers, "transfer", transfer(HUSBAND, "600.00"), second)
@@ -225,6 +220,23 @@ def test_two_600_transfers_make_the_second_one_red(client: TestClient) -> None:
     assert response.status_code == 403
     assert refusal(response)["reason"] == "needs_verification"
     assert balance(client, headers, "ACC-HM-001") == "8050.00"
+
+
+def test_a_plan_card_counts_its_earlier_transfers_toward_the_daily_total(
+    client: TestClient,
+) -> None:
+    headers = login(client, "hanmei")
+
+    response = request_confirmations(
+        client,
+        headers,
+        ("transfer", transfer(HUSBAND, "600.00")),
+        ("transfer", transfer(HUSBAND, "600.00")),
+    )
+
+    assert response.status_code == 403
+    assert refusal(response)["reason"] == "needs_verification"
+    assert refusal(response)["detail"]["index"] == 1
 
 
 def test_the_daily_transfer_total_starts_again_the_next_day(client: TestClient) -> None:
@@ -252,11 +264,13 @@ def test_transfer_above_the_balance_is_refused_with_insufficient_funds(client: T
     assert balance(client, headers, "ACC-LM-001") == "1180.00"
 
 
-def test_transfer_to_an_unknown_payee_is_refused_with_not_found(client: TestClient) -> None:
-    response = call(client, login(client, "liming"), "transfer", transfer("PAY-HM-001", "10.00"))
+def test_transfer_to_a_payee_the_customer_does_not_have_is_refused(client: TestClient) -> None:
+    headers = login(client, "liming")
+    for payee_id in ["PAY-NOBODY", "PAY-HM-001"]:  # unknown, and the spouse's own Payee
+        response = call(client, headers, "transfer", transfer(payee_id, "10.00"))
 
-    assert response.status_code == 404
-    assert refusal(response)["reason"] == "not_found"
+        assert response.status_code == 404
+        assert refusal(response)["reason"] == "not_found"
 
 
 def test_a_transfer_amount_must_be_positive_with_at_most_two_decimals(client: TestClient) -> None:
@@ -274,6 +288,7 @@ def test_transfer_is_declared_irreversible_with_a_tier_rule(client: TestClient) 
     entry = next(op for op in operations if op["name"] == "transfer")
 
     assert entry["reversibility"] == {"kind": "irreversible"}
+    assert entry["counts_toward_daily_transfer_total"] is True
     assert entry["tier"]["kind"] == "rule"
     assert "1,000" in entry["tier"]["description_en"]
     assert entry["description_zh"] and entry["description_en"]
@@ -294,5 +309,6 @@ def test_confirmation_issue_use_and_refusal_are_audited(client: TestClient) -> N
         ("operation", "transfer", "yellow", "ok", None),
     ]
     confirmation_id = entries[0]["detail"]["confirmation_id"]
+    assert entries[1]["detail"] == {"confirmation_id": confirmation_id}
     assert entries[2]["detail"] == {"confirmation_id": confirmation_id}
     assert token not in str(entries)
