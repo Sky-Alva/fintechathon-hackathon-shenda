@@ -18,11 +18,18 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from bank import audit, clock, customers, db, policy, sessions
+from bank import audit, clock, confirmations, customers, db, policy, sessions, transfers
 from bank.registry import BankModule, Refusal, RefusalReason, Registry
 
 # Order matters: a module's tables may reference tables of the modules before it.
-MODULES: list[BankModule] = [clock.MODULE, customers.MODULE, sessions.MODULE, audit.MODULE]
+MODULES: list[BankModule] = [
+    clock.MODULE,
+    customers.MODULE,
+    transfers.MODULE,
+    sessions.MODULE,
+    confirmations.MODULE,
+    audit.MODULE,
+]
 
 HTTP_STATUS = {
     RefusalReason.NOT_AUTHENTICATED: 401,
@@ -131,6 +138,19 @@ def create_app(db_path: Path, admin_key: str) -> FastAPI:
                 return policy.run(conn, registry, session, name, body)
             except Refusal as refusal:
                 # The refusal is audited inside this transaction; commit it, then refuse.
+                pending = refusal
+        raise pending
+
+    @app.post("/confirmations")
+    def request_confirmations(
+        authorization: Annotated[str | None, Header()] = None,
+        body: Annotated[Any, Body()] = None,
+    ) -> policy.ConfirmationResult:
+        with db.transaction(db_path) as conn:
+            session = sessions.authenticate(conn, bearer_token(authorization))
+            try:
+                return policy.issue_confirmations(conn, registry, session, body)
+            except Refusal as refusal:
                 pending = refusal
         raise pending
 
