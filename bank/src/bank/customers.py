@@ -56,6 +56,31 @@ def seed(conn: sqlite3.Connection) -> None:
     )
 
 
+def current_account(conn: sqlite3.Connection, customer_id: str) -> sqlite3.Row:
+    """The Customer's current account, which transfers are paid from."""
+    row: sqlite3.Row = conn.execute(
+        "SELECT account_id, balance_cents FROM accounts"
+        " WHERE customer_id = ? AND kind = 'current' ORDER BY account_id LIMIT 1",
+        (customer_id,),
+    ).fetchone()
+    return row
+
+
+def credit(conn: sqlite3.Connection, account_id: str, cents: int) -> None:
+    """Pay money in. An account outside the Bank is simply not found and nothing happens."""
+    conn.execute(
+        "UPDATE accounts SET balance_cents = balance_cents + ? WHERE account_id = ?",
+        (cents, account_id),
+    )
+
+
+def debit(conn: sqlite3.Connection, account_id: str, cents: int) -> None:
+    conn.execute(
+        "UPDATE accounts SET balance_cents = balance_cents - ? WHERE account_id = ?",
+        (cents, account_id),
+    )
+
+
 class QueryBalanceInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

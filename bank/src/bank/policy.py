@@ -1,19 +1,21 @@
 """The policy gate: every Operation call and Confirmation request passes through here.
 
 Scenario handlers hold only business logic. The gate validates the input, resolves the
-tier, demands the approval that tier needs, runs the handler and writes the audit-log
-entry, whether the call ran or was refused.
+tier, demands the approval that tier needs, runs the handler, keeps the Daily Transfer
+Total, and writes the audit-log entry whether the call ran or was refused.
 """
 
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from bank import audit, clock, confirmations
+from bank import audit, clock, confirmations, limits
 from bank.audit import Event
+from bank.confirmations import Binding
 from bank.registry import (
     Operation,
     OperationContext,
@@ -25,6 +27,12 @@ from bank.registry import (
 from bank.sessions import Session
 
 MAX_CONFIRMATIONS_PER_REQUEST = 20
+
+# What a call of each tier needs before it runs, and the refusal when it is missing.
+REQUIRED_APPROVAL = {
+    Tier.YELLOW: (RefusalReason.NEEDS_CONFIRMATION, "Confirmation"),
+    Tier.RED: (RefusalReason.NEEDS_VERIFICATION, "Strong Verification"),
+}
 
 
 class OperationRequest(BaseModel):
@@ -48,7 +56,7 @@ class PlannedOperation(BaseModel):
 
 
 class ConfirmationRequest(BaseModel):
-    """The body of a Confirmation request: the Yellow Operations on one Plan card."""
+    """The body of a Confirmation request: the Yellow Operations on one Plan card, in order."""
 
     model_config = ConfigDict(extra="forbid")
     operations: list[PlannedOperation] = Field(
@@ -56,7 +64,7 @@ class ConfirmationRequest(BaseModel):
     )
 
 
-class IssuedConfirmation(BaseModel):
+class Confirmation(BaseModel):
     operation: str
     tier: Tier
     confirmation_id: str
@@ -65,19 +73,36 @@ class IssuedConfirmation(BaseModel):
 
 
 class ConfirmationResult(BaseModel):
-    confirmations: list[IssuedConfirmation]
+    confirmations: list[Confirmation]
 
 
 @dataclass
 class _Call:
-    """One Operation call as the gate understands it, filled in step by step."""
+    """What the audit log needs about one call; `tier` is filled in once it is known."""
 
-    name: str
+    name: str | None
     raw_input: Any
     tier: Tier | None = None
-    operation: Operation | None = None
-    validated: BaseModel | None = None
-    ctx: OperationContext | None = None
+
+
+@dataclass(frozen=True)
+class _Resolved:
+    operation: Operation
+    validated: BaseModel
+    ctx: OperationContext
+    tier: Tier
+
+    def binding(self) -> Binding:
+        return Binding.of(
+            session_id=self.ctx.session_id,
+            customer_id=self.ctx.customer_id,
+            operation=self.operation.name,
+            validated_input=self.validated,
+        )
+
+    def daily_transfer_amount(self) -> Decimal:
+        amount = self.operation.daily_transfer_amount
+        return amount(self.validated) if amount else Decimal("0.00")
 
 
 def run(
@@ -91,33 +116,22 @@ def run(
     now = clock.now(conn)
     call = _Call(name, body.get("input", {}) if isinstance(body, dict) else body)
     detail: dict[str, Any] = {}
-    conn.execute("SAVEPOINT operation")
-    try:
+    with _audited(conn, session, now, Event.OPERATION, call):
         request = _parse(OperationRequest, {} if body is None else body)
-        operation, validated, ctx, tier = _resolve(call, conn, registry, session, now)
-        if tier is Tier.YELLOW:
-            if request.confirmation_token is None:
-                raise _needs(RefusalReason.NEEDS_CONFIRMATION, name, tier)
+        resolved = _resolve(call, conn, registry, session, now)
+        if resolved.tier is Tier.YELLOW and request.confirmation_token is not None:
             detail["confirmation_id"] = confirmations.redeem(
-                conn,
-                request.confirmation_token,
-                session_id=session.session_id,
-                customer_id=session.customer_id,
-                operation=name,
-                validated_input=validated,
-                now=now,
+                conn, request.confirmation_token, resolved.binding(), now
             )
-        elif tier is Tier.RED:
+        elif resolved.tier is not Tier.GREEN:
             # Strong Verification (#5) is not built yet, so no Red Operation can run.
-            raise _needs(RefusalReason.NEEDS_VERIFICATION, name, tier)
-        output = operation.handler(ctx, validated)
-    except Refusal as refusal:
-        _rollback(conn)
-        _audit(conn, session, now, Event.OPERATION, call, refusal.reason)
-        raise
-    conn.execute("RELEASE operation")
+            raise _needs_approval(name, resolved.tier)
+        output = resolved.operation.handler(resolved.ctx, resolved.validated)
+        if resolved.operation.daily_transfer_amount:
+            limits.record(conn, session.customer_id, name, resolved.daily_transfer_amount(), now)
     _audit(conn, session, now, Event.OPERATION, call, None, detail)
-    return OperationResult(operation=name, tier=tier, output=output.model_dump(mode="json"))
+    output_json = output.model_dump(mode="json")
+    return OperationResult(operation=name, tier=resolved.tier, output=output_json)
 
 
 def issue_confirmations(
@@ -126,82 +140,107 @@ def issue_confirmations(
     session: Session,
     body: Any,
 ) -> ConfirmationResult:
-    """Issue one Confirmation token per Yellow Operation, all or none. Always audited."""
+    """Issue one Confirmation token per Yellow Operation, all or none. Always audited.
+
+    Operations are tiered in order, each counting the earlier ones toward the Daily
+    Transfer Total, so a Plan card can't hold Yellow tokens that add up to a Red total.
+    """
     now = clock.now(conn)
-    conn.execute("SAVEPOINT operation")
-    try:
+    with _audited(conn, session, now, Event.CONFIRMATION_ISSUED, _Call(None, body)):
         request = _parse(ConfirmationRequest, body)
-    except Refusal as refusal:
-        _rollback(conn)
-        _audit(conn, session, now, Event.CONFIRMATION_ISSUED, _Call("", body), refusal.reason)
-        raise
-    issued: list[tuple[_Call, IssuedConfirmation]] = []
+    issued: list[tuple[_Call, Confirmation]] = []
+    planned_total = Decimal("0.00")
     for index, planned in enumerate(request.operations):
         call = _Call(planned.operation, planned.input)
-        try:
-            operation, validated, _, tier = _resolve(call, conn, registry, session, now)
-            if tier is Tier.GREEN:
+        with _audited(conn, session, now, Event.CONFIRMATION_ISSUED, call, index=index):
+            resolved = _resolve(call, conn, registry, session, now, planned_total)
+            if resolved.tier is Tier.GREEN:
                 raise Refusal(
                     RefusalReason.INVALID_INPUT,
                     f"{call.name} is Green and needs no Confirmation",
-                    {"operation": call.name, "tier": tier.value},
+                    {"operation": call.name, "tier": resolved.tier.value},
                 )
-            if tier is Tier.RED:
-                raise _needs(RefusalReason.NEEDS_VERIFICATION, call.name, tier)
-            confirmation = confirmations.issue(
-                conn,
-                session_id=session.session_id,
-                customer_id=session.customer_id,
-                operation=operation.name,
-                validated_input=validated,
-                now=now,
-            )
-        except Refusal as refusal:
-            _rollback(conn)
-            _audit(conn, session, now, Event.CONFIRMATION_ISSUED, call, refusal.reason)
-            refusal.detail = {**refusal.detail, "index": index}
-            raise
-        issued.append(
-            (
-                call,
-                IssuedConfirmation(
-                    operation=operation.name,
-                    tier=tier,
-                    confirmation_id=confirmation.confirmation_id,
-                    confirmation_token=confirmation.confirmation_token,
-                    expires_at=confirmation.expires_at,
-                ),
-            )
+            if resolved.tier is Tier.RED:
+                raise _needs_approval(planned.operation, resolved.tier)
+            token = confirmations.issue(conn, resolved.binding(), now)
+            planned_total += resolved.daily_transfer_amount()
+        confirmation = Confirmation(
+            operation=planned.operation, tier=resolved.tier, **asdict(token)
         )
-    conn.execute("RELEASE operation")
-    for call, granted in issued:
+        issued.append((call, confirmation))
+    for call, confirmation in issued:
         detail = {
-            "confirmation_id": granted.confirmation_id,
-            "expires_at": granted.expires_at.isoformat(),
+            "confirmation_id": confirmation.confirmation_id,
+            "expires_at": confirmation.expires_at.isoformat(),
         }
         _audit(conn, session, now, Event.CONFIRMATION_ISSUED, call, None, detail)
-    return ConfirmationResult(confirmations=[granted for _, granted in issued])
+    return ConfirmationResult(confirmations=[confirmation for _, confirmation in issued])
 
 
 def _resolve(
-    call: _Call, conn: sqlite3.Connection, registry: Registry, session: Session, now: datetime
-) -> tuple[Operation, BaseModel, OperationContext, Tier]:
-    """Look up the Operation, validate its input and resolve its tier, recording each on
-    `call` as it becomes known so a refusal is audited with as much as was learned."""
-    operation = call.operation = registry.get(call.name)
+    call: _Call,
+    conn: sqlite3.Connection,
+    registry: Registry,
+    session: Session,
+    now: datetime,
+    planned_total: Decimal = Decimal("0.00"),
+) -> _Resolved:
+    """Look up the Operation, validate its input and resolve its tier. `planned_total` is
+    what earlier steps of the same Plan would add to the Daily Transfer Total."""
+    operation = registry.get(call.name or "")
     if isinstance(operation.tier, Tier):
         call.tier = operation.tier
     if not isinstance(call.raw_input, dict):
         raise Refusal(RefusalReason.INVALID_INPUT, f"Input for {call.name} must be an object")
-    validated = call.validated = _parse(operation.input_model, call.raw_input)
-    ctx = call.ctx = OperationContext(
-        conn=conn, customer_id=session.customer_id, session_id=session.session_id, now=now
+    validated = _parse(operation.input_model, call.raw_input)
+    ctx = OperationContext(
+        conn=conn,
+        customer_id=session.customer_id,
+        session_id=session.session_id,
+        now=now,
+        daily_transfer_total=limits.daily_transfer_total(conn, session.customer_id, now.date())
+        + planned_total,
     )
-    if isinstance(operation.tier, Tier):
-        tier = operation.tier
-    else:
-        tier = call.tier = operation.tier.resolve(validated, ctx)
-    return operation, validated, ctx, tier
+    if not isinstance(operation.tier, Tier):
+        call.tier = operation.tier.resolve(validated, ctx)
+    assert call.tier is not None
+    return _Resolved(operation, validated, ctx, call.tier)
+
+
+class _audited:
+    """Run a block inside a savepoint. On a Refusal, undo the block, audit the refusal
+    and re-raise it (adding `index` to its detail for one step of a Plan card)."""
+
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        session: Session,
+        now: datetime,
+        event: Event,
+        call: _Call,
+        index: int | None = None,
+    ):
+        self.conn, self.session, self.now = conn, session, now
+        self.event, self.call, self.index = event, call, index
+
+    def __enter__(self) -> None:
+        self.conn.execute("SAVEPOINT gate")
+
+    def __exit__(
+        self, kind: type[BaseException] | None, error: BaseException | None, _: Any
+    ) -> None:
+        if error is None:
+            self.conn.execute("RELEASE gate")
+            return
+        self.conn.execute("ROLLBACK TO gate")
+        self.conn.execute("RELEASE gate")
+        if isinstance(error, Refusal):
+            _audit(
+                self.conn, self.session, self.now, self.event, self.call, error.reason,
+                error.audit_detail,
+            )
+            if self.index is not None:
+                error.detail = {**error.detail, "index": self.index}
 
 
 def _parse[M: BaseModel](model: type[M], data: Any) -> M:
@@ -215,17 +254,10 @@ def _parse[M: BaseModel](model: type[M], data: Any) -> M:
         ) from None
 
 
-def _needs(reason: RefusalReason, name: str, tier: Tier) -> Refusal:
-    approval = (
-        "Confirmation" if reason is RefusalReason.NEEDS_CONFIRMATION else "Strong Verification"
-    )
+def _needs_approval(name: str, tier: Tier) -> Refusal:
+    reason, approval = REQUIRED_APPROVAL[tier]
     detail = {"operation": name, "tier": tier.value}
     return Refusal(reason, f"{name} is {tier.value} and needs {approval}", detail)
-
-
-def _rollback(conn: sqlite3.Connection) -> None:
-    conn.execute("ROLLBACK TO operation")
-    conn.execute("RELEASE operation")
 
 
 def _audit(
@@ -242,7 +274,7 @@ def _audit(
         session_id=session.session_id,
         at=now,
         event=event,
-        operation=call.name or None,
+        operation=call.name,
         input=call.raw_input,
         tier=call.tier,
         reason=reason,

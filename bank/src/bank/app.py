@@ -7,7 +7,8 @@ session's audit trail.
 
 import os
 import secrets
-from collections.abc import AsyncIterator
+import sqlite3
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -18,7 +19,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from bank import audit, clock, confirmations, customers, db, policy, sessions, transfers
+from bank import audit, clock, confirmations, customers, db, limits, policy, sessions, transfers
 from bank.registry import BankModule, Refusal, RefusalReason, Registry
 
 # Order matters: a module's tables may reference tables of the modules before it.
@@ -26,6 +27,7 @@ MODULES: list[BankModule] = [
     clock.MODULE,
     customers.MODULE,
     transfers.MODULE,
+    limits.MODULE,
     sessions.MODULE,
     confirmations.MODULE,
     audit.MODULE,
@@ -106,6 +108,19 @@ def create_app(db_path: Path, admin_key: str) -> FastAPI:
             return authorization.removeprefix("Bearer ")
         return None
 
+    def gated[T](
+        authorization: str | None, step: Callable[[sqlite3.Connection, sessions.Session], T]
+    ) -> T:
+        """Run one policy-gate step for the calling session. A refusal is audited inside
+        the transaction, so commit it first and only then refuse."""
+        with db.transaction(db_path) as conn:
+            session = sessions.authenticate(conn, bearer_token(authorization))
+            try:
+                return step(conn, session)
+            except Refusal as refusal:
+                pending = refusal
+        raise pending
+
     @app.post("/sessions")
     def log_in(body: LoginRequest) -> dict[str, Any]:
         with db.transaction(db_path) as conn:
@@ -132,27 +147,20 @@ def create_app(db_path: Path, admin_key: str) -> FastAPI:
         # Parsed as plain JSON; the policy gate validates it so a bad request is audited.
         body: Annotated[Any, Body()] = None,
     ) -> policy.OperationResult:
-        with db.transaction(db_path) as conn:
-            session = sessions.authenticate(conn, bearer_token(authorization))
-            try:
-                return policy.run(conn, registry, session, name, body)
-            except Refusal as refusal:
-                # The refusal is audited inside this transaction; commit it, then refuse.
-                pending = refusal
-        raise pending
+        return gated(
+            authorization,
+            lambda conn, session: policy.run(conn, registry, session, name, body),
+        )
 
     @app.post("/confirmations")
     def request_confirmations(
         authorization: Annotated[str | None, Header()] = None,
         body: Annotated[Any, Body()] = None,
     ) -> policy.ConfirmationResult:
-        with db.transaction(db_path) as conn:
-            session = sessions.authenticate(conn, bearer_token(authorization))
-            try:
-                return policy.issue_confirmations(conn, registry, session, body)
-            except Refusal as refusal:
-                pending = refusal
-        raise pending
+        return gated(
+            authorization,
+            lambda conn, session: policy.issue_confirmations(conn, registry, session, body),
+        )
 
     @admin.post("/reset")
     def reset() -> dict[str, str]:
