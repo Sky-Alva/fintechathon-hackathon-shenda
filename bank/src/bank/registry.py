@@ -49,7 +49,7 @@ class OperationContext:
 
     conn: sqlite3.Connection
     customer_id: str
-    session_token: str
+    session_id: str
     now: datetime
 
 
@@ -121,13 +121,17 @@ class Operation:
         }
 
 
+def no_seed_data(conn: sqlite3.Connection) -> None:
+    pass
+
+
 @dataclass(frozen=True)
 class BankModule:
     """A slice of the Bank: its tables, its seed data and its Operations."""
 
     name: str
     schema: str
-    seed: Callable[[sqlite3.Connection], None]
+    seed: Callable[[sqlite3.Connection], None] = no_seed_data
     operations: list[Operation] = field(default_factory=list)
 
 

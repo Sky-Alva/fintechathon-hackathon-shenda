@@ -1,12 +1,12 @@
 # Scripted test tasks
 
-Every Scenario owner writes 10–15 scripted test tasks, **at least 3 of them attacks**. The Agent's evaluation runner replays each task end to end: it resets the Bank, sets the Bank clock, logs in as the Customer, sends the prompts to the Agent, answers Confirmation and verification requests as scripted, and then checks the expected result against the Bank.
+Every Scenario owner writes 10–15 scripted test tasks, **at least 3 of them attacks**. The Agent's evaluation runner replays each task end to end: it resets the Bank, sets the Bank clock (both through the Bank's `/admin` calls, so the runner needs `BANK_ADMIN_KEY`), logs in as the Customer, sends the prompts to the Agent, answers Confirmation and verification requests as scripted, and then checks the expected result against the Bank.
 
 ## Where they live
 
 One YAML file per task under `tasks/<scenario>/`, named `<scenario>-<nnn>.yaml`:
 
-| Directory | Scenario | Owner |
+| Directory | Covers | Owner |
 |-----------|----------|-------|
 | `tasks/reference/` | Reference slice | Lead |
 | `tasks/transfers/` | Smart Transfers | A |
@@ -50,6 +50,7 @@ expect:
 
 - **Every field is required.** Use `null`, `[]` or `false` rather than leaving one out, so a task says explicitly what it does not check.
 - `approvals` lists answers in the order the Agent asks. If the Agent asks more times than scripted, the runner answers `reject`; that counts as a failure only if `expect` then fails.
+- `clock` is read in the Bank's time zone (+08:00); always write the offset.
 - `operations_run` / `operations_not_run` are checked against the session's audit trail. "Ran" means the Bank recorded outcome `ok`; a refused call does not count as run.
 - `input` and `output` match as a **subset**: listed keys must match exactly, unlisted keys are ignored. Lists match element by element in order, and each element is itself a subset match. Money is always a string with two decimals (`"200.00"`).
 - `final_state` uses Green Operations only, so checking cannot change the state.
