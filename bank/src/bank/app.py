@@ -13,10 +13,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, FastAPI, Header, Request
+from fastapi import APIRouter, Body, Depends, FastAPI, Header, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 
 from bank import audit, clock, customers, db, policy, sessions
 from bank.registry import BankModule, Refusal, RefusalReason, Registry
@@ -41,11 +41,6 @@ HTTP_STATUS = {
 class LoginRequest(BaseModel):
     username: str
     password: str
-
-
-class OperationRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    input: Any = Field(default_factory=dict)
 
 
 class SetClockRequest(BaseModel):
@@ -99,7 +94,7 @@ def create_app(db_path: Path, admin_key: str) -> FastAPI:
     # Checked before the body is validated, so a caller without the key learns nothing.
     admin = APIRouter(prefix="/admin", dependencies=[Depends(require_admin)])
 
-    def bearer(authorization: str | None) -> str | None:
+    def bearer_token(authorization: str | None) -> str | None:
         if authorization and authorization.startswith("Bearer "):
             return authorization.removeprefix("Bearer ")
         return None
@@ -108,13 +103,10 @@ def create_app(db_path: Path, admin_key: str) -> FastAPI:
     def log_in(body: LoginRequest) -> dict[str, Any]:
         with db.transaction(db_path) as conn:
             session = sessions.login(conn, body.username, body.password)
-            name = conn.execute(
-                "SELECT name FROM customers WHERE customer_id = ?", (session.customer_id,)
-            ).fetchone()["name"]
         return {
             "session_id": session.session_id,
             "session_token": session.session_token,
-            "customer": {"customer_id": session.customer_id, "name": name},
+            "customer": {"customer_id": session.customer_id, "name": session.customer_name},
         }
 
     @app.get("/clock")
@@ -130,12 +122,13 @@ def create_app(db_path: Path, admin_key: str) -> FastAPI:
     def call_operation(
         name: str,
         authorization: Annotated[str | None, Header()] = None,
-        body: OperationRequest | None = None,
+        # Parsed as plain JSON; the policy gate validates it so a bad request is audited.
+        body: Annotated[Any, Body()] = None,
     ) -> policy.OperationResult:
         with db.transaction(db_path) as conn:
-            session = sessions.authenticate(conn, bearer(authorization))
+            session = sessions.authenticate(conn, bearer_token(authorization))
             try:
-                return policy.run(conn, registry, session, name, (body or OperationRequest()).input)
+                return policy.run(conn, registry, session, name, body)
             except Refusal as refusal:
                 # The refusal is audited inside this transaction; commit it, then refuse.
                 pending = refusal

@@ -53,8 +53,4 @@ def trail(conn: sqlite3.Connection, session_id: str) -> list[dict[str, Any]]:
     return [{**dict(row), "input": json.loads(row["input"])} for row in rows]
 
 
-def _no_seed(conn: sqlite3.Connection) -> None:
-    pass
-
-
-MODULE = BankModule(name="audit", schema=SCHEMA, seed=_no_seed)
+MODULE = BankModule(name="audit", schema=SCHEMA)

@@ -29,7 +29,7 @@ A successful call returns `{operation, tier, output}`. Every refusal returns `{"
 
 ## Adding a Scenario module
 
-A module is a `BankModule` (`src/bank/registry.py`): its SQL schema, its seed function and its `Operation`s. Add it to `MODULES` in `src/bank/app.py`. `src/bank/customers.py` is the worked example. Handlers hold business logic only; tiers, approvals, session limits and audit are the policy gate's job (`src/bank/policy.py`). Money is stored as integer cents and returned as a `Decimal` (a string with two decimals in JSON). Use `ctx.now`, never the system clock.
+A module is a `BankModule` (`src/bank/registry.py`): its SQL schema, its seed function and its `Operation`s. Add it to `MODULES` in `src/bank/app.py`. Each Operation declares its reversibility: `ReadOnly()` for queries, `Irreversible()`, or `ReversedBy(operation, build_input)`. `src/bank/customers.py` is the worked example. Handlers hold business logic only; tiers, approvals, session limits and audit are the policy gate's job (`src/bank/policy.py`). Money is stored as integer cents and returned as a `Decimal` (a string with two decimals in JSON). Use `ctx.now`, never the system clock.
 
 ## Tests
 

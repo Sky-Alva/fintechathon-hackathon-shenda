@@ -183,3 +183,16 @@ def test_non_object_input_is_refused_and_audited(client: TestClient) -> None:
     assert [(e["operation"], e["input"], e["reason"]) for e in entries] == [
         ("query_balance", [1], "invalid_input")
     ]
+
+
+def test_malformed_request_from_a_session_is_refused_and_audited(client: TestClient) -> None:
+    session_id, headers = login_session(client, "liming")
+
+    response = client.post(
+        "/operations/query_balance", headers=headers, json={"input": {}, "token": "x"}
+    )
+
+    assert response.status_code == 422
+    assert refusal(response)["reason"] == "invalid_input"
+    entries = admin(client, "get", f"/admin/sessions/{session_id}/audit")["entries"]
+    assert [(e["operation"], e["reason"]) for e in entries] == [("query_balance", "invalid_input")]

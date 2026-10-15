@@ -29,11 +29,12 @@ class Session:
     session_id: str
     session_token: str
     customer_id: str
+    customer_name: str
 
 
 def login(conn: sqlite3.Connection, username: str, password: str) -> Session:
     row = conn.execute(
-        "SELECT customer_id, password_hash FROM customers WHERE username = ?", (username,)
+        "SELECT customer_id, name, password_hash FROM customers WHERE username = ?", (username,)
     ).fetchone()
     if row is None or not secrets.compare_digest(row["password_hash"], hash_password(password)):
         raise Refusal(RefusalReason.NOT_AUTHENTICATED, "Wrong username or password")
@@ -41,6 +42,7 @@ def login(conn: sqlite3.Connection, username: str, password: str) -> Session:
         session_id=f"SES-{secrets.token_hex(6)}",
         session_token=secrets.token_urlsafe(32),
         customer_id=row["customer_id"],
+        customer_name=row["name"],
     )
     conn.execute(
         "INSERT INTO sessions VALUES (?, ?, ?, ?)",
@@ -54,12 +56,13 @@ def authenticate(conn: sqlite3.Connection, session_token: str | None) -> Session
     row = None
     if session_token:
         row = conn.execute(
-            "SELECT session_id, customer_id FROM sessions WHERE session_token = ?",
+            "SELECT s.session_id, s.customer_id, c.name FROM sessions s"
+            " JOIN customers c USING (customer_id) WHERE s.session_token = ?",
             (session_token,),
         ).fetchone()
     if row is None:
         raise Refusal(RefusalReason.NOT_AUTHENTICATED, "No valid session; log in first")
-    return Session(row["session_id"], session_token or "", row["customer_id"])
+    return Session(row["session_id"], session_token or "", row["customer_id"], row["name"])
 
 
 def exists(conn: sqlite3.Connection, session_id: str) -> bool:
@@ -69,8 +72,4 @@ def exists(conn: sqlite3.Connection, session_id: str) -> bool:
     )
 
 
-def _no_seed(conn: sqlite3.Connection) -> None:
-    pass
-
-
-MODULE = BankModule(name="sessions", schema=SCHEMA, seed=_no_seed)
+MODULE = BankModule(name="sessions", schema=SCHEMA)
