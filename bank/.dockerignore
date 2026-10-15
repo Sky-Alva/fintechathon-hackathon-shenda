@@ -5,3 +5,4 @@
 .pytest_cache
 tests
 *.sqlite3
+build
