@@ -70,7 +70,7 @@ def request_confirmations(
 def confirm(
     client: TestClient, headers: dict[str, str], operation: str, input: dict[str, Any]
 ) -> str:
-    """Get a Confirmation token for one Operation, as if the Customer approved it."""
+    """Get a Confirmation token for one Operation, as if the Customer confirmed it."""
     response = request_confirmations(client, headers, (operation, input))
     assert response.status_code == 200, response.text
     token: str = response.json()["confirmations"][0]["confirmation_token"]

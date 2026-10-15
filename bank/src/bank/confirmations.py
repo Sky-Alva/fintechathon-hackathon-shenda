@@ -1,6 +1,6 @@
-"""Confirmation tokens: the Customer's approval of one exact Yellow Operation.
+"""Confirmation tokens: proof that the Customer confirmed one exact Yellow Operation.
 
-A token is tied to the Customer, the session, the Operation name and a fingerprint of
+A token is bound to the Customer, the session, the Operation name and a fingerprint of
 its validated input. It works once and expires after a few Bank-clock minutes. Only a
 hash of the token is stored, and the audit log refers to it by its confirmation ID.
 """
@@ -34,35 +34,41 @@ CREATE TABLE confirmations (
 
 
 @dataclass(frozen=True)
-class IssuedConfirmation:
+class Binding:
+    """Exactly what a token covers."""
+
+    session_id: str
+    customer_id: str
+    operation: str
+    fingerprint: str
+
+    @classmethod
+    def of(
+        cls, *, session_id: str, customer_id: str, operation: str, validated_input: BaseModel
+    ) -> "Binding":
+        canonical = json.dumps(
+            {"operation": operation, "input": validated_input.model_dump(mode="json")},
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+        return cls(
+            session_id, customer_id, operation, hashlib.sha256(canonical.encode()).hexdigest()
+        )
+
+
+@dataclass(frozen=True)
+class IssuedToken:
     confirmation_id: str
     confirmation_token: str
     expires_at: datetime
-
-
-def fingerprint(operation: str, validated_input: BaseModel) -> str:
-    canonical = json.dumps(
-        {"operation": operation, "input": validated_input.model_dump(mode="json")},
-        sort_keys=True,
-        ensure_ascii=False,
-    )
-    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 def _hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-def issue(
-    conn: sqlite3.Connection,
-    *,
-    session_id: str,
-    customer_id: str,
-    operation: str,
-    validated_input: BaseModel,
-    now: datetime,
-) -> IssuedConfirmation:
-    issued = IssuedConfirmation(
+def issue(conn: sqlite3.Connection, binding: Binding, now: datetime) -> IssuedToken:
+    issued = IssuedToken(
         confirmation_id=f"CNF-{secrets.token_hex(6)}",
         confirmation_token=secrets.token_urlsafe(32),
         expires_at=now + CONFIRMATION_LIFETIME,
@@ -72,10 +78,10 @@ def issue(
         (
             issued.confirmation_id,
             _hash(issued.confirmation_token),
-            session_id,
-            customer_id,
-            operation,
-            fingerprint(operation, validated_input),
+            binding.session_id,
+            binding.customer_id,
+            binding.operation,
+            binding.fingerprint,
             now.isoformat(),
             issued.expires_at.isoformat(),
         ),
@@ -83,26 +89,19 @@ def issue(
     return issued
 
 
-def redeem(
-    conn: sqlite3.Connection,
-    token: str,
-    *,
-    session_id: str,
-    customer_id: str,
-    operation: str,
-    validated_input: BaseModel,
-    now: datetime,
-) -> str:
-    """Use up a token for exactly this Operation call; return its confirmation ID."""
+def redeem(conn: sqlite3.Connection, token: str, binding: Binding, now: datetime) -> str:
+    """Use up a token for exactly this Operation call; return its confirmation ID.
+
+    The token is marked used inside the caller's transaction, so if the call is then
+    refused and rolled back the token stays valid: nothing it confirmed has happened.
+    """
     row = conn.execute(
         "SELECT * FROM confirmations WHERE token_hash = ?", (_hash(token),)
     ).fetchone()
     if (
         row is None
-        or row["session_id"] != session_id
-        or row["customer_id"] != customer_id
-        or row["operation"] != operation
-        or row["fingerprint"] != fingerprint(operation, validated_input)
+        or Binding(row["session_id"], row["customer_id"], row["operation"], row["fingerprint"])
+        != binding
         or row["used_at"] is not None
         or now >= datetime.fromisoformat(row["expires_at"])
     ):
@@ -110,6 +109,7 @@ def redeem(
         raise Refusal(
             RefusalReason.TOKEN_INVALID,
             "This Confirmation does not cover this exact Operation, or has expired or been used",
+            audit_detail={"confirmation_id": row["confirmation_id"]} if row else None,
         )
     conn.execute(
         "UPDATE confirmations SET used_at = ? WHERE confirmation_id = ?",

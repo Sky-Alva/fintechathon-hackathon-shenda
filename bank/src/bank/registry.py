@@ -8,6 +8,7 @@ import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
+from decimal import Decimal
 from enum import StrEnum
 from typing import Any
 
@@ -36,21 +37,33 @@ class RefusalReason(StrEnum):
 class Refusal(Exception):
     """Raised anywhere in the Bank to refuse a request with one machine-readable reason."""
 
-    def __init__(self, reason: RefusalReason, message: str, detail: dict[str, Any] | None = None):
+    def __init__(
+        self,
+        reason: RefusalReason,
+        message: str,
+        detail: dict[str, Any] | None = None,
+        *,
+        audit_detail: dict[str, Any] | None = None,
+    ):
         super().__init__(message)
         self.reason = reason
         self.message = message
         self.detail = detail or {}
+        # Recorded in the audit log but never returned to the caller.
+        self.audit_detail = audit_detail or {}
 
 
 @dataclass(frozen=True)
 class OperationContext:
-    """What a handler may use: the database, the session's Customer and the Bank clock."""
+    """What a handler or tier rule may use: the database, the session's Customer, the
+    Bank clock, and the Customer's Daily Transfer Total before this Operation (including
+    earlier steps of the same Plan when the Bank is simulating one)."""
 
     conn: sqlite3.Connection
     customer_id: str
     session_id: str
     now: datetime
+    daily_transfer_total: Decimal
 
 
 @dataclass(frozen=True)
@@ -90,6 +103,9 @@ class Operation:
     tier: Tier | TierRule
     reversibility: ReadOnly | Irreversible | ReversedBy
     handler: Callable[[OperationContext, Any], BaseModel]
+    # The amount this Operation adds to the Daily Transfer Total (transfers, Merchant
+    # payments from Reserved Funds). The policy gate keeps the total; modules never do.
+    daily_transfer_amount: Callable[[Any], Decimal] | None = None
 
     def catalogue_entry(self) -> dict[str, Any]:
         """How the Operation is described to the Agent in the Operation catalogue."""
@@ -118,6 +134,7 @@ class Operation:
             "output_schema": self.output_model.model_json_schema(mode="serialization"),
             "tier": tier,
             "reversibility": reversibility,
+            "counts_toward_daily_transfer_total": self.daily_transfer_amount is not None,
         }
 
 

@@ -6,11 +6,11 @@ rest of the seed.
 """
 
 import sqlite3
-from datetime import date
 from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from bank import customers, limits
 from bank.money import Amount, from_cents, to_cents
 from bank.registry import (
     BankModule,
@@ -22,8 +22,6 @@ from bank.registry import (
     Tier,
     TierRule,
 )
-
-DAILY_TRANSFER_LIMIT_CENTS = 100_000  # ¥1,000: above this the Daily Transfer Total is Red
 
 SCHEMA = """
 CREATE TABLE payees (
@@ -58,17 +56,6 @@ def seed(conn: sqlite3.Connection) -> None:
     )
 
 
-def daily_transfer_total(conn: sqlite3.Connection, customer_id: str, day: date) -> int:
-    """The Customer's outgoing transfers on one Bank-clock day, in cents."""
-    row = conn.execute(
-        "SELECT COALESCE(SUM(amount_cents), 0) FROM transfers"
-        " WHERE customer_id = ? AND substr(at, 1, 10) = ?",
-        (customer_id, day.isoformat()),
-    ).fetchone()
-    total: int = row[0]
-    return total
-
-
 class TransferInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     payee_id: str
@@ -96,13 +83,9 @@ def _payee(ctx: OperationContext, payee_id: str) -> sqlite3.Row:
     return row
 
 
-def _funded_current_account(ctx: OperationContext, amount_cents: int) -> sqlite3.Row:
-    account: sqlite3.Row = ctx.conn.execute(
-        "SELECT account_id, balance_cents FROM accounts"
-        " WHERE customer_id = ? AND kind = 'current' ORDER BY account_id LIMIT 1",
-        (ctx.customer_id,),
-    ).fetchone()
-    if account["balance_cents"] < amount_cents:
+def _funded_current_account(ctx: OperationContext, amount: Decimal) -> sqlite3.Row:
+    account = customers.current_account(ctx.conn, ctx.customer_id)
+    if account["balance_cents"] < to_cents(amount):
         raise Refusal(
             RefusalReason.INSUFFICIENT_FUNDS,
             "Not enough money in the current account",
@@ -115,29 +98,21 @@ def _funded_current_account(ctx: OperationContext, amount_cents: int) -> sqlite3
 
 
 def transfer_tier(input: TransferInput, ctx: OperationContext) -> Tier:
-    # Refuse a transfer that cannot run before the Customer is asked to approve it.
+    # Refuse a transfer that can never run before the Customer is asked to confirm it.
     _payee(ctx, input.payee_id)
-    amount_cents = to_cents(input.amount)
-    _funded_current_account(ctx, amount_cents)
-    total = daily_transfer_total(ctx.conn, ctx.customer_id, ctx.now.date()) + amount_cents
-    return Tier.YELLOW if total <= DAILY_TRANSFER_LIMIT_CENTS else Tier.RED
+    _funded_current_account(ctx, input.amount)
+    return limits.tier_for_outgoing(input.amount, ctx)
 
 
 def transfer(ctx: OperationContext, input: TransferInput) -> TransferOutput:
     payee = _payee(ctx, input.payee_id)
+    account = _funded_current_account(ctx, input.amount)
     amount_cents = to_cents(input.amount)
-    account = _funded_current_account(ctx, amount_cents)
-    ctx.conn.execute(
-        "UPDATE accounts SET balance_cents = balance_cents - ? WHERE account_id = ?",
-        (amount_cents, account["account_id"]),
-    )
+    customers.debit(ctx.conn, account["account_id"], amount_cents)
     # A Payee who banks with the Bank is credited; anyone else is paid out of the Bank.
-    ctx.conn.execute(
-        "UPDATE accounts SET balance_cents = balance_cents + ? WHERE account_id = ?",
-        (amount_cents, payee["account_id"]),
-    )
+    customers.credit(ctx.conn, payee["account_id"], amount_cents)
     count = ctx.conn.execute("SELECT COUNT(*) FROM transfers").fetchone()[0]
-    transfer_id = f"TRF-{count + 1:06d}"
+    transfer_id = f"TRF-{count + 1:06d}"  # IDs are Bank-wide, so this counts every transfer
     ctx.conn.execute(
         "INSERT INTO transfers VALUES (?, ?, ?, ?, ?, ?, ?)",
         (
@@ -157,9 +132,7 @@ def transfer(ctx: OperationContext, input: TransferInput) -> TransferOutput:
         amount=input.amount,
         from_account_id=account["account_id"],
         balance_after=from_cents(account["balance_cents"] - amount_cents),
-        daily_transfer_total=from_cents(
-            daily_transfer_total(ctx.conn, ctx.customer_id, ctx.now.date())
-        ),
+        daily_transfer_total=ctx.daily_transfer_total + input.amount,
     )
 
 
@@ -184,6 +157,7 @@ MODULE = BankModule(
             ),
             reversibility=Irreversible(),
             handler=transfer,
+            daily_transfer_amount=lambda input: input.amount,
         )
     ],
 )
