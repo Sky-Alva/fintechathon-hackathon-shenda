@@ -1,8 +1,9 @@
 """The Bank's HTTP API.
 
 Customer-facing: log in, read the Bank clock, read the Operation catalogue, call an
-Operation. Admin (X-Admin-Key): reset, set or advance the Bank clock, read any
-session's audit trail.
+Operation, get Confirmation tokens, pass Strong Verification, read the simulated phone.
+Admin (X-Admin-Key): reset, set or advance the Bank clock, read any session's audit
+trail, read any Customer's simulated phone.
 """
 
 import os
@@ -19,17 +20,31 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from bank import audit, clock, confirmations, customers, db, limits, policy, sessions, transfers
+from bank import (
+    approvals,
+    audit,
+    clock,
+    customers,
+    db,
+    limits,
+    phone,
+    policy,
+    sessions,
+    transfers,
+    verification,
+)
 from bank.registry import BankModule, Refusal, RefusalReason, Registry
 
 # Order matters: a module's tables may reference tables of the modules before it.
 MODULES: list[BankModule] = [
     clock.MODULE,
     customers.MODULE,
+    phone.MODULE,
     transfers.MODULE,
     limits.MODULE,
     sessions.MODULE,
-    confirmations.MODULE,
+    approvals.MODULE,
+    verification.MODULE,
     audit.MODULE,
 ]
 
@@ -109,12 +124,17 @@ def create_app(db_path: Path, admin_key: str) -> FastAPI:
         return None
 
     def gated[T](
-        authorization: str | None, step: Callable[[sqlite3.Connection, sessions.Session], T]
+        authorization: str | None,
+        step: Callable[[sqlite3.Connection, sessions.Session], T],
+        authenticate: Callable[
+            [sqlite3.Connection, str | None], sessions.Session
+        ] = sessions.authenticate,
     ) -> T:
-        """Run one policy-gate step for the calling session. A refusal is audited inside
-        the transaction, so commit it first and only then refuse."""
+        """Run one policy-gate step for the calling session (by default identified by its
+        session token). A refusal is audited inside the transaction, so commit it first
+        and only then refuse."""
         with db.transaction(db_path) as conn:
-            session = sessions.authenticate(conn, bearer_token(authorization))
+            session = authenticate(conn, bearer_token(authorization))
             try:
                 return step(conn, session)
             except Refusal as refusal:
@@ -128,6 +148,7 @@ def create_app(db_path: Path, admin_key: str) -> FastAPI:
         return {
             "session_id": session.session_id,
             "session_token": session.session_token,
+            "phone_token": session.phone_token,
             "customer": {"customer_id": session.customer_id, "name": session.customer_name},
         }
 
@@ -162,6 +183,35 @@ def create_app(db_path: Path, admin_key: str) -> FastAPI:
             lambda conn, session: policy.issue_confirmations(conn, registry, session, body),
         )
 
+    @app.post("/verifications")
+    def request_verification(
+        authorization: Annotated[str | None, Header()] = None,
+        body: Annotated[Any, Body()] = None,
+    ) -> policy.VerificationChallenge:
+        return gated(
+            authorization,
+            lambda conn, session: policy.start_verification(conn, registry, session, body),
+        )
+
+    @app.post("/verifications/{challenge_id}")
+    def answer_verification(
+        challenge_id: str,
+        authorization: Annotated[str | None, Header()] = None,
+        body: Annotated[Any, Body()] = None,
+    ) -> policy.Verification:
+        return gated(
+            authorization,
+            lambda conn, session: policy.answer_challenge(conn, session, challenge_id, body),
+            # Codes come from the Customer's simulated phone, never the Agent's session.
+            authenticate=sessions.authenticate_phone,
+        )
+
+    @app.get("/phone/messages")
+    def read_phone(authorization: Annotated[str | None, Header()] = None) -> dict[str, Any]:
+        with db.transaction(db_path) as conn:
+            session = sessions.authenticate_phone(conn, bearer_token(authorization))
+            return {"messages": phone.messages(conn, session.customer_id)}
+
     @admin.post("/reset")
     def reset() -> dict[str, str]:
         with db.transaction(db_path) as conn:
@@ -186,6 +236,15 @@ def create_app(db_path: Path, admin_key: str) -> FastAPI:
                     RefusalReason.NOT_FOUND, "No such session", {"session_id": session_id}
                 )
             return {"session_id": session_id, "entries": audit.trail(conn, session_id)}
+
+    @admin.get("/customers/{customer_id}/phone/messages")
+    def customer_phone(customer_id: str) -> dict[str, Any]:
+        with db.transaction(db_path) as conn:
+            if not customers.exists(conn, customer_id):
+                raise Refusal(
+                    RefusalReason.NOT_FOUND, "No such Customer", {"customer_id": customer_id}
+                )
+            return {"messages": phone.messages(conn, customer_id)}
 
     app.include_router(admin)
     return app

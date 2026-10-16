@@ -16,19 +16,23 @@ Demo logins: `liming` / `demo1234` and `hanmei` / `demo1234`. Admin calls need t
 
 | Call | Who | What |
 |------|-----|------|
-| `POST /sessions` `{username, password}` | anyone | Log in. Returns `session_id`, `session_token` and the Customer. |
+| `POST /sessions` `{username, password}` | anyone | Log in. Returns `session_id`, `session_token`, `phone_token` and the Customer. |
 | `GET /operations` | anyone | Operation catalogue: bilingual descriptions, input/output JSON Schemas, tier rule, reversibility. |
-| `POST /operations/{name}` `{input, confirmation_token?}` | `Authorization: Bearer <session_token>` | Call an Operation through the policy gate. |
+| `POST /operations/{name}` `{input, confirmation_token?, verification_token?}` | `Authorization: Bearer <session_token>` | Call an Operation through the policy gate. |
 | `POST /confirmations` `{operations: [{operation, input}]}` | `Authorization: Bearer <session_token>` | Issue Confirmation tokens for the Yellow Operations on a Plan card. |
+| `POST /verifications` `{operation, input}` | `Authorization: Bearer <session_token>` | Start Strong Verification for one Red Operation: texts a code to the Customer's simulated phone. |
+| `POST /verifications/{challenge_id}` `{code}` | `Authorization: Bearer <phone_token>` | Answer the challenge from the simulated phone. The right code returns a verification token. |
+| `GET /phone/messages` | `Authorization: Bearer <phone_token>` | The Customer's simulated phone (SMS inbox). The session token can neither read it nor answer a challenge. |
 | `GET /clock` | anyone | Read the Bank clock. |
 | `POST /admin/reset` | admin | Restore seed data (also ends every session and clears the audit log). |
 | `PUT /admin/clock` `{now}` | admin | Set the Bank clock. |
 | `POST /admin/clock/advance` `{minutes}` | admin | Move the Bank clock forward. |
 | `GET /admin/sessions/{session_id}/audit` | admin | One session's audit trail, in order. |
+| `GET /admin/customers/{customer_id}/phone/messages` | admin | A Customer's simulated phone, for the staff console. |
 
 A successful call returns `{operation, tier, output}`. Every refusal returns `{"refusal": {"reason", "message", "detail"}}`, where `reason` is one of the values of `RefusalReason` in `src/bank/registry.py`.
 
-The full contract for declaring and calling Operations, including Confirmation, is [docs/operation-definition.md](../docs/operation-definition.md).
+The full contract for declaring and calling Operations, including Confirmation and Strong Verification, is [docs/operation-definition.md](../docs/operation-definition.md).
 
 ## Adding a Scenario module
 
