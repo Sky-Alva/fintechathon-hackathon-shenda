@@ -52,6 +52,10 @@ class Refusal(Exception):
         # Recorded in the audit log but never returned to the caller.
         self.audit_detail = audit_detail or {}
 
+    def body(self) -> dict[str, Any]:
+        """The refusal as the caller sees it."""
+        return {"reason": self.reason.value, "message": self.message, "detail": self.detail}
+
 
 @dataclass(frozen=True)
 class OperationContext:

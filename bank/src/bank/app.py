@@ -1,7 +1,8 @@
 """The Bank's HTTP API.
 
 Customer-facing: log in, read the Bank clock, read the Operation catalogue, call an
-Operation, get Confirmation tokens, pass Strong Verification, read the simulated phone.
+Operation, preview a Plan's tiers, get Confirmation tokens, pass Strong Verification,
+read the simulated phone.
 Admin (X-Admin-Key): reset, set or advance the Bank clock, read any session's audit
 trail, read any Customer's simulated phone.
 """
@@ -78,13 +79,7 @@ class AdvanceClockRequest(BaseModel):
 def refusal_response(refusal: Refusal) -> JSONResponse:
     return JSONResponse(
         status_code=HTTP_STATUS[refusal.reason],
-        content={
-            "refusal": {
-                "reason": refusal.reason.value,
-                "message": refusal.message,
-                "detail": refusal.detail,
-            }
-        },
+        content={"refusal": refusal.body()},
     )
 
 
@@ -181,6 +176,16 @@ def create_app(db_path: Path, admin_key: str) -> FastAPI:
         return gated(
             authorization,
             lambda conn, session: policy.issue_confirmations(conn, registry, session, body),
+        )
+
+    @app.post("/tier-preview", response_model_exclude_none=True)
+    def tier_preview(
+        authorization: Annotated[str | None, Header()] = None,
+        body: Annotated[Any, Body()] = None,
+    ) -> policy.TierPreviewResult:
+        return gated(
+            authorization,
+            lambda conn, session: policy.preview_tiers(conn, registry, session, body),
         )
 
     @app.post("/verifications")
