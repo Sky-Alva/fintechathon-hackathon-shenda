@@ -147,7 +147,9 @@ def test_a_refused_step_does_not_count_toward_the_daily_total(client: TestClient
 
 def test_a_malformed_preview_request_is_refused_as_a_whole(client: TestClient) -> None:
     headers = login(client, "hanmei")
-    bodies: list[Any] = [None, {}, {"operations": []}, {"operations": "x"}, {"operations": [], "x": 1}]
+    bodies: list[Any] = [
+        None, {}, {"operations": []}, {"operations": "x"}, {"operations": [], "x": 1},
+    ]
     for body in bodies:
         response = client.post("/tier-preview", headers=headers, json=body)
 

@@ -214,7 +214,8 @@ def preview_tiers(
     still tiered.
     """
     now = clock.now(conn)
-    with _audited(conn, session, now, Event.TIER_PREVIEW, _Call(None, body, Tier.GREEN)):
+    envelope = _Call(None, _masked_request(registry, body), Tier.GREEN)
+    with _audited(conn, session, now, Event.TIER_PREVIEW, envelope):
         request = _parse(PlanRequest, body)
     calls: list[_Call] = []
     steps: list[PreviewStep] = []
@@ -259,7 +260,8 @@ def issue_confirmations(
     Transfer Total, so a Plan card can't hold Yellow tokens that add up to a Red total.
     """
     now = clock.now(conn)
-    with _audited(conn, session, now, Event.CONFIRMATION_ISSUED, _Call(None, body)):
+    envelope = _Call(None, _masked_request(registry, body))
+    with _audited(conn, session, now, Event.CONFIRMATION_ISSUED, envelope):
         request = _parse(PlanRequest, body)
     issued: list[tuple[_Call, Confirmation]] = []
     planned_total = Decimal("0.00")
@@ -303,7 +305,7 @@ def start_verification(
     """Open a Strong Verification challenge for one Red Operation call and text its code
     to the Customer's simulated phone. Always audited."""
     now = clock.now(conn)
-    call = _Call(None, body)
+    call = _Call(None, _masked_request(registry, body))
     with _audited(conn, session, now, Event.VERIFICATION_CHALLENGE, call):
         request = _parse(VerificationRequest, body)
         call.name, call.raw_input = request.operation, request.input
@@ -416,21 +418,37 @@ def _secret_fields(operation: Operation) -> frozenset[str]:
     return frozenset(name for name, field in fields.items() if markers(field, Secret))
 
 
+def _masked_request(registry: Registry, body: Any) -> Any:
+    """A Plan or verification request body as the audit log may store it, for when it is
+    refused before its steps are parsed: every known Operation's secrets masked."""
+    if not isinstance(body, dict):
+        return body
+    if isinstance(body.get("operations"), list):
+        steps = [_masked_request(registry, step) for step in body["operations"]]
+        return {**body, "operations": steps}
+    name = body.get("operation")
+    operation = registry.operations.get(name) if isinstance(name, str) else None
+    if operation is None:
+        return body
+    step = _Call(operation.name, body.get("input"), secrets=_secret_fields(operation))
+    return {**body, "input": step.logged_input()}
+
+
 def _check_ownership(model: BaseModel, ctx: OperationContext) -> None:
     """Refuse any ID in the input that belongs to another Customer, or to nobody."""
     for name, field in type(model).model_fields.items():
         value = getattr(model, name)
         values = value if isinstance(value, list) else [value]
         for owned in markers(field, OwnedBy):
-            for id in values:
-                if id is not None:
-                    _check_owner(owned, name, id, ctx)
+            for owned_id in values:
+                if owned_id is not None:
+                    _check_one_owner(owned, name, owned_id, ctx)
         for nested in values:
             if isinstance(nested, BaseModel):
                 _check_ownership(nested, ctx)
 
 
-def _check_owner(owned: OwnedBy, field: str, id: str, ctx: OperationContext) -> None:
+def _check_one_owner(owned: OwnedBy, field: str, id: str, ctx: OperationContext) -> None:
     # Table and column names come from the Operation's declaration, never the caller.
     row = ctx.conn.execute(
         f"SELECT customer_id FROM {owned.table} WHERE {owned.key} = ?", (id,)
