@@ -94,7 +94,7 @@ def test_transferring_to_the_spouse_as_a_payee_still_works(client: TestClient) -
     assert balance(client, hanmei, WIFE_CURRENT) == "8850.00"
 
 
-def test_another_customers_account_is_refused_at_every_step_of_the_gate(
+def test_another_customers_account_is_refused_in_preview_confirmation_and_verification(
     client: TestClient,
 ) -> None:
     headers = login(client, "liming")
@@ -198,3 +198,18 @@ def test_the_new_password_never_appears_in_the_audit_log_or_sms(client: TestClie
     assert NEW_PASSWORD not in str(phone_messages(client, phone))
     assert entries[-1]["input"] == {"new_password": "**********"}
     assert entries[-1]["outcome"] == "ok"
+
+
+def test_a_malformed_plan_or_verification_request_never_logs_the_new_password(
+    client: TestClient,
+) -> None:
+    session_id, headers = login_session(client, "liming")
+    step = {"operation": "change_password", "input": {"new_password": NEW_PASSWORD}}
+    client.post("/tier-preview", headers=headers, json={"operations": [step], "stray": 1})
+    client.post("/confirmations", headers=headers, json={"operations": [step], "stray": 1})
+    client.post("/verifications", headers=headers, json={**step, "stray": 1})
+
+    entries = admin(client, "get", f"/admin/sessions/{session_id}/audit")["entries"]
+
+    assert [e["reason"] for e in entries] == ["invalid_input"] * 3
+    assert NEW_PASSWORD not in str(entries)
