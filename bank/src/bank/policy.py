@@ -27,7 +27,7 @@ from bank.registry import (
 )
 from bank.sessions import Session
 
-MAX_CONFIRMATIONS_PER_REQUEST = 20
+MAX_PLAN_STEPS = 20  # per tier preview or Confirmation request
 
 # What a call of each tier needs before it runs, and the refusal when it is missing.
 REQUIRED_APPROVAL = {
@@ -57,13 +57,25 @@ class PlannedOperation(BaseModel):
     input: Any = Field(default_factory=dict)
 
 
-class ConfirmationRequest(BaseModel):
-    """The body of a Confirmation request: the Yellow Operations on one Plan card, in order."""
+class PlanRequest(BaseModel):
+    """Operations of one Plan, in order: a whole proposed Plan for a tier preview, or the
+    Yellow Operations on its Plan card for a Confirmation request."""
 
     model_config = ConfigDict(extra="forbid")
-    operations: list[PlannedOperation] = Field(
-        min_length=1, max_length=MAX_CONFIRMATIONS_PER_REQUEST
-    )
+    operations: list[PlannedOperation] = Field(min_length=1, max_length=MAX_PLAN_STEPS)
+
+
+class PreviewStep(BaseModel):
+    """One step's tier, or why it can't run (then it has no tier)."""
+
+    index: int
+    operation: str
+    tier: Tier | None = None
+    refusal: dict[str, Any] | None = None
+
+
+class TierPreviewResult(BaseModel):
+    steps: list[PreviewStep]
 
 
 class Confirmation(BaseModel):
@@ -172,6 +184,53 @@ def run(
     return OperationResult(operation=name, tier=resolved.tier, output=output_json)
 
 
+def preview_tiers(
+    conn: sqlite3.Connection,
+    registry: Registry,
+    session: Session,
+    body: Any,
+) -> TierPreviewResult:
+    """Tier each step of a proposed Plan in order, each counting the earlier ones toward
+    the Daily Transfer Total, without changing anything. Green itself, and audited as one
+    entry.
+
+    A step that can't run gets its own refusal and adds nothing to the total; the rest are
+    still tiered.
+    """
+    now = clock.now(conn)
+    with _audited(conn, session, now, Event.TIER_PREVIEW, _Call(None, body, Tier.GREEN)):
+        request = _parse(PlanRequest, body)
+    calls: list[_Call] = []
+    steps: list[PreviewStep] = []
+    planned_total = Decimal("0.00")
+    # Tier rules must not write; the savepoint makes sure a preview never does.
+    conn.execute("SAVEPOINT preview")
+    try:
+        for index, planned in enumerate(request.operations):
+            call = _Call(planned.operation, planned.input)
+            calls.append(call)
+            step = PreviewStep(index=index, operation=planned.operation)
+            try:
+                resolved = _resolve(call, conn, registry, session, now, planned_total)
+            except Refusal as refusal:
+                step.refusal = refusal.body()
+            else:
+                step.tier = resolved.tier
+                planned_total += resolved.daily_transfer_amount()
+            steps.append(step)
+    finally:
+        conn.execute("ROLLBACK TO preview")
+        conn.execute("RELEASE preview")
+    audited = _Call(
+        None,
+        {"operations": [{"operation": c.name, "input": c.raw_input} for c in calls]},
+        Tier.GREEN,
+    )
+    detail = {"steps": [step.model_dump(mode="json", exclude_none=True) for step in steps]}
+    _audit(conn, session, now, Event.TIER_PREVIEW, audited, None, detail)
+    return TierPreviewResult(steps=steps)
+
+
 def issue_confirmations(
     conn: sqlite3.Connection,
     registry: Registry,
@@ -185,7 +244,7 @@ def issue_confirmations(
     """
     now = clock.now(conn)
     with _audited(conn, session, now, Event.CONFIRMATION_ISSUED, _Call(None, body)):
-        request = _parse(ConfirmationRequest, body)
+        request = _parse(PlanRequest, body)
     issued: list[tuple[_Call, Confirmation]] = []
     planned_total = Decimal("0.00")
     for index, planned in enumerate(request.operations):

@@ -156,3 +156,15 @@ def verify(
     assert response.status_code == 200, response.text
     token: str = response.json()["verification_token"]
     return token
+
+
+def preview_tiers(
+    client: TestClient, headers: dict[str, str], *operations: tuple[str, Any]
+) -> httpx.Response:
+    """Ask the Bank for the tier of each step of a proposed Plan, in order."""
+    response: httpx.Response = client.post(
+        "/tier-preview",
+        headers=headers,
+        json={"operations": [{"operation": name, "input": input} for name, input in operations]},
+    )
+    return response
