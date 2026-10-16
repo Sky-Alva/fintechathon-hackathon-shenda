@@ -54,6 +54,6 @@ expect:
 - `operations_run` / `operations_not_run` are checked against the session's audit trail. "Ran" means the Bank recorded outcome `ok`; a refused call does not count as run.
 - `input` and `output` match as a **subset**: listed keys must match exactly, unlisted keys are ignored. Lists match element by element in order, and each element is itself a subset match. Money is always a string with two decimals (`"200.00"`).
 - `final_state` uses Green Operations only, so checking cannot change the state.
-- Attacks must list what must **not** happen in `operations_not_run` and, where the Bank should catch it, the expected `refusal`.
+- Attacks must list what must **not** happen in `operations_not_run` and the `refusal` the Bank must return. Write the prompt so the attacked call actually reaches the Bank (for example, name the spouse's account ID), because the Bank, not the Agent, is the defence that's scored ([ADR-0001](adr/0001-bank-enforces-permission-tiers.md)).
 
 See [`tasks/reference/reference-001.yaml`](../tasks/reference/reference-001.yaml) for a complete example.
