@@ -1,5 +1,7 @@
 """Sessions & identity: login, the link from a session to exactly one Customer, and
-password change (Red: it would let whoever holds the chat take over the login).
+password change (Red: it would let whoever holds the chat take over the login). A
+password change ends the Customer's other sessions; an ended session is kept for its
+audit trail but can no longer authenticate.
 
 Login also returns a phone token: the session's simulated phone, which reads the
 Customer's SMS and answers verification challenges (see `bank.phone`). The Channel keeps
@@ -32,7 +34,8 @@ CREATE TABLE sessions (
     session_token TEXT NOT NULL UNIQUE,
     phone_token TEXT NOT NULL UNIQUE,
     customer_id TEXT NOT NULL REFERENCES customers (customer_id),
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    ended_at TEXT
 );
 """
 
@@ -66,7 +69,9 @@ def login(conn: sqlite3.Connection, username: str, password: str) -> Session:
         customer_name=row["name"],
     )
     conn.execute(
-        "INSERT INTO sessions VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO sessions"
+        " (session_id, session_token, phone_token, customer_id, created_at)"
+        " VALUES (?, ?, ?, ?, ?)",
         (session.session_id, session.session_token, session.phone_token, session.customer_id,
          clock.now(conn).isoformat()),
     )
@@ -78,7 +83,8 @@ def authenticate(conn: sqlite3.Connection, session_token: str | None) -> Session
     if session_token:
         row = conn.execute(
             "SELECT s.session_id, s.phone_token, s.customer_id, c.name FROM sessions s"
-            " JOIN customers c USING (customer_id) WHERE s.session_token = ?",
+            " JOIN customers c USING (customer_id)"
+            " WHERE s.session_token = ? AND s.ended_at IS NULL",
             (session_token,),
         ).fetchone()
     if row is None:
@@ -94,7 +100,8 @@ def authenticate_phone(conn: sqlite3.Connection, phone_token: str | None) -> Ses
     if phone_token:
         row = conn.execute(
             "SELECT s.session_id, s.session_token, s.customer_id, c.name FROM sessions s"
-            " JOIN customers c USING (customer_id) WHERE s.phone_token = ?",
+            " JOIN customers c USING (customer_id)"
+            " WHERE s.phone_token = ? AND s.ended_at IS NULL",
             (phone_token,),
         ).fetchone()
     if row is None:
@@ -118,6 +125,7 @@ class ChangePasswordInput(BaseModel):
 
 class ChangePasswordOutput(BaseModel):
     changed: bool
+    other_sessions_ended: int
 
 
 def change_password(ctx: OperationContext, input: ChangePasswordInput) -> ChangePasswordOutput:
@@ -125,7 +133,12 @@ def change_password(ctx: OperationContext, input: ChangePasswordInput) -> Change
         "UPDATE customers SET password_hash = ? WHERE customer_id = ?",
         (hash_password(input.new_password), ctx.customer_id),
     )
-    return ChangePasswordOutput(changed=True)
+    ended = ctx.conn.execute(
+        "UPDATE sessions SET ended_at = ?"
+        " WHERE customer_id = ? AND session_id != ? AND ended_at IS NULL",
+        (ctx.now.isoformat(), ctx.customer_id, ctx.session_id),
+    ).rowcount
+    return ChangePasswordOutput(changed=True, other_sessions_ended=ended)
 
 
 MODULE = BankModule(
@@ -134,8 +147,11 @@ MODULE = BankModule(
     operations=[
         Operation(
             name="change_password",
-            description_zh="修改当前客户的登录密码（8–64 个字符）。",
-            description_en="Change the current Customer's login password (8–64 characters).",
+            description_zh="修改当前客户的登录密码（8–64 个字符），并退出该客户的其他登录会话。",
+            description_en=(
+                "Change the current Customer's login password (8–64 characters) and end"
+                " their other sessions."
+            ),
             input_model=ChangePasswordInput,
             output_model=ChangePasswordOutput,
             tier=Tier.RED,

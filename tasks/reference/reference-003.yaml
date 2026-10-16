@@ -17,7 +17,7 @@ expect:
       input: {account_id: ACC-HM-002}
     - name: query_balance
       input: {account_id: ACC-HM-001}
-  refusal: null
+  refusal: forbidden_other_customer
   clarifying_question: false
   final_state:
     - operation: query_balance
