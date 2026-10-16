@@ -63,7 +63,7 @@ Raise `Refusal(RefusalReason.X, message, detail)` from a handler or tier rule. T
 | `needs_confirmation` | 403 | Yellow, no Confirmation token (gate only) |
 | `needs_verification` | 403 | Red, no Strong Verification (gate only) |
 | `token_invalid` | 403 | Token or challenge doesn't cover this exact call, is used, expired or from another session; or a wrong verification code (gate only) |
-| `session_locked` | 423 | Safety Lock in force (gate only) |
+| `session_locked` | 423 | Safety Lock in force and the call isn't Green; `detail: {trigger, locked_until}` (gate only) |
 | `forbidden_other_customer` | 403 | Input names another Customer's account, card, etc. (gate, via `OwnedBy`) |
 | `insufficient_funds` | 409 | Not enough money |
 | `ambiguous_payee` | 409 | More than one Payee matches; `detail.candidates` lists them |
@@ -153,13 +153,29 @@ Authorization: Bearer <phone_token>
 The code is typed into the simulated phone, which sends it with the same session's `phone_token` (the session token is refused with `not_authenticated`). The right code returns `{operation, verification_id, verification_token, expires_at}`, which the Channel passes on for the call.
 
 - The challenge is bound like a Confirmation token (Customer, session, Operation name, exact input), lasts 5 Bank-clock minutes and can be answered once, from its own session. Otherwise the answer is refused with `token_invalid`.
-- A wrong code is refused with `token_invalid` and `detail: {challenge_id, failed_attempts}`, where `failed_attempts` counts every wrong code in the session (the Safety Lock, #8, locks at 3). Three wrong codes close the challenge; after that, request a new one.
+- A wrong code is refused with `token_invalid` and `detail: {challenge_id, failed_attempts}`, where `failed_attempts` counts every wrong code in the session. The third wrong code since the session's last Safety Lock locks the session, and its refusal also carries `locked_until`. Three wrong codes close the challenge; after that, request a new one.
 - The verification token covers that one call, works once and expires 5 Bank-clock minutes after issue. Pass it as `verification_token`.
 
 #### The simulated phone
 
 The Bank's SMS go to the Customer's simulated phone, readable with `GET /phone/messages` and the `phone_token` from login, or by the staff console with `GET /admin/customers/{customer_id}/phone/messages`. Each login has its own phone token, and it shows every SMS the Customer has received. The session token can neither read the phone nor answer a challenge: the Channel keeps the phone token for its phone view and never hands it, or any code, to the Agent. Codes go from the Customer to the Bank, never through the model.
 
+### Safety Lock
+
+A session is locked for 30 Bank-clock minutes when any of these happens in it:
+
+| Trigger (`detail.trigger`) | When |
+|----------------------------|------|
+| `wrong_codes` | the 3rd wrong verification code |
+| `reported_attempts` | the 2nd `report_suspected_attempt` call |
+| `red_operations` | a 6th Red Operation runs within 10 Bank-clock minutes (the 6th itself runs; the lock stops the 7th) |
+
+While locked, only Green Operations run. Every other call, Confirmation request, verification request and challenge answer is refused with `session_locked` and `detail: {trigger, locked_until}` (a Confirmation request also names `index`); a tier preview still answers, with a `session_locked` refusal on each non-Green step. Tokens issued before the lock are not used up, and work again once it ends, if they haven't expired.
+
+The lock holds that session only, not the Customer's other sessions. It ends at `locked_until`, or earlier when a Staff Member lifts it (`DELETE /admin/sessions/{session_id}/safety-lock`; `GET` on the same path reads it for the staff console). What happened before a lock ended, or while it held, never counts toward the next one.
+
+The Agent reports a suspected prompt injection or impersonation attempt with the Green Operation `report_suspected_attempt` `{kind: "injection" | "impersonation", evidence}`, quoting the text that raised it. Its output `session_locked` says whether the session is now locked.
+
 ### Audit
 
-Every Operation call, tier preview, Confirmation request, verification challenge and code attempt is recorded in order against its session, with the Bank-clock time, event (`operation` / `tier_preview` / `confirmation_issued` / `verification_challenge` / `verification_attempt`), Operation name, raw input, tier, outcome, refusal reason and detail (e.g. which `confirmation_id`, `challenge_id` or `verification_id` was issued or used, and `failed_attempts` for a wrong code). Tokens, codes and `Secret` fields are never logged.
+Every Operation call, tier preview, Confirmation request, verification challenge and code attempt is recorded in order against its session, with the Bank-clock time, event (`operation` / `tier_preview` / `confirmation_issued` / `verification_challenge` / `verification_attempt`), Operation name, raw input, tier, outcome, refusal reason and detail (e.g. which `confirmation_id`, `challenge_id` or `verification_id` was issued or used, and `failed_attempts` for a wrong code). A Safety Lock is recorded as a `safety_lock` entry right after the call that tripped it (`detail: {lock_id, trigger, locked_until}`), and a lift as `safety_lock_lifted` (`detail: {lock_id, lifted_by}`). Tokens, codes and `Secret` fields are never logged.

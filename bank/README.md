@@ -29,6 +29,8 @@ Demo logins: `liming` / `demo1234` and `hanmei` / `demo1234`. Admin calls need t
 | `PUT /admin/clock` `{now}` | admin | Set the Bank clock. |
 | `POST /admin/clock/advance` `{minutes}` | admin | Move the Bank clock forward. |
 | `GET /admin/sessions/{session_id}/audit` | admin | One session's audit trail, in order. |
+| `GET /admin/sessions/{session_id}/safety-lock` | admin | Whether the session is under a Safety Lock, why, and until when. |
+| `DELETE /admin/sessions/{session_id}/safety-lock` | admin | A Staff Member lifts the session's Safety Lock (audited). |
 | `GET /admin/customers/{customer_id}/phone/messages` | admin | A Customer's simulated phone, for the staff console. |
 
 A successful call returns `{operation, tier, output}`. Every refusal returns `{"refusal": {"reason", "message", "detail"}}`, where `reason` is one of the values of `RefusalReason` in `src/bank/registry.py`.
@@ -37,7 +39,7 @@ The full contract for declaring and calling Operations, including Confirmation a
 
 ## Adding a Scenario module
 
-A module is a `BankModule` (`src/bank/registry.py`): its SQL schema, its seed function and its `Operation`s. Add it to `MODULES` in `src/bank/app.py`. Each Operation declares its reversibility: `ReadOnly()` for queries, `Irreversible()`, or `ReversedBy(operation, build_input)`. `src/bank/customers.py` (Green, fixed tier) and `src/bank/transfers.py` (tier rule) are the worked examples. Type IDs of things a Customer owns with `OwnedBy` (like `customers.AccountId`) so the gate refuses another Customer's with `forbidden_other_customer`. Handlers hold business logic only; tiers, approvals, session limits and audit are the policy gate's job (`src/bank/policy.py`). Money is stored as integer cents and returned as a `Decimal` (a string with two decimals in JSON); use `bank.money` (`Amount`, `to_cents`, `from_cents`). Use `ctx.now`, never the system clock.
+A module is a `BankModule` (`src/bank/registry.py`): its SQL schema, its seed function and its `Operation`s. Add it to `MODULES` in `src/bank/app.py`. Each Operation declares its reversibility: `ReadOnly()` for queries, `Irreversible()`, or `ReversedBy(operation, build_input)`. `src/bank/customers.py` (Green, fixed tier) and `src/bank/transfers.py` (tier rule) are the worked examples. Type IDs of things a Customer owns with `OwnedBy` (like `customers.AccountId`) so the gate refuses another Customer's with `forbidden_other_customer`. Handlers hold business logic only; tiers, approvals, session limits, the Safety Lock and audit are the policy gate's job (`src/bank/policy.py`). Money is stored as integer cents and returned as a `Decimal` (a string with two decimals in JSON); use `bank.money` (`Amount`, `to_cents`, `from_cents`). Use `ctx.now`, never the system clock.
 
 ## Tests
 
