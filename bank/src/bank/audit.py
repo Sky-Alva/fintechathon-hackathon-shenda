@@ -1,5 +1,5 @@
 """The audit log: every Operation call, tier preview, Confirmation request, verification
-challenge and code attempt, its tier decision and outcome, per session, in order."""
+challenge and code attempt, Safety Lock and lift, its tier decision and outcome, per session, in order."""
 
 import json
 import sqlite3
@@ -31,6 +31,8 @@ class Event(StrEnum):
     CONFIRMATION_ISSUED = "confirmation_issued"
     VERIFICATION_CHALLENGE = "verification_challenge"
     VERIFICATION_ATTEMPT = "verification_attempt"
+    SAFETY_LOCK = "safety_lock"
+    SAFETY_LOCK_LIFTED = "safety_lock_lifted"
 
 
 def record(

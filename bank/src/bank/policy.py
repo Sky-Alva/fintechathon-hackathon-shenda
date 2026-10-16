@@ -2,8 +2,9 @@
 step passes through here.
 
 Scenario handlers hold only business logic. The gate validates the input, resolves the
-tier, demands the approval that tier needs, runs the handler, keeps the Daily Transfer
-Total, and writes the audit-log entry whether the call ran or was refused.
+tier, refuses anything but Green under a Safety Lock, demands the approval that tier
+needs, runs the handler, keeps the Daily Transfer Total, counts what can trip a Safety
+Lock, and writes the audit-log entry whether the call ran or was refused.
 """
 
 import sqlite3
@@ -14,7 +15,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from bank import approvals, audit, clock, limits, verification
+from bank import approvals, audit, clock, limits, safety_lock, verification
 from bank.approvals import Binding, TokenKind
 from bank.audit import Event
 from bank.registry import (
@@ -29,6 +30,7 @@ from bank.registry import (
     Tier,
     markers,
 )
+from bank.safety_lock import Signal
 from bank.sessions import Session
 
 MAX_PLAN_STEPS = 20  # per tier preview or Confirmation request
@@ -195,7 +197,10 @@ def run(
         output = resolved.operation.handler(resolved.ctx, resolved.validated)
         if resolved.operation.daily_transfer_amount:
             limits.record(conn, session.customer_id, name, resolved.daily_transfer_amount(), now)
+        if resolved.tier is Tier.RED:
+            safety_lock.record(conn, session.session_id, Signal.RED_OPERATION, now)
     _audit(conn, session, now, Event.OPERATION, call, None, detail)
+    _trip_safety_lock(conn, session, now)
     output_json = output.model_dump(mode="json")
     return OperationResult(operation=name, tier=resolved.tier, output=output_json)
 
@@ -345,7 +350,8 @@ def answer_challenge(
     right code earns one verification token for exactly the challenged call. Always
     audited, never the code.
 
-    A wrong code is counted outside the audited block, so the count survives the refusal.
+    A wrong code is counted outside the audited block, so the count survives the refusal,
+    and may trip the Safety Lock; a locked session can't answer at all.
     """
     now = clock.now(conn)
     # Only Red Operations get challenges.
@@ -354,17 +360,23 @@ def answer_challenge(
         request = _parse(CodeRequest, body)
         challenge = verification.find_open(conn, challenge_id, session.session_id, now)
         call.name = challenge.binding.operation
+        _check_safety_lock(conn, session, now)
     correct = verification.check_code(conn, challenge, request.code)
+    if not correct:
+        safety_lock.record(conn, session.session_id, Signal.WRONG_CODE, now)
+        detail = {
+            "challenge_id": challenge_id,
+            "failed_attempts": verification.failed_attempts(conn, session.session_id),
+        }
+        wrong = Refusal(
+            RefusalReason.TOKEN_INVALID, "Wrong verification code", detail, audit_detail=detail
+        )
+        _audit(conn, session, now, Event.VERIFICATION_ATTEMPT, call, wrong.reason, detail)
+        lock = _trip_safety_lock(conn, session, now)
+        if lock is not None:
+            wrong.detail = {**detail, "locked_until": lock.expires_at.isoformat()}
+        raise wrong
     with _audited(conn, session, now, Event.VERIFICATION_ATTEMPT, call):
-        if not correct:
-            detail = {
-                "challenge_id": challenge_id,
-                "failed_attempts": verification.failed_attempts(conn, session.session_id),
-            }
-            raise Refusal(
-                RefusalReason.TOKEN_INVALID, "Wrong verification code", detail,
-                audit_detail=detail,
-            )
         verification.mark_answered(conn, challenge, now)
         token = approvals.issue(conn, TokenKind.VERIFICATION, challenge.binding, now)
     detail = {
@@ -410,7 +422,64 @@ def _resolve(
     if not isinstance(operation.tier, Tier):
         call.tier = operation.tier.resolve(validated, ctx)
     assert call.tier is not None
+    if call.tier is not Tier.GREEN:
+        _check_safety_lock(conn, session, now)
     return _Resolved(operation, validated, ctx, call.tier)
+
+
+def _check_safety_lock(conn: sqlite3.Connection, session: Session, now: datetime) -> None:
+    """Refuse with `session_locked` while a Safety Lock holds the session."""
+    lock = safety_lock.active(conn, session.session_id, now)
+    if lock is not None:
+        detail = {"trigger": lock.trigger.value, "locked_until": lock.expires_at.isoformat()}
+        raise Refusal(
+            RefusalReason.SESSION_LOCKED,
+            "This session is under a Safety Lock: only Green Operations run until"
+            f" {lock.expires_at.isoformat()} or until a Staff Member lifts it",
+            detail,
+            audit_detail=detail,
+        )
+
+
+def _trip_safety_lock(
+    conn: sqlite3.Connection, session: Session, now: datetime
+) -> safety_lock.Lock | None:
+    """Lock the session if what it has done so far reaches a trigger; audited."""
+    lock = safety_lock.trip_if_due(conn, session.session_id, now)
+    if lock is not None:
+        detail = {
+            "lock_id": lock.lock_id,
+            "trigger": lock.trigger.value,
+            "locked_until": lock.expires_at.isoformat(),
+        }
+        _audit(conn, session, now, Event.SAFETY_LOCK, _Call(None, {}), None, detail)
+    return lock
+
+
+def lift_safety_lock(
+    conn: sqlite3.Connection, session_id: str, by: str
+) -> safety_lock.Lock:
+    """A Staff Member ends the session's Safety Lock now. Audited in the session's trail."""
+    now = clock.now(conn)
+    lock = safety_lock.lift(conn, session_id, now, by)
+    if lock is None:
+        raise Refusal(
+            RefusalReason.NOT_FOUND,
+            "This session is not under a Safety Lock",
+            {"session_id": session_id},
+        )
+    audit.record(
+        conn,
+        session_id=session_id,
+        at=now,
+        event=Event.SAFETY_LOCK_LIFTED,
+        operation=None,
+        input={},
+        tier=None,
+        reason=None,
+        detail={"lock_id": lock.lock_id, "lifted_by": by},
+    )
+    return lock
 
 
 def _secret_fields(operation: Operation) -> frozenset[str]:

@@ -4,7 +4,7 @@ Customer-facing: log in, read the Bank clock, read the Operation catalogue, call
 Operation, preview a Plan's tiers, get Confirmation tokens, pass Strong Verification,
 read the simulated phone.
 Admin (X-Admin-Key): reset, set or advance the Bank clock, read any session's audit
-trail, read any Customer's simulated phone.
+trail, read or lift a session's Safety Lock, read any Customer's simulated phone.
 """
 
 import os
@@ -30,6 +30,7 @@ from bank import (
     limits,
     phone,
     policy,
+    safety_lock,
     sessions,
     transfers,
     verification,
@@ -46,6 +47,7 @@ MODULES: list[BankModule] = [
     sessions.MODULE,
     approvals.MODULE,
     verification.MODULE,
+    safety_lock.MODULE,
     audit.MODULE,
 ]
 
@@ -241,6 +243,36 @@ def create_app(db_path: Path, admin_key: str) -> FastAPI:
                     RefusalReason.NOT_FOUND, "No such session", {"session_id": session_id}
                 )
             return {"session_id": session_id, "entries": audit.trail(conn, session_id)}
+
+    @admin.get("/sessions/{session_id}/safety-lock")
+    def read_safety_lock(session_id: str) -> dict[str, Any]:
+        with db.transaction(db_path) as conn:
+            if not sessions.exists(conn, session_id):
+                raise Refusal(
+                    RefusalReason.NOT_FOUND, "No such session", {"session_id": session_id}
+                )
+            lock = safety_lock.active(conn, session_id, clock.now(conn))
+            if lock is None:
+                return {"session_id": session_id, "locked": False}
+            return {
+                "session_id": session_id,
+                "locked": True,
+                "trigger": lock.trigger.value,
+                "locked_at": lock.locked_at.isoformat(),
+                "locked_until": lock.expires_at.isoformat(),
+            }
+
+    @admin.delete("/sessions/{session_id}/safety-lock")
+    def lift_safety_lock(session_id: str) -> dict[str, Any]:
+        with db.transaction(db_path) as conn:
+            lock = policy.lift_safety_lock(conn, session_id, by="staff")
+            assert lock.lifted_at is not None
+            return {
+                "session_id": session_id,
+                "lock_id": lock.lock_id,
+                "trigger": lock.trigger.value,
+                "lifted_at": lock.lifted_at.isoformat(),
+            }
 
     @admin.get("/customers/{customer_id}/phone/messages")
     def customer_phone(customer_id: str) -> dict[str, Any]:
