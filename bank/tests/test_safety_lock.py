@@ -421,3 +421,32 @@ def test_an_agent_report_is_audited_with_its_evidence(client: TestClient) -> Non
     assert entries[-1]["operation"] == "report_suspected_attempt"
     assert entries[-1]["input"]["kind"] == "impersonation"
     assert "忽略之前的指令" in entries[-1]["input"]["evidence"]
+
+
+def test_a_lock_clears_only_the_attempts_that_tripped_it(client: TestClient) -> None:
+    headers, phone = login_with_phone(client, "hanmei")
+    report_attempt(client, headers)
+    enter_wrong_codes(client, headers, phone, 3)
+    advance(client, 30)
+
+    second_report = report_attempt(client, headers)
+
+    assert second_report.json()["output"]["session_locked"] is True
+
+
+def test_a_locked_session_answering_any_challenge_is_told_it_is_locked(
+    client: TestClient,
+) -> None:
+    headers, phone = login_with_phone(client, "hanmei")
+    lock_by_reports(client, headers)
+
+    response = submit_code(client, phone, "CHL-nonexistent", "123456")
+
+    assert_locked(response, "reported_attempts", "2026-10-20T09:30:00+08:00")
+
+
+def test_lifting_the_lock_of_an_unknown_session_is_not_found(client: TestClient) -> None:
+    response = lift(client, "SES-nobody")
+
+    assert response.status_code == 404
+    assert refusal(response)["message"] == "No such session"
