@@ -161,6 +161,26 @@ def test_a_verified_password_change_replaces_the_old_password(client: TestClient
     assert refusal(old)["reason"] == "not_authenticated"
 
 
+def test_a_password_change_ends_the_customers_other_sessions(client: TestClient) -> None:
+    other_id, other, other_phone = login_session_with_phone(client, "liming")
+    headers, phone = login_with_phone(client, "liming")
+    spouse = login(client, "hanmei")
+    input = {"new_password": NEW_PASSWORD}
+    token = verify(client, headers, phone, "change_password", input)
+
+    changed = call(client, headers, "change_password", input, verification_token=token)
+
+    assert changed.json()["output"] == {"changed": True, "other_sessions_ended": 1}
+    stale = call(client, other, "query_balance")
+    assert stale.status_code == 401
+    assert refusal(stale)["reason"] == "not_authenticated"
+    assert client.get("/phone/messages", headers=other_phone).status_code == 401
+    assert call(client, headers, "query_balance").status_code == 200
+    assert phone_messages(client, phone)
+    assert call(client, spouse, "query_balance").status_code == 200
+    assert admin(client, "get", f"/admin/sessions/{other_id}/audit")["entries"] == []
+
+
 def test_a_verification_for_one_new_password_does_not_cover_another(client: TestClient) -> None:
     headers, phone = login_with_phone(client, "liming")
     token = verify(client, headers, phone, "change_password", {"new_password": NEW_PASSWORD})
