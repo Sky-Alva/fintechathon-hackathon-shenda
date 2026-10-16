@@ -265,7 +265,11 @@ def create_app(db_path: Path, admin_key: str) -> FastAPI:
     @admin.delete("/sessions/{session_id}/safety-lock")
     def lift_safety_lock(session_id: str) -> dict[str, Any]:
         with db.transaction(db_path) as conn:
-            lock = policy.lift_safety_lock(conn, session_id, by="staff")
+            if not sessions.exists(conn, session_id):
+                raise Refusal(
+                    RefusalReason.NOT_FOUND, "No such session", {"session_id": session_id}
+                )
+            lock = policy.lift_safety_lock(conn, session_id)
             assert lock.lifted_at is not None
             return {
                 "session_id": session_id,

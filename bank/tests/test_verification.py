@@ -239,13 +239,15 @@ def test_a_wrong_code_is_refused_and_counted(client: TestClient) -> None:
 
 
 def test_three_wrong_codes_close_the_challenge(client: TestClient) -> None:
-    headers, phone = login_with_phone(client, "hanmei")
+    session_id, headers, phone = login_session_with_phone(client, "hanmei")
     challenge_id = request_verification(
         client, headers, "transfer", transfer(HUSBAND, "1200.00")
     ).json()["challenge_id"]
     code = latest_code(client, phone)
     for _ in range(3):
         submit_code(client, phone, challenge_id, wrong_code(code))
+    # Three wrong codes also lock the session; the challenge stays closed after a lift.
+    admin(client, "delete", f"/admin/sessions/{session_id}/safety-lock")
 
     response = submit_code(client, phone, challenge_id, code)
 

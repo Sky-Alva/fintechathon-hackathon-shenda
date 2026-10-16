@@ -34,6 +34,7 @@ from bank.safety_lock import Signal
 from bank.sessions import Session
 
 MAX_PLAN_STEPS = 20  # per tier preview or Confirmation request
+STAFF = "staff"  # who lifts a Safety Lock: any holder of the admin key, the staff console
 
 # What a call of each tier needs before it runs, and the refusal when it is missing.
 REQUIRED_APPROVAL = {
@@ -358,9 +359,9 @@ def answer_challenge(
     call = _Call(None, {"challenge_id": challenge_id}, Tier.RED)
     with _audited(conn, session, now, Event.VERIFICATION_ATTEMPT, call):
         request = _parse(CodeRequest, body)
+        _check_safety_lock(conn, session, now)
         challenge = verification.find_open(conn, challenge_id, session.session_id, now)
         call.name = challenge.binding.operation
-        _check_safety_lock(conn, session, now)
     correct = verification.check_code(conn, challenge, request.code)
     if not correct:
         safety_lock.record(conn, session.session_id, Signal.WRONG_CODE, now)
@@ -456,12 +457,10 @@ def _trip_safety_lock(
     return lock
 
 
-def lift_safety_lock(
-    conn: sqlite3.Connection, session_id: str, by: str
-) -> safety_lock.Lock:
+def lift_safety_lock(conn: sqlite3.Connection, session_id: str) -> safety_lock.Lock:
     """A Staff Member ends the session's Safety Lock now. Audited in the session's trail."""
     now = clock.now(conn)
-    lock = safety_lock.lift(conn, session_id, now, by)
+    lock = safety_lock.lift(conn, session_id, now, STAFF)
     if lock is None:
         raise Refusal(
             RefusalReason.NOT_FOUND,
@@ -477,7 +476,7 @@ def lift_safety_lock(
         input={},
         tier=None,
         reason=None,
-        detail={"lock_id": lock.lock_id, "lifted_by": by},
+        detail={"lock_id": lock.lock_id, "lifted_by": STAFF},
     )
     return lock
 

@@ -4,7 +4,8 @@ A session is locked by any of: 3 wrong verification codes; 2 injection or impers
 attempts reported by the Agent; more than 5 Red Operations within 10 Bank-clock minutes.
 The policy gate records each such signal and trips the lock; this module never refuses
 anything itself. A lock ends after 30 Bank-clock minutes or when a Staff Member lifts it.
-Signals from before a lock, or while it holds, never count toward the next one.
+Signals while a lock holds are not counted, and a lock clears the signals of the trigger
+that tripped it; the others still count toward the next lock.
 """
 
 import dataclasses
@@ -35,12 +36,19 @@ class Trigger(StrEnum):
     RED_OPERATIONS = "red_operations"
 
 
-# How many signals of each kind lock the session, and over what window (None: since the
-# previous lock ended).
-THRESHOLDS: dict[Trigger, tuple[Signal, int, timedelta | None]] = {
-    Trigger.WRONG_CODES: (Signal.WRONG_CODE, 3, None),
-    Trigger.REPORTED_ATTEMPTS: (Signal.REPORTED_ATTEMPT, 2, None),
-    Trigger.RED_OPERATIONS: (Signal.RED_OPERATION, 6, RED_OPERATION_WINDOW),
+@dataclass(frozen=True)
+class Threshold:
+    """`count` signals of one kind lock the session, within `window` if it has one."""
+
+    signal: Signal
+    count: int
+    window: timedelta | None = None
+
+
+THRESHOLDS = {
+    Trigger.WRONG_CODES: Threshold(Signal.WRONG_CODE, 3),
+    Trigger.REPORTED_ATTEMPTS: Threshold(Signal.REPORTED_ATTEMPT, 2),
+    Trigger.RED_OPERATIONS: Threshold(Signal.RED_OPERATION, 6, RED_OPERATION_WINDOW),
 }
 
 SCHEMA = """
@@ -54,7 +62,7 @@ CREATE TABLE safety_locks (
     lock_id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL,
     trigger TEXT NOT NULL,
-    last_signal_id INTEGER NOT NULL,  -- signals up to this one led to this lock
+    last_signal_id INTEGER NOT NULL,  -- clears its trigger's signals up to this one
     locked_at TEXT NOT NULL,
     expires_at TEXT NOT NULL,
     lifted_at TEXT,
@@ -112,20 +120,23 @@ def record(conn: sqlite3.Connection, session_id: str, signal: Signal, now: datet
 
 def due(conn: sqlite3.Connection, session_id: str, now: datetime) -> Trigger | None:
     """The trigger the session's signals have reached, if it is not already locked."""
-    latest = _latest(conn, session_id)
-    if latest and now < latest.ended_at():
+    if active(conn, session_id, now):
         return None
-    after = latest.last_signal_id if latest else 0
-    for trigger, (signal, count, window) in THRESHOLDS.items():
+    for trigger, threshold in THRESHOLDS.items():
+        cleared = conn.execute(
+            "SELECT COALESCE(MAX(last_signal_id), 0) FROM safety_locks"
+            " WHERE session_id = ? AND trigger = ?",
+            (session_id, trigger.value),
+        ).fetchone()[0]
         query = (
             "SELECT COUNT(*) FROM lock_signals"
             " WHERE session_id = ? AND signal = ? AND signal_id > ?"
         )
-        params: list[str | int] = [session_id, signal.value, after]
-        if window is not None:  # "within 10 minutes": the window's first instant is out
+        params: list[str | int] = [session_id, threshold.signal.value, cleared]
+        if threshold.window is not None:  # "within 10 minutes": its first instant is out
             query += " AND at > ?"
-            params.append((now - window).isoformat())
-        if conn.execute(query, params).fetchone()[0] >= count:
+            params.append((now - threshold.window).isoformat())
+        if conn.execute(query, params).fetchone()[0] >= threshold.count:
             return trigger
     return None
 
@@ -177,7 +188,7 @@ def report_attempt(ctx: OperationContext, input: ReportAttemptInput) -> ReportAt
     record(ctx.conn, ctx.session_id, Signal.REPORTED_ATTEMPT, ctx.now)
     # When due, the gate trips the lock right after this call, in the same transaction.
     locked = active(ctx.conn, ctx.session_id, ctx.now) or due(ctx.conn, ctx.session_id, ctx.now)
-    return ReportAttemptOutput(session_locked=locked is not None)
+    return ReportAttemptOutput(session_locked=bool(locked))
 
 
 MODULE = BankModule(

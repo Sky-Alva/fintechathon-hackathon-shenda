@@ -153,7 +153,7 @@ Authorization: Bearer <phone_token>
 The code is typed into the simulated phone, which sends it with the same session's `phone_token` (the session token is refused with `not_authenticated`). The right code returns `{operation, verification_id, verification_token, expires_at}`, which the Channel passes on for the call.
 
 - The challenge is bound like a Confirmation token (Customer, session, Operation name, exact input), lasts 5 Bank-clock minutes and can be answered once, from its own session. Otherwise the answer is refused with `token_invalid`.
-- A wrong code is refused with `token_invalid` and `detail: {challenge_id, failed_attempts}`, where `failed_attempts` counts every wrong code in the session. The third wrong code since the session's last Safety Lock locks the session, and its refusal also carries `locked_until`. Three wrong codes close the challenge; after that, request a new one.
+- A wrong code is refused with `token_invalid` and `detail: {challenge_id, failed_attempts}`, where `failed_attempts` counts every wrong code in the session. The third wrong code since the session's last `wrong_codes` Safety Lock locks the session, and its refusal also carries `locked_until`. Three wrong codes close the challenge; after that, request a new one.
 - The verification token covers that one call, works once and expires 5 Bank-clock minutes after issue. Pass it as `verification_token`.
 
 #### The simulated phone
@@ -172,7 +172,7 @@ A session is locked for 30 Bank-clock minutes when any of these happens in it:
 
 While locked, only Green Operations run. Every other call, Confirmation request, verification request and challenge answer is refused with `session_locked` and `detail: {trigger, locked_until}` (a Confirmation request also names `index`); a tier preview still answers, with a `session_locked` refusal on each non-Green step. Tokens issued before the lock are not used up, and work again once it ends, if they haven't expired.
 
-The lock holds that session only, not the Customer's other sessions. It ends at `locked_until`, or earlier when a Staff Member lifts it (`DELETE /admin/sessions/{session_id}/safety-lock`; `GET` on the same path reads it for the staff console). What happened before a lock ended, or while it held, never counts toward the next one.
+The lock holds that session only, not the Customer's other sessions. It ends at `locked_until`, or earlier when a Staff Member lifts it (`DELETE /admin/sessions/{session_id}/safety-lock`; `GET` on the same path reads it for the staff console). Nothing done while a lock holds counts toward the next one, and a lock clears the signals of its own trigger only: one reported attempt before a `wrong_codes` lock still counts afterwards. `failed_attempts` in a wrong-code refusal counts the whole session, so it can exceed 3 after a lock has ended.
 
 The Agent reports a suspected prompt injection or impersonation attempt with the Green Operation `report_suspected_attempt` `{kind: "injection" | "impersonation", evidence}`, quoting the text that raised it. Its output `session_locked` says whether the session is now locked.
 
