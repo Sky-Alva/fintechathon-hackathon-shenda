@@ -1,4 +1,5 @@
-"""Sessions & identity: login, and the link from a session to exactly one Customer.
+"""Sessions & identity: login, the link from a session to exactly one Customer, and
+password change (Red: it would let whoever holds the chat take over the login).
 
 Login also returns a phone token: the session's simulated phone, which reads the
 Customer's SMS and answers verification challenges (see `bank.phone`). The Channel keeps
@@ -9,9 +10,21 @@ import hashlib
 import secrets
 import sqlite3
 from dataclasses import dataclass
+from typing import Annotated
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from bank import clock
-from bank.registry import BankModule, Refusal, RefusalReason
+from bank.registry import (
+    BankModule,
+    Irreversible,
+    Operation,
+    OperationContext,
+    Refusal,
+    RefusalReason,
+    Secret,
+    Tier,
+)
 
 SCHEMA = """
 CREATE TABLE sessions (
@@ -98,4 +111,36 @@ def exists(conn: sqlite3.Connection, session_id: str) -> bool:
     )
 
 
-MODULE = BankModule(name="sessions", schema=SCHEMA)
+class ChangePasswordInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    new_password: Annotated[str, Field(min_length=8, max_length=64), Secret()]
+
+
+class ChangePasswordOutput(BaseModel):
+    changed: bool
+
+
+def change_password(ctx: OperationContext, input: ChangePasswordInput) -> ChangePasswordOutput:
+    ctx.conn.execute(
+        "UPDATE customers SET password_hash = ? WHERE customer_id = ?",
+        (hash_password(input.new_password), ctx.customer_id),
+    )
+    return ChangePasswordOutput(changed=True)
+
+
+MODULE = BankModule(
+    name="sessions",
+    schema=SCHEMA,
+    operations=[
+        Operation(
+            name="change_password",
+            description_zh="修改当前客户的登录密码（8–64 个字符）。",
+            description_en="Change the current Customer's login password (8–64 characters).",
+            input_model=ChangePasswordInput,
+            output_model=ChangePasswordOutput,
+            tier=Tier.RED,
+            reversibility=Irreversible(),
+            handler=change_password,
+        )
+    ],
+)

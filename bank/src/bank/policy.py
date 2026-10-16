@@ -18,12 +18,16 @@ from bank import approvals, audit, clock, limits, verification
 from bank.approvals import Binding, TokenKind
 from bank.audit import Event
 from bank.registry import (
+    SECRET_MASK,
     Operation,
     OperationContext,
+    OwnedBy,
     Refusal,
     RefusalReason,
     Registry,
+    Secret,
     Tier,
+    markers,
 )
 from bank.sessions import Session
 
@@ -122,11 +126,21 @@ class Verification(BaseModel):
 
 @dataclass
 class _Call:
-    """What the audit log needs about one call; `tier` is filled in once it is known."""
+    """What the audit log needs about one call; `tier` is filled in once it is known, and
+    `secrets` (input fields never logged) once the Operation is."""
 
     name: str | None
     raw_input: Any
     tier: Tier | None = None
+    secrets: frozenset[str] = frozenset()
+
+    def logged_input(self) -> Any:
+        if not self.secrets or not isinstance(self.raw_input, dict):
+            return self.raw_input
+        return {
+            key: SECRET_MASK if key in self.secrets else value
+            for key, value in self.raw_input.items()
+        }
 
 
 @dataclass(frozen=True)
@@ -159,6 +173,8 @@ def run(
     """Run one Operation call for the session's Customer, or raise a Refusal. Always audited."""
     now = clock.now(conn)
     call = _Call(name, body.get("input", {}) if isinstance(body, dict) else body)
+    if name in registry.operations:  # so a malformed request never logs a secret either
+        call.secrets = _secret_fields(registry.operations[name])
     detail: dict[str, Any] = {}
     with _audited(conn, session, now, Event.OPERATION, call):
         request = _parse(OperationRequest, {} if body is None else body)
@@ -223,7 +239,7 @@ def preview_tiers(
         conn.execute("RELEASE preview")
     audited = _Call(
         None,
-        {"operations": [{"operation": c.name, "input": c.raw_input} for c in calls]},
+        {"operations": [{"operation": c.name, "input": c.logged_input()} for c in calls]},
         Tier.GREEN,
     )
     detail = {"steps": [step.model_dump(mode="json", exclude_none=True) for step in steps]}
@@ -374,6 +390,7 @@ def _resolve(
     """Look up the Operation, validate its input and resolve its tier. `planned_total` is
     what earlier steps of the same Plan would add to the Daily Transfer Total."""
     operation = registry.get(call.name or "")
+    call.secrets = _secret_fields(operation)
     if isinstance(operation.tier, Tier):
         call.tier = operation.tier
     if not isinstance(call.raw_input, dict):
@@ -387,10 +404,45 @@ def _resolve(
         daily_transfer_total=limits.daily_transfer_total(conn, session.customer_id, now.date())
         + planned_total,
     )
+    _check_ownership(validated, ctx)
     if not isinstance(operation.tier, Tier):
         call.tier = operation.tier.resolve(validated, ctx)
     assert call.tier is not None
     return _Resolved(operation, validated, ctx, call.tier)
+
+
+def _secret_fields(operation: Operation) -> frozenset[str]:
+    fields = operation.input_model.model_fields
+    return frozenset(name for name, field in fields.items() if markers(field, Secret))
+
+
+def _check_ownership(model: BaseModel, ctx: OperationContext) -> None:
+    """Refuse any ID in the input that belongs to another Customer, or to nobody."""
+    for name, field in type(model).model_fields.items():
+        value = getattr(model, name)
+        values = value if isinstance(value, list) else [value]
+        for owned in markers(field, OwnedBy):
+            for id in values:
+                if id is not None:
+                    _check_owner(owned, name, id, ctx)
+        for nested in values:
+            if isinstance(nested, BaseModel):
+                _check_ownership(nested, ctx)
+
+
+def _check_owner(owned: OwnedBy, field: str, id: str, ctx: OperationContext) -> None:
+    # Table and column names come from the Operation's declaration, never the caller.
+    row = ctx.conn.execute(
+        f"SELECT customer_id FROM {owned.table} WHERE {owned.key} = ?", (id,)
+    ).fetchone()
+    if row is None:
+        raise Refusal(RefusalReason.NOT_FOUND, f"No such {field}", {"field": field, "id": id})
+    if row["customer_id"] != ctx.customer_id:
+        raise Refusal(
+            RefusalReason.FORBIDDEN_OTHER_CUSTOMER,
+            f"This {field} belongs to another Customer; a session acts only for its own",
+            {"field": field},
+        )
 
 
 class _audited:
@@ -461,7 +513,7 @@ def _audit(
         at=now,
         event=event,
         operation=call.name,
-        input=call.raw_input,
+        input=call.logged_input(),
         tier=call.tier,
         reason=reason,
         detail=detail,

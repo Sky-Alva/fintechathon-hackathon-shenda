@@ -19,6 +19,7 @@ Demo logins: `liming` / `demo1234` and `hanmei` / `demo1234`. Admin calls need t
 | `POST /sessions` `{username, password}` | anyone | Log in. Returns `session_id`, `session_token`, `phone_token` and the Customer. |
 | `GET /operations` | anyone | Operation catalogue: bilingual descriptions, input/output JSON Schemas, tier rule, reversibility. |
 | `POST /operations/{name}` `{input, confirmation_token?, verification_token?}` | `Authorization: Bearer <session_token>` | Call an Operation through the policy gate. |
+| `POST /tier-preview` `{operations: [{operation, input}]}` | `Authorization: Bearer <session_token>` | Tier each step of a proposed Plan in order, counting the Daily Transfer Total; changes nothing. |
 | `POST /confirmations` `{operations: [{operation, input}]}` | `Authorization: Bearer <session_token>` | Issue Confirmation tokens for the Yellow Operations on a Plan card. |
 | `POST /verifications` `{operation, input}` | `Authorization: Bearer <session_token>` | Start Strong Verification for one Red Operation: texts a code to the Customer's simulated phone. |
 | `POST /verifications/{challenge_id}` `{code}` | `Authorization: Bearer <phone_token>` | Answer the challenge from the simulated phone. The right code returns a verification token. |
@@ -36,7 +37,7 @@ The full contract for declaring and calling Operations, including Confirmation a
 
 ## Adding a Scenario module
 
-A module is a `BankModule` (`src/bank/registry.py`): its SQL schema, its seed function and its `Operation`s. Add it to `MODULES` in `src/bank/app.py`. Each Operation declares its reversibility: `ReadOnly()` for queries, `Irreversible()`, or `ReversedBy(operation, build_input)`. `src/bank/customers.py` (Green, fixed tier) and `src/bank/transfers.py` (tier rule) are the worked examples. Handlers hold business logic only; tiers, approvals, session limits and audit are the policy gate's job (`src/bank/policy.py`). Money is stored as integer cents and returned as a `Decimal` (a string with two decimals in JSON); use `bank.money` (`Amount`, `to_cents`, `from_cents`). Use `ctx.now`, never the system clock.
+A module is a `BankModule` (`src/bank/registry.py`): its SQL schema, its seed function and its `Operation`s. Add it to `MODULES` in `src/bank/app.py`. Each Operation declares its reversibility: `ReadOnly()` for queries, `Irreversible()`, or `ReversedBy(operation, build_input)`. `src/bank/customers.py` (Green, fixed tier) and `src/bank/transfers.py` (tier rule) are the worked examples. Type IDs of things a Customer owns with `OwnedBy` (like `customers.AccountId`) so the gate refuses another Customer's with `forbidden_other_customer`. Handlers hold business logic only; tiers, approvals, session limits and audit are the policy gate's job (`src/bank/policy.py`). Money is stored as integer cents and returned as a `Decimal` (a string with two decimals in JSON); use `bank.money` (`Amount`, `to_cents`, `from_cents`). Use `ctx.now`, never the system clock.
 
 ## Tests
 

@@ -6,12 +6,12 @@ Seed: a married couple. 李明 (liming) has a balance close to the ¥1,000 bound
 
 import sqlite3
 from decimal import Decimal
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from bank.money import from_cents
-from bank.registry import BankModule, Operation, OperationContext, ReadOnly, Tier
+from bank.registry import BankModule, Operation, OperationContext, OwnedBy, ReadOnly, Tier
 from bank.sessions import hash_password
 
 SCHEMA = """
@@ -34,6 +34,9 @@ CREATE TABLE accounts (
 """
 
 DEMO_PASSWORD = "demo1234"
+
+# One of the session's Customer's accounts. The gate refuses another Customer's.
+AccountId = Annotated[str, OwnedBy("accounts", "account_id")]
 
 
 def seed(conn: sqlite3.Connection) -> None:
@@ -94,6 +97,9 @@ def debit(conn: sqlite3.Connection, account_id: str, cents: int) -> None:
 
 class QueryBalanceInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    account_id: AccountId | None = Field(
+        default=None, description="Only this account; every account if left out."
+    )
 
 
 class AccountBalance(BaseModel):
@@ -108,11 +114,11 @@ class QueryBalanceOutput(BaseModel):
     accounts: list[AccountBalance]
 
 
-def query_balance(ctx: OperationContext, _: QueryBalanceInput) -> QueryBalanceOutput:
+def query_balance(ctx: OperationContext, input: QueryBalanceInput) -> QueryBalanceOutput:
     rows = ctx.conn.execute(
         "SELECT account_id, kind, name, balance_cents FROM accounts"
-        " WHERE customer_id = ? ORDER BY account_id",
-        (ctx.customer_id,),
+        " WHERE customer_id = ? AND (? IS NULL OR account_id = ?) ORDER BY account_id",
+        (ctx.customer_id, input.account_id, input.account_id),
     ).fetchall()
     return QueryBalanceOutput(
         accounts=[
@@ -134,8 +140,11 @@ MODULE = BankModule(
     operations=[
         Operation(
             name="query_balance",
-            description_zh="查询当前客户名下所有账户的余额。",
-            description_en="Get the balance of every account the current Customer holds.",
+            description_zh="查询当前客户名下所有账户（或其中指定一个账户）的余额。",
+            description_en=(
+                "Get the balance of every account the current Customer holds, or of one"
+                " of them."
+            ),
             input_model=QueryBalanceInput,
             output_model=QueryBalanceOutput,
             tier=Tier.GREEN,

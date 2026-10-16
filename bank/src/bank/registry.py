@@ -10,9 +10,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import Any
+from typing import Annotated, Any, get_args, get_origin
 
 from pydantic import BaseModel
+from pydantic.fields import FieldInfo
 
 
 class Tier(StrEnum):
@@ -55,6 +56,42 @@ class Refusal(Exception):
     def body(self) -> dict[str, Any]:
         """The refusal as the caller sees it."""
         return {"reason": self.reason.value, "message": self.message, "detail": self.detail}
+
+
+@dataclass(frozen=True)
+class OwnedBy:
+    """Marks an input field as the ID of something a Customer owns: a row of `table`
+    whose `key` column is the ID and whose `customer_id` column is the owner.
+
+    The gate checks every marked ID before the tier rule runs: another Customer's is
+    refused with `forbidden_other_customer`, an unknown one with `not_found`. Use it as
+    `Annotated[str, OwnedBy("accounts", "account_id")]`; it also works inside `list[...]`,
+    `... | None` and nested input models.
+    """
+
+    table: str
+    key: str
+
+
+@dataclass(frozen=True)
+class Secret:
+    """Marks a top-level input field the audit log must never store (e.g. a new password).
+    It is still part of the approval fingerprint, so a token covers only that value."""
+
+
+SECRET_MASK = "**********"
+
+
+def markers[M](field: FieldInfo, kind: type[M]) -> list[M]:
+    """The `kind` markers on an input field, including inside `list[...]` or `... | None`."""
+    found = [m for m in field.metadata if isinstance(m, kind)]
+    pending: list[Any] = [field.annotation]
+    while pending:
+        annotation = pending.pop()
+        if get_origin(annotation) is Annotated:
+            found += [m for m in annotation.__metadata__ if isinstance(m, kind)]
+        pending.extend(get_args(annotation))
+    return found
 
 
 @dataclass(frozen=True)
