@@ -43,7 +43,7 @@ Raise `Refusal(RefusalReason.X, message, detail)` from a handler or tier rule. T
 |--------|------|------|
 | `needs_confirmation` | 403 | Yellow, no Confirmation token (gate only) |
 | `needs_verification` | 403 | Red, no Strong Verification (gate only) |
-| `token_invalid` | 403 | Token doesn't cover this exact call, is used, expired or from another session (gate only) |
+| `token_invalid` | 403 | Token or challenge doesn't cover this exact call, is used, expired or from another session; or a wrong verification code (gate only) |
 | `session_locked` | 423 | Safety Lock in force (gate only) |
 | `forbidden_other_customer` | 403 | Input names another Customer's account, card, etc. |
 | `insufficient_funds` | 409 | Not enough money |
@@ -62,6 +62,12 @@ Authorization: Bearer <session_token>
 
 {"input": {"payee_id": "PAY-LM-002", "amount": "200.00"}, "confirmation_token": "<token>"}
 ```
+
+| Tier when the call runs | Needs |
+|-------------------------|-------|
+| Green | nothing |
+| Yellow | `confirmation_token`, or a `verification_token` for the same call (e.g. one obtained while it was Red) |
+| Red | `verification_token`; a `confirmation_token` alone is refused with `needs_verification` |
 
 Success: `200 {"operation", "tier", "output"}`. Refusal: `{"refusal": {"reason", "message", "detail"}}`.
 
@@ -83,6 +89,36 @@ Returns one `{operation, tier, confirmation_id, confirmation_token, expires_at}`
 - The tier is re-checked when the Operation runs. If it has become Red in the meantime (the Daily Transfer Total moved), the Yellow token isn't enough and the call is refused with `needs_verification`.
 - A call that is refused does not use up its token, because nothing it confirmed has happened. A token can therefore be tried against other inputs until it expires; every such try is refused with `token_invalid` and audited against its `confirmation_id`.
 
+### Strong Verification (Red)
+
+Red Operations get their own verification, one at a time, after the Customer has seen the Plan card.
+
+```http
+POST /verifications
+Authorization: Bearer <session_token>
+
+{"operation": "transfer", "input": {"payee_id": "PAY-HM-001", "amount": "1200.00"}}
+```
+
+Returns `{challenge_id, operation, tier, sent_to, expires_at}` and texts a 6-digit code to the Customer's simulated phone (`sent_to` is the masked number, e.g. `138****0002`). Only a Red call gets a challenge: a Yellow or Green one is refused with `invalid_input`, and one that can never run (unknown Payee, insufficient funds) is refused with that reason, so no code is sent for it. A Red step that is only Red because of earlier steps of the same Plan becomes Red once they have run, so request its challenge when the Executor reaches it.
+
+```http
+POST /verifications/{challenge_id}
+Authorization: Bearer <phone_token>
+
+{"code": "123456"}
+```
+
+The code is typed into the simulated phone, which sends it with the same session's `phone_token` (the session token is refused with `not_authenticated`). The right code returns `{operation, verification_id, verification_token, expires_at}`, which the Channel passes on for the call.
+
+- The challenge is bound like a Confirmation token (Customer, session, Operation name, exact input), lasts 5 Bank-clock minutes and can be answered once, from its own session. Otherwise the answer is refused with `token_invalid`.
+- A wrong code is refused with `token_invalid` and `detail: {challenge_id, failed_attempts}`, where `failed_attempts` counts every wrong code in the session (the Safety Lock, #8, locks at 3). Three wrong codes close the challenge; after that, request a new one.
+- The verification token covers that one call, works once and expires 5 Bank-clock minutes after issue. Pass it as `verification_token`.
+
+#### The simulated phone
+
+The Bank's SMS go to the Customer's simulated phone, readable with `GET /phone/messages` and the `phone_token` from login, or by the staff console with `GET /admin/customers/{customer_id}/phone/messages`. Each login has its own phone token, and it shows every SMS the Customer has received. The session token can neither read the phone nor answer a challenge: the Channel keeps the phone token for its phone view and never hands it, or any code, to the Agent. Codes go from the Customer to the Bank, never through the model.
+
 ### Audit
 
-Every Operation call and Confirmation request is recorded in order against its session, with the Bank-clock time, event (`operation` / `confirmation_issued`), Operation name, raw input, tier, outcome, refusal reason and detail (e.g. which `confirmation_id` was issued or used). Tokens themselves are never logged.
+Every Operation call, Confirmation request, verification challenge and code attempt is recorded in order against its session, with the Bank-clock time, event (`operation` / `confirmation_issued` / `verification_challenge` / `verification_attempt`), Operation name, raw input, tier, outcome, refusal reason and detail (e.g. which `confirmation_id`, `challenge_id` or `verification_id` was issued or used, and `failed_attempts` for a wrong code). Tokens and codes themselves are never logged.

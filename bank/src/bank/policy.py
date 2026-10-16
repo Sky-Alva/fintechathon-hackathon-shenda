@@ -1,4 +1,5 @@
-"""The policy gate: every Operation call and Confirmation request passes through here.
+"""The policy gate: every Operation call, Confirmation request and Strong Verification
+step passes through here.
 
 Scenario handlers hold only business logic. The gate validates the input, resolves the
 tier, demands the approval that tier needs, runs the handler, keeps the Daily Transfer
@@ -6,16 +7,16 @@ Total, and writes the audit-log entry whether the call ran or was refused.
 """
 
 import sqlite3
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from bank import audit, clock, confirmations, limits
+from bank import approvals, audit, clock, limits, verification
+from bank.approvals import Binding, TokenKind
 from bank.audit import Event
-from bank.confirmations import Binding
 from bank.registry import (
     Operation,
     OperationContext,
@@ -41,6 +42,7 @@ class OperationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     input: Any = Field(default_factory=dict)
     confirmation_token: str | None = None
+    verification_token: str | None = None
 
 
 class OperationResult(BaseModel):
@@ -74,6 +76,36 @@ class Confirmation(BaseModel):
 
 class ConfirmationResult(BaseModel):
     confirmations: list[Confirmation]
+
+
+class VerificationRequest(BaseModel):
+    """The body of a Strong Verification request: one Red Operation call."""
+
+    model_config = ConfigDict(extra="forbid")
+    operation: str
+    input: Any = Field(default_factory=dict)
+
+
+class VerificationChallenge(BaseModel):
+    challenge_id: str
+    operation: str
+    tier: Tier
+    sent_to: str
+    expires_at: datetime
+
+
+class CodeRequest(BaseModel):
+    """The body of an answer to a challenge: the code from the simulated SMS."""
+
+    model_config = ConfigDict(extra="forbid")
+    code: str = Field(max_length=12)
+
+
+class Verification(BaseModel):
+    operation: str
+    verification_id: str
+    verification_token: str
+    expires_at: datetime
 
 
 @dataclass
@@ -119,12 +151,18 @@ def run(
     with _audited(conn, session, now, Event.OPERATION, call):
         request = _parse(OperationRequest, {} if body is None else body)
         resolved = _resolve(call, conn, registry, session, now)
-        if resolved.tier is Tier.YELLOW and request.confirmation_token is not None:
-            detail["confirmation_id"] = confirmations.redeem(
-                conn, request.confirmation_token, resolved.binding(), now
+        if resolved.tier is Tier.GREEN:
+            pass
+        elif resolved.tier is Tier.YELLOW and request.confirmation_token is not None:
+            detail["confirmation_id"] = approvals.redeem(
+                conn, TokenKind.CONFIRMATION, request.confirmation_token, resolved.binding(), now
             )
-        elif resolved.tier is not Tier.GREEN:
-            # Strong Verification (#5) is not built yet, so no Red Operation can run.
+        # A verification token also covers a call that has become Yellow since.
+        elif request.verification_token is not None:
+            detail["verification_id"] = approvals.redeem(
+                conn, TokenKind.VERIFICATION, request.verification_token, resolved.binding(), now
+            )
+        else:
             raise _needs_approval(name, resolved.tier)
         output = resolved.operation.handler(resolved.ctx, resolved.validated)
         if resolved.operation.daily_transfer_amount:
@@ -162,10 +200,14 @@ def issue_confirmations(
                 )
             if resolved.tier is Tier.RED:
                 raise _needs_approval(planned.operation, resolved.tier)
-            token = confirmations.issue(conn, resolved.binding(), now)
+            token = approvals.issue(conn, TokenKind.CONFIRMATION, resolved.binding(), now)
             planned_total += resolved.daily_transfer_amount()
         confirmation = Confirmation(
-            operation=planned.operation, tier=resolved.tier, **asdict(token)
+            operation=planned.operation,
+            tier=resolved.tier,
+            confirmation_id=token.token_id,
+            confirmation_token=token.token,
+            expires_at=token.expires_at,
         )
         issued.append((call, confirmation))
     for call, confirmation in issued:
@@ -175,6 +217,91 @@ def issue_confirmations(
         }
         _audit(conn, session, now, Event.CONFIRMATION_ISSUED, call, None, detail)
     return ConfirmationResult(confirmations=[confirmation for _, confirmation in issued])
+
+
+def start_verification(
+    conn: sqlite3.Connection,
+    registry: Registry,
+    session: Session,
+    body: Any,
+) -> VerificationChallenge:
+    """Open a Strong Verification challenge for one Red Operation call and text its code
+    to the Customer's simulated phone. Always audited."""
+    now = clock.now(conn)
+    call = _Call(None, body)
+    with _audited(conn, session, now, Event.VERIFICATION_CHALLENGE, call):
+        request = _parse(VerificationRequest, body)
+        call.name, call.raw_input = request.operation, request.input
+        resolved = _resolve(call, conn, registry, session, now)
+        if resolved.tier is not Tier.RED:
+            raise Refusal(
+                RefusalReason.INVALID_INPUT,
+                f"{call.name} is {resolved.tier.value} and needs no Strong Verification",
+                {"operation": call.name, "tier": resolved.tier.value},
+            )
+        sent = verification.start(
+            conn, resolved.binding(), resolved.operation.description_zh, now
+        )
+    challenge = sent.challenge
+    detail = {
+        "challenge_id": challenge.challenge_id,
+        "sent_to": sent.sent_to,
+        "expires_at": challenge.expires_at.isoformat(),
+    }
+    _audit(conn, session, now, Event.VERIFICATION_CHALLENGE, call, None, detail)
+    return VerificationChallenge(
+        challenge_id=challenge.challenge_id,
+        operation=challenge.binding.operation,
+        tier=Tier.RED,
+        sent_to=sent.sent_to,
+        expires_at=challenge.expires_at,
+    )
+
+
+def answer_challenge(
+    conn: sqlite3.Connection,
+    session: Session,
+    challenge_id: str,
+    body: Any,
+) -> Verification:
+    """Check a code typed into the session's simulated phone against its challenge; the
+    right code earns one verification token for exactly the challenged call. Always
+    audited, never the code.
+
+    A wrong code is counted outside the audited block, so the count survives the refusal.
+    """
+    now = clock.now(conn)
+    # Only Red Operations get challenges.
+    call = _Call(None, {"challenge_id": challenge_id}, Tier.RED)
+    with _audited(conn, session, now, Event.VERIFICATION_ATTEMPT, call):
+        request = _parse(CodeRequest, body)
+        challenge = verification.find_open(conn, challenge_id, session.session_id, now)
+        call.name = challenge.binding.operation
+    correct = verification.check_code(conn, challenge, request.code)
+    with _audited(conn, session, now, Event.VERIFICATION_ATTEMPT, call):
+        if not correct:
+            detail = {
+                "challenge_id": challenge_id,
+                "failed_attempts": verification.failed_attempts(conn, session.session_id),
+            }
+            raise Refusal(
+                RefusalReason.TOKEN_INVALID, "Wrong verification code", detail,
+                audit_detail=detail,
+            )
+        verification.mark_answered(conn, challenge, now)
+        token = approvals.issue(conn, TokenKind.VERIFICATION, challenge.binding, now)
+    detail = {
+        "challenge_id": challenge_id,
+        "verification_id": token.token_id,
+        "expires_at": token.expires_at.isoformat(),
+    }
+    _audit(conn, session, now, Event.VERIFICATION_ATTEMPT, call, None, detail)
+    return Verification(
+        operation=challenge.binding.operation,
+        verification_id=token.token_id,
+        verification_token=token.token,
+        expires_at=token.expires_at,
+    )
 
 
 def _resolve(

@@ -56,6 +56,17 @@ def seed(conn: sqlite3.Connection) -> None:
     )
 
 
+def exists(conn: sqlite3.Connection, customer_id: str) -> bool:
+    row = conn.execute("SELECT 1 FROM customers WHERE customer_id = ?", (customer_id,))
+    return row.fetchone() is not None
+
+
+def phone_number(conn: sqlite3.Connection, customer_id: str) -> str:
+    row = conn.execute("SELECT phone FROM customers WHERE customer_id = ?", (customer_id,))
+    phone: str = row.fetchone()["phone"]
+    return phone
+
+
 def current_account(conn: sqlite3.Connection, customer_id: str) -> sqlite3.Row:
     """The Customer's current account, which transfers are paid from."""
     row: sqlite3.Row = conn.execute(

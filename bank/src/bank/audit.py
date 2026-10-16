@@ -1,5 +1,5 @@
-"""The audit log: every Operation call and Confirmation request, its tier decision and
-outcome, per session, in order."""
+"""The audit log: every Operation call, Confirmation request, verification challenge and
+code attempt, its tier decision and outcome, per session, in order."""
 
 import json
 import sqlite3
@@ -28,6 +28,8 @@ CREATE TABLE audit_log (
 class Event(StrEnum):
     OPERATION = "operation"
     CONFIRMATION_ISSUED = "confirmation_issued"
+    VERIFICATION_CHALLENGE = "verification_challenge"
+    VERIFICATION_ATTEMPT = "verification_attempt"
 
 
 def record(
