@@ -12,6 +12,7 @@ The contract between the Agent's conversation service and everything that talks 
 
 - **Login stays with the Channel.** The Channel logs the Customer in with the Bank (`POST /sessions`), keeps the `phone_token` for its simulated phone and hands the Agent the `session_token` only. `POST /conversations` refuses any other field (422), so the Agent never sees a password or the phone token. The Agent acts only through that session and holds no Bank admin key ([ADR-0001](adr/0001-bank-enforces-permission-tiers.md)).
 - **A turn is one streamed response.** It is newline-delimited JSON (`application/x-ndjson`): one event object per line, each with a `type`. The turn is over when the stream ends.
+- **The Customer's language.** Replies (`answer`, `refusal`, and later the other events' `text`) are in Chinese, or in English when the Customer's latest message with any words in it is in English (has Latin letters and no Chinese characters).
 - **An unknown conversation** is `404 {"error": "unknown_conversation"}`.
 - **A session the Bank doesn't know** (unknown or ended token): `POST /conversations` is `401 {"error": "not_authenticated"}`. The Agent asks the Bank which session and Customer the token is (`GET /sessions/current`) when the conversation starts.
 
@@ -135,15 +136,18 @@ One short question when the request is genuinely ambiguous (e.g. which 张伟). 
 {"type": "clarification_question", "text": "您要转给哪位张伟？", "options": [{"label": "张伟（同事）", "value": "PAY-LM-003"}]}
 ```
 
-### `refusal` (reserved, #33, #43, #44)
+### `refusal` (emitted for `out_of_scope`, #33; reserved for `manipulation` #43, `secret` #44)
 
-The Agent won't do this: out of scope, a scam or manipulation attempt, or a request for a secret. `text` explains and lists what the Agent can do.
+The Agent won't do this: out of scope, a scam or manipulation attempt, or a request for a secret. `text` explains and lists what the Agent can do. Ends the turn; no Operation runs.
 
 ```json
-{"type": "refusal", "reason": "out_of_scope", "text": "…"}
+{"type": "refusal", "reason": "out_of_scope",
+ "text": "抱歉，这个我暂时帮不了您。我可以帮您：\n- 从当前客户的活期账户向一位收款人转账。\n- 查询当前客户名下所有账户（或其中指定一个账户）的余额。"}
 ```
 
 `reason`: `out_of_scope` | `manipulation` | `secret`.
+
+- **`out_of_scope`**: Wealth Operations (product recommendations, risk assessment, subscribe / redeem) and non-banking topics. The Planner declines instead of planning, naming up to 5 catalogue Operations to offer; `text` lists them one per line (`- …`) in the Bank's own words (`description_zh` / `description_en` from the Operation catalogue), so the list grows with the catalogue. Names the Bank doesn't know are dropped; if none are left, the catalogue's first 5 are listed.
 
 ### `session_locked` (reserved, #37)
 

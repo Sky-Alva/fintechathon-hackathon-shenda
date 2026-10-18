@@ -37,7 +37,15 @@ class Answer(BaseModel):
     text: str
 
 
-Event = StepStarted | StepSucceeded | Answer
+class Refusal(BaseModel):
+    """The Agent won't do this; `text` explains and lists what it can do. Ends the turn."""
+
+    type: Literal["refusal"] = "refusal"
+    reason: Literal["out_of_scope", "manipulation", "secret"]
+    text: str
+
+
+Event = StepStarted | StepSucceeded | Answer | Refusal
 
 
 # A conversation's history, as Staff Members read it: the Customer's messages, each Plan

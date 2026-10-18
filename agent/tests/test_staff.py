@@ -5,7 +5,7 @@ trail and lifts Safety Locks through the Bank's admin API, never through the Age
 from fastapi.testclient import TestClient
 
 from conftest import ADMIN_KEY, STAFF_KEY, admin, log_in, send, staff, start_conversation
-from fake_model import FakeModel, plan, say, step
+from fake_model import FakeModel, decline, plan, say, step
 
 BALANCE_QUESTION = "我卡里还有多少钱？"
 
@@ -132,6 +132,19 @@ def test_the_history_keeps_every_turn_in_order(
         ("step_succeeded", None),
         ("answer", "活期账户 ACC-LM-001 余额 1180.00 元。"),
     ]
+
+
+def test_a_declined_request_shows_the_refusal_and_no_plan(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    model.script(decline("out_of_scope", "query_balance"))
+    conversation = start_conversation(agent, log_in(bank, "liming"))
+    events = send(agent, conversation, "帮我买点基金")
+
+    entries = staff(agent, f"/staff/conversations/{conversation}")["entries"]
+
+    assert entries == [{"type": "customer_message", "text": "帮我买点基金"}, *events]
+    assert [e["type"] for e in events] == ["refusal"]
 
 
 def test_a_conversation_whose_session_ended_can_still_be_read(

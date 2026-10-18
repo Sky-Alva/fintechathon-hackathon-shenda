@@ -112,6 +112,12 @@ function AgentEntry({ entry }: { entry: HistoryEntry }) {
           <b>Agent 回答</b> {entry.text}
         </>
       )
+    case 'refusal':
+      return (
+        <>
+          <b>Agent 拒绝（{entry.reason}）</b> {entry.text}
+        </>
+      )
     case 'plan':
       return (
         <>

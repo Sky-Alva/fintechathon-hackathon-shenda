@@ -26,6 +26,7 @@ function apply(items: Item[], event: ConversationEvent): Item[] {
           : item,
       )
     case 'answer':
+    case 'refusal':
       return [...items, { kind: 'agent', text: event.text }]
     default:
       return items

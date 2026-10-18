@@ -10,10 +10,18 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
-from agent import planner, responder, reviewer
+from agent import planner, refusals, responder, reviewer
 from agent.bank import BankRefused, BankSession, HttpClient
-from agent.events import Answer, CustomerMessageEntry, Event, HistoryEntry, PlanEntry
+from agent.events import (
+    Answer,
+    CustomerMessageEntry,
+    Event,
+    HistoryEntry,
+    PlanEntry,
+    Refusal,
+)
 from agent.executor import StepResult, execute
+from agent.language import customer_language
 from agent.model import ModelClient
 
 
@@ -86,7 +94,16 @@ class Conversations:
 
     def _turn(self, conversation: Conversation, text: str) -> Iterator[Event]:
         conversation.history.append({"role": "user", "content": text})
-        plan = planner.make_plan(self.model, conversation.history, conversation.bank.catalogue())
+        catalogue = conversation.bank.catalogue()
+        plan = planner.make_plan(self.model, conversation.history, catalogue)
+        if isinstance(plan, planner.Declined):
+            # Nothing runs: the Customer hears what the Agent can do instead.
+            refusal = refusals.out_of_scope(
+                plan.can_do, catalogue, customer_language(conversation.history)
+            )
+            conversation.history.append({"role": "assistant", "content": refusal})
+            yield Refusal(reason=plan.reason, text=refusal)
+            return
         reviewed = reviewer.review(plan, conversation.bank)
         conversation.record.append(PlanEntry(steps=reviewed.steps))
         if not reviewed.green_only:
