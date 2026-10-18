@@ -83,6 +83,17 @@ def send(agent: TestClient, conversation_id: str, text: str) -> list[dict[str, A
     return [json.loads(line) for line in response.text.splitlines() if line]
 
 
+def act(
+    agent: TestClient, conversation_id: str, action: str, **fields: Any
+) -> list[dict[str, Any]]:
+    """Answer a prompt (e.g. tap confirm on a Plan card) and collect the turn's events."""
+    response = agent.post(
+        f"/conversations/{conversation_id}/actions", json={"action": action, **fields}
+    )
+    assert response.status_code == 200, response.text
+    return [json.loads(line) for line in response.text.splitlines() if line]
+
+
 def event_types(events: list[dict[str, Any]]) -> list[str]:
     return [event["type"] for event in events]
 

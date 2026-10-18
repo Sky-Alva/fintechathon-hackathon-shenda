@@ -51,11 +51,25 @@ class BankSession:
         )["steps"]
         return steps
 
-    def call(self, operation: str, input: dict[str, Any]) -> dict[str, Any]:
+    def request_confirmations(self, operations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """One Confirmation token per Yellow `{operation, input}`, in order, all or none.
+
+        Only the Plan reviewer calls this, and only when the Customer has tapped confirm
+        on the Plan card listing exactly these Operations.
+        """
+        confirmations: list[dict[str, Any]] = self._send(
+            "post", "/confirmations", json={"operations": operations}
+        )["confirmations"]
+        return confirmations
+
+    def call(
+        self, operation: str, input: dict[str, Any], confirmation_token: str | None = None
+    ) -> dict[str, Any]:
         """Run one Operation through the Bank's policy gate: `{operation, tier, output}`."""
-        result: dict[str, Any] = self._send(
-            "post", f"/operations/{operation}", json={"input": input}
-        )
+        body: dict[str, Any] = {"input": input}
+        if confirmation_token is not None:
+            body["confirmation_token"] = confirmation_token
+        result: dict[str, Any] = self._send("post", f"/operations/{operation}", json=body)
         return result
 
     def _send(self, method: str, url: str, json: Any = None) -> Any:

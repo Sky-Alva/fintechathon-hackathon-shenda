@@ -2,6 +2,7 @@
 
     POST /conversations {session_token}            -> {conversation_id}
     POST /conversations/{id}/messages {text}       -> the turn's events, as NDJSON
+    POST /conversations/{id}/actions {action, ...} -> the turn's events, as NDJSON
 
 Events are documented in docs/conversation-events.md. The Agent is configured with the
 Bank's URL and a model, never the Bank's admin key.
@@ -16,7 +17,12 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent.bank import HttpClient
-from agent.conversation import Conversations, UnknownConversation
+from agent.conversation import (
+    Conversations,
+    CustomerAction,
+    PlanNotPending,
+    UnknownConversation,
+)
 from agent.events import Event
 from agent.model import ModelClient, model_from_env
 
@@ -46,6 +52,10 @@ def create_app(bank: HttpClient, model: ModelClient) -> FastAPI:
     async def on_unknown(_: Request, error: UnknownConversation) -> JSONResponse:
         return JSONResponse(status_code=404, content={"error": "unknown_conversation"})
 
+    @app.exception_handler(PlanNotPending)
+    async def on_not_pending(_: Request, error: PlanNotPending) -> JSONResponse:
+        return JSONResponse(status_code=409, content={"error": "plan_not_pending"})
+
     @app.post("/conversations")
     def start_conversation(body: StartConversation) -> dict[str, str]:
         return {"conversation_id": conversations.start(body.session_token).conversation_id}
@@ -55,6 +65,15 @@ def create_app(bank: HttpClient, model: ModelClient) -> FastAPI:
         conversation = conversations.get(conversation_id)
         return StreamingResponse(
             ndjson(conversations.send(conversation, body.text)),
+            media_type="application/x-ndjson",
+            headers={"X-Accel-Buffering": "no"},
+        )
+
+    @app.post("/conversations/{conversation_id}/actions")
+    def send_action(conversation_id: str, body: CustomerAction) -> StreamingResponse:
+        conversation = conversations.get(conversation_id)
+        return StreamingResponse(
+            ndjson(conversations.act(conversation, body)),
             media_type="application/x-ndjson",
             headers={"X-Accel-Buffering": "no"},
         )

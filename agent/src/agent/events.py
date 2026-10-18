@@ -32,9 +32,49 @@ class StepSucceeded(BaseModel):
     output: dict[str, Any]
 
 
+class BankRefusal(BaseModel):
+    """A refusal from the Bank, unchanged: one of its refusal reasons, with its detail."""
+
+    reason: str
+    message: str
+    detail: dict[str, Any]
+
+
+class StepRefusal(BankRefusal):
+    step_id: str
+
+
+class PlanProposed(BaseModel):
+    """A Plan card: the Plan has a Yellow or Red step. `steps` are in the order they will
+    run, each with the Bank's tier; `refusals` are steps the tier preview says can't run."""
+
+    type: Literal["plan_proposed"] = "plan_proposed"
+    plan_id: str
+    steps: list[PlanStep]
+    refusals: list[StepRefusal]
+
+
+class ConfirmationRequested(BaseModel):
+    """Ask the Customer to confirm every Yellow step of the Plan card with one tap."""
+
+    type: Literal["confirmation_requested"] = "confirmation_requested"
+    plan_id: str
+    step_ids: list[str]
+
+
+class StepFailed(BankRefusal):
+    """The Bank refused the step: `reason`, `message` and `detail` are its refusal."""
+
+    type: Literal["step_failed"] = "step_failed"
+    step_id: str
+    operation: str
+
+
 class Answer(BaseModel):
     type: Literal["answer"] = "answer"
     text: str
 
 
-Event = StepStarted | StepSucceeded | Answer
+Event = (
+    StepStarted | StepSucceeded | StepFailed | Answer | PlanProposed | ConfirmationRequested
+)
