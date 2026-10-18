@@ -372,7 +372,9 @@ def answer_challenge(
         wrong = Refusal(
             RefusalReason.TOKEN_INVALID, "Wrong verification code", detail, audit_detail=detail
         )
-        _audit(conn, session, now, Event.VERIFICATION_ATTEMPT, call, wrong.reason, detail)
+        _audit(
+            conn, session, now, Event.VERIFICATION_ATTEMPT, call, wrong.reason, detail, detail
+        )
         lock = _trip_safety_lock(conn, session, now)
         if lock is not None:
             wrong.detail = {**detail, "locked_until": lock.expires_at.isoformat()}
