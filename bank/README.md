@@ -17,6 +17,7 @@ Demo logins: `liming` / `demo1234` and `hanmei` / `demo1234`. Admin calls need t
 | Call | Who | What |
 |------|-----|------|
 | `POST /sessions` `{username, password}` | anyone | Log in. Returns `session_id`, `session_token`, `phone_token` and the Customer. |
+| `GET /sessions/current` | `Authorization: Bearer <session_token>` | Which session and Customer this is: `{session_id, customer}`. Not an Operation and not audited; `not_authenticated` once the session has ended. |
 | `GET /operations` | anyone | Operation catalogue: bilingual descriptions, input/output JSON Schemas, tier rule, reversibility. |
 | `POST /operations/{name}` `{input, confirmation_token?, verification_token?}` | `Authorization: Bearer <session_token>` | Call an Operation through the policy gate. |
 | `POST /tier-preview` `{operations: [{operation, input}]}` | `Authorization: Bearer <session_token>` | Tier each step of a proposed Plan in order, counting the Daily Transfer Total; changes nothing. |

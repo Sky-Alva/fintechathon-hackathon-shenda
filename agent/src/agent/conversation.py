@@ -11,8 +11,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from agent import planner, responder, reviewer
-from agent.bank import BankSession, HttpClient
-from agent.events import Answer, Event
+from agent.bank import BankRefused, BankSession, HttpClient
+from agent.events import Answer, CustomerMessageEntry, Event, HistoryEntry, PlanEntry
 from agent.executor import StepResult, execute
 from agent.model import ModelClient
 
@@ -21,8 +21,14 @@ from agent.model import ModelClient
 class Conversation:
     conversation_id: str
     bank: BankSession
+    session_id: str
+    """The Bank's ID for the session: Staff Members read its audit trail by it."""
+    customer: dict[str, str]
+    """`{customer_id, name}`, as the Bank told it."""
     history: list[dict[str, Any]] = field(default_factory=list)
     """The Customer's messages and the Agent's answers, in the model's chat format."""
+    record: list[HistoryEntry] = field(default_factory=list)
+    """Everything Staff Members read: messages, Plans and every event sent, in order."""
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -37,10 +43,15 @@ class Conversations:
         self.conversations: dict[str, Conversation] = {}
 
     def start(self, session_token: str) -> Conversation:
-        """A conversation acting through one Customer's own Bank session."""
+        """A conversation acting through one Customer's own Bank session. Refused
+        (`BankRefused`, `not_authenticated`) if the Bank doesn't know the session."""
+        bank = BankSession(self.bank, session_token)
+        current = bank.current()
         conversation = Conversation(
             conversation_id=secrets.token_urlsafe(16),
-            bank=BankSession(self.bank, session_token),
+            bank=bank,
+            session_id=current["session_id"],
+            customer=current["customer"],
         )
         self.conversations[conversation.conversation_id] = conversation
         return conversation
@@ -51,19 +62,38 @@ class Conversations:
         except KeyError:
             raise UnknownConversation(conversation_id) from None
 
+    def active(self) -> list[Conversation]:
+        """The conversations whose Bank session is still active, in the order they
+        started."""
+        active = []
+        for conversation in list(self.conversations.values()):
+            try:
+                conversation.bank.current()
+            except BankRefused as refused:
+                if refused.reason != "not_authenticated":
+                    raise
+            else:
+                active.append(conversation)
+        return active
+
     def send(self, conversation: Conversation, text: str) -> Iterator[Event]:
         """One turn: the Customer's message in, the turn's events out."""
         with conversation.lock:
-            conversation.history.append({"role": "user", "content": text})
-            plan = planner.make_plan(
-                self.model, conversation.history, conversation.bank.catalogue()
-            )
-            reviewed = reviewer.review(plan, conversation.bank)
-            if not reviewed.green_only:
-                # Yellow and Red steps need a Plan card first (#31).
-                raise NotImplementedError("Plans with Yellow or Red steps need a Plan card")
-            results: list[StepResult] = []
-            yield from execute(reviewed, conversation.bank, results)
-            text = responder.answer(self.model, conversation.history, results)
-            conversation.history.append({"role": "assistant", "content": text})
-            yield Answer(text=text)
+            conversation.record.append(CustomerMessageEntry(text=text))
+            for event in self._turn(conversation, text):
+                conversation.record.append(event)
+                yield event
+
+    def _turn(self, conversation: Conversation, text: str) -> Iterator[Event]:
+        conversation.history.append({"role": "user", "content": text})
+        plan = planner.make_plan(self.model, conversation.history, conversation.bank.catalogue())
+        reviewed = reviewer.review(plan, conversation.bank)
+        conversation.record.append(PlanEntry(steps=reviewed.steps))
+        if not reviewed.green_only:
+            # Yellow and Red steps need a Plan card first (#31).
+            raise NotImplementedError("Plans with Yellow or Red steps need a Plan card")
+        results: list[StepResult] = []
+        yield from execute(reviewed, conversation.bank, results)
+        text = responder.answer(self.model, conversation.history, results)
+        conversation.history.append({"role": "assistant", "content": text})
+        yield Answer(text=text)

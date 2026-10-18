@@ -93,3 +93,9 @@ export type ConversationEvent =
   | HandedOver
   | HandedBack
   | Trace
+
+// A conversation's history, as Staff Members read it (GET /staff/conversations/{id}):
+// the Customer's messages, each Plan with the Bank's tiers, and every event sent.
+export type CustomerMessageEntry = { type: 'customer_message'; text: string }
+export type PlanEntry = { type: 'plan'; steps: PlanStep[] }
+export type HistoryEntry = CustomerMessageEntry | PlanEntry | ConversationEvent

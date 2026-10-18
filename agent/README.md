@@ -15,14 +15,14 @@ docker compose up --build # Channel: http://localhost:8080 · Agent: :8001 · Ba
 
 ## Conversation interface
 
-`POST /conversations {session_token}`, then `POST /conversations/{id}/messages {text}`, which streams the turn's events as NDJSON. The event contract shared with the Channel, the staff console and the tests is [docs/conversation-events.md](../docs/conversation-events.md).
+`POST /conversations {session_token}`, then `POST /conversations/{id}/messages {text}`, which streams the turn's events as NDJSON. Staff Members read the active sessions and each conversation's history at `/staff/...` with the Agent's own staff key (`AGENT_STAFF_KEY`, header `X-Staff-Key`), never the Bank's admin key. The event contract shared with the Channel, the staff console and the tests is [docs/conversation-events.md](../docs/conversation-events.md).
 
 ## Modules
 
 | Module | Job |
 |--------|-----|
-| `app.py` | The HTTP conversation interface. |
-| `conversation.py` | Conversation service: owns conversations and history, runs a turn (plan → review → execute → answer). |
+| `app.py` | The HTTP conversation interface, and the staff views. |
+| `conversation.py` | Conversation service: owns conversations and history (including what Staff Members read), runs a turn (plan → review → execute → answer). |
 | `planner.py` | Conversation + the Bank's Operation catalogue → a Plan (a dependency graph of steps). Always plans, even for one step. |
 | `reviewer.py` | Asks the Bank's tier preview for the Plan, in run order. Green-only Plans run with no Plan card. |
 | `executor.py` | Runs the steps against the Bank, as events. |

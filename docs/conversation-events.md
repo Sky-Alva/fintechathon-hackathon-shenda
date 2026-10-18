@@ -13,6 +13,26 @@ The contract between the Agent's conversation service and everything that talks 
 - **Login stays with the Channel.** The Channel logs the Customer in with the Bank (`POST /sessions`), keeps the `phone_token` for its simulated phone and hands the Agent the `session_token` only. `POST /conversations` refuses any other field (422), so the Agent never sees a password or the phone token. The Agent acts only through that session and holds no Bank admin key ([ADR-0001](adr/0001-bank-enforces-permission-tiers.md)).
 - **A turn is one streamed response.** It is newline-delimited JSON (`application/x-ndjson`): one event object per line, each with a `type`. The turn is over when the stream ends.
 - **An unknown conversation** is `404 {"error": "unknown_conversation"}`.
+- **A session the Bank doesn't know** (unknown or ended token): `POST /conversations` is `401 {"error": "not_authenticated"}`. The Agent asks the Bank which session and Customer the token is (`GET /sessions/current`) when the conversation starts.
+
+## The staff interface
+
+For the staff console. Every call needs `X-Staff-Key`: the Agent's own staff key (`AGENT_STAFF_KEY`), never the Bank's admin key, which the Agent doesn't have. Without it, or with a Customer's session token, the answer is `401 {"error": "staff_key_required"}`.
+
+| Call | Returns |
+|------|---------|
+| `GET /staff/conversations` | `{conversations: [{conversation_id, session_id, customer: {customer_id, name}}]}`: the conversations whose Bank session is still active (a Safety Lock doesn't end a session), in the order they started |
+| `GET /staff/conversations/{conversation_id}` | `{conversation_id, session_id, customer, entries}`: the conversation's history, readable after the session ended too |
+
+`entries` is everything in order: each Customer message, each Plan, and every event the Customer was sent, exactly as sent.
+
+```jsonc
+{"type": "customer_message", "text": "我卡里还有多少钱？"}
+{"type": "plan", "steps": [/* PlanStep, in run order, with the Bank's tiers */]}  // every Plan, Green-only too; right after the Bank's tier preview
+// ...then the turn's events: step_started, step_succeeded, answer, ...
+```
+
+The Bank's side of the trail (tier previews, Confirmations, verification attempts, Safety Lock and lift, Operation results) and lifting a Safety Lock are the Bank's admin calls (`GET /admin/sessions/{session_id}/audit`, `GET`/`DELETE /admin/sessions/{session_id}/safety-lock`), which the console makes with the Bank's admin key, never through the Agent. The console merges the two trails: the Agent's entries keep their order, and each Bank entry is placed at the Agent entry that caused it (`plan` → `tier_preview`, `step_started` → that Operation's `operation`, `confirmation_requested` → `confirmation_issued`, `verification_requested` → `verification_challenge`); Bank entries nothing on the Agent's side caused (code attempts from the simulated phone, Safety Locks, lifts) stay where the Bank put them. A ticket that adds a Bank call to a turn should add its pair to `BANK_EVENT_FOR` in `web/src/staff/trail.ts`.
 
 ### Customer actions (planned)
 

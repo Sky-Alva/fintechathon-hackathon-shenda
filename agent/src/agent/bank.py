@@ -39,6 +39,12 @@ class BankSession:
     http: HttpClient
     session_token: str
 
+    def current(self) -> dict[str, Any]:
+        """Which Bank session and Customer this is: `{session_id, customer}`. Refused with
+        `not_authenticated` once the session has ended."""
+        current: dict[str, Any] = self._send("get", "/sessions/current")
+        return current
+
     def catalogue(self) -> list[dict[str, Any]]:
         """The Bank's Operation catalogue, which the Planner plans from."""
         operations: list[dict[str, Any]] = self._send("get", "/operations")["operations"]

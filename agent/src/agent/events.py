@@ -38,3 +38,22 @@ class Answer(BaseModel):
 
 
 Event = StepStarted | StepSucceeded | Answer
+
+
+# A conversation's history, as Staff Members read it: the Customer's messages, each Plan
+# with the Bank's tiers, and every event the Customer was sent, in order.
+
+
+class CustomerMessageEntry(BaseModel):
+    type: Literal["customer_message"] = "customer_message"
+    text: str
+
+
+class PlanEntry(BaseModel):
+    """A Plan the Agent made, after the Bank's tier preview: every Plan, Green-only too."""
+
+    type: Literal["plan"] = "plan"
+    steps: list[PlanStep]
+
+
+HistoryEntry = CustomerMessageEntry | PlanEntry | Event
