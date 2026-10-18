@@ -1,13 +1,27 @@
 """The audit log: every Operation call, tier preview, Confirmation request, verification
-challenge and code attempt, Safety Lock and lift, its tier decision and outcome, per session, in order."""
+challenge and code attempt, Safety Lock and lift, its tier decision and outcome, per session, in order.
+
+A session reads its own trail with `read_audit_trail` (Green, for the Agent's decision
+trace panel, so it works under a Safety Lock); a Staff Member reads any session's with
+the admin endpoint.
+"""
 
 import json
 import sqlite3
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
-from bank.registry import BankModule, RefusalReason, Tier
+from pydantic import BaseModel, ConfigDict
+
+from bank.registry import (
+    BankModule,
+    Operation,
+    OperationContext,
+    ReadOnly,
+    RefusalReason,
+    Tier,
+)
 
 SCHEMA = """
 CREATE TABLE audit_log (
@@ -75,4 +89,55 @@ def trail(conn: sqlite3.Connection, session_id: str) -> list[dict[str, Any]]:
     ]
 
 
-MODULE = BankModule(name="audit", schema=SCHEMA)
+class ReadAuditTrailInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class AuditEntry(BaseModel):
+    entry_id: int
+    at: datetime
+    event: Event
+    operation: str | None
+    input: Any
+    tier: Tier | None
+    outcome: Literal["ok", "refused"]
+    reason: RefusalReason | None
+    detail: dict[str, Any]
+
+
+class ReadAuditTrailOutput(BaseModel):
+    session_id: str
+    entries: list[AuditEntry]
+
+
+def read_audit_trail(ctx: OperationContext, _: ReadAuditTrailInput) -> ReadAuditTrailOutput:
+    entries = [AuditEntry.model_validate(entry) for entry in trail(ctx.conn, ctx.session_id)]
+    for entry in entries:
+        # A refused entry's detail is the refusal's audit-only detail (e.g. which token a
+        # refused one turned out to be), which the caller is never shown; Staff Members are.
+        if entry.outcome == "refused":
+            entry.detail = {}
+    return ReadAuditTrailOutput(session_id=ctx.session_id, entries=entries)
+
+
+MODULE = BankModule(
+    name="audit",
+    schema=SCHEMA,
+    operations=[
+        Operation(
+            name="read_audit_trail",
+            description_zh=(
+                "按顺序读取当前会话的审计记录：每次请求、权限等级判定、确认、验证尝试及结果。"
+            ),
+            description_en=(
+                "Read the current session's audit trail in order: every request, tier"
+                " decision, Confirmation, verification attempt and outcome."
+            ),
+            input_model=ReadAuditTrailInput,
+            output_model=ReadAuditTrailOutput,
+            tier=Tier.GREEN,
+            reversibility=ReadOnly(),
+            handler=read_audit_trail,
+        )
+    ],
+)
