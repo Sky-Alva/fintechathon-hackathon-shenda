@@ -57,3 +57,16 @@ def plan(*steps: dict[str, Any], intent: str | None = None) -> ModelReply:
 def say(text: str) -> ModelReply:
     """The model replies with plain text."""
     return ModelReply(content=text)
+
+
+def decline(reason: str, *can_do: str) -> ModelReply:
+    """The model declines the request, offering these catalogue Operations instead."""
+    return ModelReply(
+        tool_calls=[
+            ToolCall(
+                id="call-decline",
+                name="decline_request",
+                arguments={"reason": reason, "can_do": list(can_do)},
+            )
+        ]
+    )

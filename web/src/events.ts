@@ -27,6 +27,12 @@ export type StepSucceeded = {
   output: Record<string, unknown>
 }
 export type Answer = { type: 'answer'; text: string }
+// Emitted for 'out_of_scope' since #33; 'manipulation' (#43) and 'secret' (#44) reserved.
+export type Refusal = {
+  type: 'refusal'
+  reason: 'out_of_scope' | 'manipulation' | 'secret'
+  text: string
+}
 
 // Reserved: proposed payloads, refined by the ticket that first emits each one.
 export type PlanProposed = {
@@ -59,11 +65,6 @@ export type ClarificationQuestion = {
   text: string
   options: { label: string; value: string }[]
 }
-export type Refusal = {
-  type: 'refusal'
-  reason: 'out_of_scope' | 'manipulation' | 'secret'
-  text: string
-}
 export type SessionLocked = {
   type: 'session_locked'
   trigger: string
@@ -85,7 +86,11 @@ export type AuditEntry = {
   detail: Record<string, unknown>
 }
 export type Trace = { type: 'trace' } & (
-  | { stage: 'intent'; data: { intent: string } }
+  | {
+      stage: 'intent'
+      // `declined`: the Planner declined the request instead of planning it.
+      data: { intent: string; declined?: { reason: Refusal['reason']; can_do: string[] } }
+    }
   | { stage: 'plan'; data: { steps: PlanStep[] } }
   | { stage: 'bank_request'; data: { method: string; path: string; body: unknown } }
   | { stage: 'bank_response'; data: { method: string; path: string; status: number; body: unknown } }

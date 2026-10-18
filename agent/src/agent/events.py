@@ -46,4 +46,12 @@ class Trace(BaseModel):
     data: dict[str, Any]
 
 
-Event = StepStarted | StepSucceeded | Answer | Trace
+class Refusal(BaseModel):
+    """The Agent won't do this; `text` explains and lists what it can do. Ends the turn."""
+
+    type: Literal["refusal"] = "refusal"
+    reason: Literal["out_of_scope", "manipulation", "secret"]
+    text: str
+
+
+Event = StepStarted | StepSucceeded | Answer | Refusal | Trace

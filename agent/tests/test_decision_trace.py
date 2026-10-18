@@ -7,7 +7,7 @@ import re
 from fastapi.testclient import TestClient
 
 from conftest import Login, audit_trail, log_in, send, start_conversation, traces
-from fake_model import FakeModel, plan, say, step
+from fake_model import FakeModel, decline, plan, say, step
 
 BALANCE_QUESTION = "我卡里还有多少钱？"
 TO_MUM_500 = {"payee_id": "PAY-LM-002", "amount": "500.00"}
@@ -25,6 +25,18 @@ def test_the_trace_shows_the_intent_the_agent_understood(
     events = send(agent, start_conversation(agent, log_in(bank, "liming")), BALANCE_QUESTION)
 
     assert traces(events, "intent") == [{"intent": "查询活期账户余额"}]
+
+
+def test_the_trace_shows_why_a_request_was_declined(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    model.script(decline("out_of_scope", "query_balance"))
+
+    events = send(agent, start_conversation(agent, log_in(bank, "liming")), "帮我买点基金")
+
+    assert traces(events, "intent") == [
+        {"intent": "", "declined": {"reason": "out_of_scope", "can_do": ["query_balance"]}}
+    ]
 
 
 def test_the_trace_shows_the_plan_graph_with_the_banks_tier_for_each_step(

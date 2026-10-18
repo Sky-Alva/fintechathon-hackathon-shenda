@@ -72,7 +72,11 @@ function TraceItem({ trace }: { trace: Trace }) {
       return (
         <div className="trace-item">
           <span className="trace-label">意图 Intent</span>
-          <span>{trace.data.intent || '（未说明）'}</span>
+          <span>
+            {trace.data.declined
+              ? `已拒绝（${trace.data.declined.reason}），可改为：${trace.data.declined.can_do.join('、')}`
+              : trace.data.intent || '（未说明）'}
+          </span>
         </div>
       )
     case 'plan':
