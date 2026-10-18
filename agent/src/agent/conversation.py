@@ -10,10 +10,11 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
-from agent import planner, responder, reviewer
+from agent import planner, refusals, responder, reviewer
 from agent.bank import BankSession, HttpClient
-from agent.events import Answer, Event
+from agent.events import Answer, Event, Refusal
 from agent.executor import StepResult, execute
+from agent.language import customer_language
 from agent.model import ModelClient
 
 
@@ -55,9 +56,16 @@ class Conversations:
         """One turn: the Customer's message in, the turn's events out."""
         with conversation.lock:
             conversation.history.append({"role": "user", "content": text})
-            plan = planner.make_plan(
-                self.model, conversation.history, conversation.bank.catalogue()
-            )
+            catalogue = conversation.bank.catalogue()
+            plan = planner.make_plan(self.model, conversation.history, catalogue)
+            if isinstance(plan, planner.Declined):
+                # Nothing runs: the Customer hears what the Agent can do instead.
+                refusal = refusals.out_of_scope(
+                    plan.can_do, catalogue, customer_language(conversation.history)
+                )
+                conversation.history.append({"role": "assistant", "content": refusal})
+                yield Refusal(reason=plan.reason, text=refusal)
+                return
             reviewed = reviewer.review(plan, conversation.bank)
             if not reviewed.green_only:
                 # Yellow and Red steps need a Plan card first (#31).
