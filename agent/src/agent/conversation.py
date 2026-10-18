@@ -23,6 +23,8 @@ class Conversation:
     bank: BankSession
     history: list[dict[str, Any]] = field(default_factory=list)
     """The Customer's messages and the Agent's answers, in the model's chat format."""
+    bank_results: list[StepResult] = field(default_factory=list)
+    """Every Bank result so far: the facts an answer may state."""
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -64,6 +66,9 @@ class Conversations:
                 raise NotImplementedError("Plans with Yellow or Red steps need a Plan card")
             results: list[StepResult] = []
             yield from execute(reviewed, conversation.bank, results)
-            text = responder.answer(self.model, conversation.history, results)
+            text = responder.answer(
+                self.model, conversation.history, results, conversation.bank_results
+            )
+            conversation.bank_results.extend(results)
             conversation.history.append({"role": "assistant", "content": text})
             yield Answer(text=text)
