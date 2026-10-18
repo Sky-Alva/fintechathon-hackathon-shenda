@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 from bank import (
     approvals,
     audit,
+    cards,
     clock,
     customers,
     db,
@@ -41,6 +42,7 @@ from bank.registry import BankModule, Refusal, RefusalReason, Registry
 MODULES: list[BankModule] = [
     clock.MODULE,
     customers.MODULE,
+    cards.MODULE,
     phone.MODULE,
     transfers.MODULE,
     limits.MODULE,
