@@ -37,4 +37,13 @@ class Answer(BaseModel):
     text: str
 
 
-Event = StepStarted | StepSucceeded | Answer
+class Trace(BaseModel):
+    """Decision-trace data for the Channel's toggleable panel. Never carries a token,
+    password or verification code."""
+
+    type: Literal["trace"] = "trace"
+    stage: Literal["intent", "plan", "bank_request", "bank_response", "audit_trail"]
+    data: dict[str, Any]
+
+
+Event = StepStarted | StepSucceeded | Answer | Trace

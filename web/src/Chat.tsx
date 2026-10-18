@@ -1,6 +1,7 @@
 import { type FormEvent, useEffect, useRef, useState } from 'react'
 import { sendMessage } from './api'
 import type { ConversationEvent } from './events'
+import TracePanel, { type TraceTurn } from './TracePanel'
 
 type Item =
   | { kind: 'customer'; text: string }
@@ -38,6 +39,9 @@ export default function Chat({ customerName, conversationId, onLogOut }: Props) 
   ])
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
+  const [showTrace, setShowTrace] = useState(false)
+  const [traceTurns, setTraceTurns] = useState<TraceTurn[]>([])
+  const [finishedTurns, setFinishedTurns] = useState(0)
   const bottom = useRef<HTMLDivElement>(null)
 
   useEffect(() => bottom.current?.scrollIntoView({ behavior: 'smooth' }), [items])
@@ -49,12 +53,22 @@ export default function Chat({ customerName, conversationId, onLogOut }: Props) 
     setDraft('')
     setBusy(true)
     setItems((current) => [...current, { kind: 'customer', text }])
+    setTraceTurns((turns) => [...turns, { text, traces: [] }])
     try {
-      await sendMessage(conversationId, text, (e) => setItems((current) => apply(current, e)))
+      await sendMessage(conversationId, text, (e) => {
+        // Trace events feed the decision trace panel only, never the chat.
+        if (e.type === 'trace')
+          setTraceTurns((turns) => [
+            ...turns.slice(0, -1),
+            { ...turns[turns.length - 1], traces: [...turns[turns.length - 1].traces, e] },
+          ])
+        else setItems((current) => apply(current, e))
+      })
     } catch {
       setItems((current) => [...current, { kind: 'error', text: '出错了，请稍后再试。' }])
     } finally {
       setBusy(false)
+      setFinishedTurns((n) => n + 1)
     }
   }
 
@@ -62,10 +76,28 @@ export default function Chat({ customerName, conversationId, onLogOut }: Props) 
     <div className="chat">
       <header>
         <span>智能银行助手</span>
-        <button type="button" className="link" onClick={onLogOut}>
-          {customerName} · 退出
-        </button>
+        <span>
+          <button
+            type="button"
+            className="link"
+            aria-pressed={showTrace}
+            onClick={() => setShowTrace((shown) => !shown)}
+          >
+            {showTrace ? '隐藏追踪' : '决策追踪'}
+          </button>
+          <button type="button" className="link" onClick={onLogOut}>
+            {customerName} · 退出
+          </button>
+        </span>
       </header>
+      {showTrace && (
+        <TracePanel
+          conversationId={conversationId}
+          turns={traceTurns}
+          finishedTurns={finishedTurns}
+          onClose={() => setShowTrace(false)}
+        />
+      )}
       <main>
         {items.map((item, i) =>
           item.kind === 'step' ? (
