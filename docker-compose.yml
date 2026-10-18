@@ -11,3 +11,32 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  agent:
+    build: ./agent
+    ports:
+      - "8001:8001"
+    # Model settings and API keys (see .env.example). Never the Bank's admin key: the
+    # Agent is an untrusted caller (ADR-0001).
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      BANK_URL: http://bank:8000
+      BANK_ADMIN_KEY: ""
+    depends_on:
+      bank:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  web:
+    build: ./web
+    ports:
+      - "8080:80"
+    depends_on:
+      agent:
+        condition: service_healthy
