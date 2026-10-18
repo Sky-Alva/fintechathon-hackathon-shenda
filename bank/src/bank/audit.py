@@ -34,7 +34,8 @@ CREATE TABLE audit_log (
     tier TEXT,
     outcome TEXT NOT NULL CHECK (outcome IN ('ok', 'refused')),
     reason TEXT,
-    detail TEXT NOT NULL
+    detail TEXT NOT NULL,
+    refusal_detail TEXT
 );
 """
 
@@ -60,11 +61,15 @@ def record(
     tier: Tier | None,
     reason: RefusalReason | None,
     detail: dict[str, Any] | None = None,
+    refusal_detail: dict[str, Any] | None = None,
 ) -> None:
+    """`detail` is what Staff Members see; for a refusal, `refusal_detail` is what the
+    caller was told, which is all the session itself sees of it."""
     conn.execute(
         "INSERT INTO audit_log"
-        " (session_id, at, event, operation, input, tier, outcome, reason, detail)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " (session_id, at, event, operation, input, tier, outcome, reason, detail,"
+        " refusal_detail)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             session_id,
             at.isoformat(),
@@ -75,18 +80,28 @@ def record(
             "refused" if reason else "ok",
             reason.value if reason else None,
             json.dumps(detail or {}, ensure_ascii=False, default=str),
+            json.dumps(refusal_detail or {}, ensure_ascii=False, default=str) if reason else None,
         ),
     )
 
 
-def trail(conn: sqlite3.Connection, session_id: str) -> list[dict[str, Any]]:
+def trail(
+    conn: sqlite3.Connection, session_id: str, *, as_caller: bool = False
+) -> list[dict[str, Any]]:
+    """One session's entries in order: as a Staff Member sees them, or `as_caller`, with
+    each refusal showing only what the caller was told (never e.g. which token a refused
+    one turned out to be)."""
     rows = conn.execute(
         "SELECT * FROM audit_log WHERE session_id = ? ORDER BY entry_id", (session_id,)
     ).fetchall()
-    return [
-        {**dict(row), "input": json.loads(row["input"]), "detail": json.loads(row["detail"])}
-        for row in rows
-    ]
+    entries = []
+    for row in rows:
+        entry = {**dict(row), "input": json.loads(row["input"])}
+        shown = row["refusal_detail"] if as_caller and row["outcome"] == "refused" else None
+        entry["detail"] = json.loads(shown or row["detail"])
+        del entry["refusal_detail"]
+        entries.append(entry)
+    return entries
 
 
 class ReadAuditTrailInput(BaseModel):
@@ -110,14 +125,12 @@ class ReadAuditTrailOutput(BaseModel):
     entries: list[AuditEntry]
 
 
-def read_audit_trail(ctx: OperationContext, _: ReadAuditTrailInput) -> ReadAuditTrailOutput:
-    entries = [AuditEntry.model_validate(entry) for entry in trail(ctx.conn, ctx.session_id)]
-    for entry in entries:
-        # A refused entry's detail is the refusal's audit-only detail (e.g. which token a
-        # refused one turned out to be), which the caller is never shown; Staff Members are.
-        if entry.outcome == "refused":
-            entry.detail = {}
-    return ReadAuditTrailOutput(session_id=ctx.session_id, entries=entries)
+def read_audit_trail(ctx: OperationContext, input: ReadAuditTrailInput) -> ReadAuditTrailOutput:
+    entries = trail(ctx.conn, ctx.session_id, as_caller=True)
+    return ReadAuditTrailOutput(
+        session_id=ctx.session_id,
+        entries=[AuditEntry.model_validate(entry) for entry in entries],
+    )
 
 
 MODULE = BankModule(
@@ -127,11 +140,11 @@ MODULE = BankModule(
         Operation(
             name="read_audit_trail",
             description_zh=(
-                "按顺序读取当前会话的审计记录：每次请求、权限等级判定、确认、验证尝试及结果。"
+                "按顺序读取当前会话的审计记录：每次请求、权限等级判定、确认、强验证尝试及结果。"
             ),
             description_en=(
-                "Read the current session's audit trail in order: every request, tier"
-                " decision, Confirmation, verification attempt and outcome."
+                "Read the current session's audit trail in order: every request, Permission"
+                " Tier decision, Confirmation, Strong Verification attempt and outcome."
             ),
             input_model=ReadAuditTrailInput,
             output_model=ReadAuditTrailOutput,

@@ -559,12 +559,12 @@ class _audited:
         self.conn.execute("ROLLBACK TO gate")
         self.conn.execute("RELEASE gate")
         if isinstance(error, Refusal):
-            _audit(
-                self.conn, self.session, self.now, self.event, self.call, error.reason,
-                error.audit_detail,
-            )
             if self.index is not None:
                 error.detail = {**error.detail, "index": self.index}
+            _audit(
+                self.conn, self.session, self.now, self.event, self.call, error.reason,
+                error.audit_detail, error.detail,
+            )
 
 
 def _parse[M: BaseModel](model: type[M], data: Any) -> M:
@@ -592,6 +592,7 @@ def _audit(
     call: _Call,
     reason: RefusalReason | None,
     detail: dict[str, Any] | None = None,
+    refusal_detail: dict[str, Any] | None = None,
 ) -> None:
     audit.record(
         conn,
@@ -603,4 +604,5 @@ def _audit(
         tier=call.tier,
         reason=reason,
         detail=detail,
+        refusal_detail=refusal_detail,
     )
