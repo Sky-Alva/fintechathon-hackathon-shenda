@@ -27,6 +27,12 @@ export type StepSucceeded = {
   output: Record<string, unknown>
 }
 export type Answer = { type: 'answer'; text: string }
+// Emitted for 'out_of_scope' since #33; 'manipulation' (#43) and 'secret' (#44) reserved.
+export type Refusal = {
+  type: 'refusal'
+  reason: 'out_of_scope' | 'manipulation' | 'secret'
+  text: string
+}
 
 // Reserved: proposed payloads, refined by the ticket that first emits each one.
 export type PlanProposed = {
@@ -58,11 +64,6 @@ export type ClarificationQuestion = {
   type: 'clarification_question'
   text: string
   options: { label: string; value: string }[]
-}
-export type Refusal = {
-  type: 'refusal'
-  reason: 'out_of_scope' | 'manipulation' | 'secret'
-  text: string
 }
 export type SessionLocked = {
   type: 'session_locked'
