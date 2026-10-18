@@ -2,6 +2,7 @@
 
     POST /conversations {session_token}            -> {conversation_id}
     POST /conversations/{id}/messages {text}       -> the turn's events, as NDJSON
+    GET  /conversations/{id}/audit-trail           -> a `trace` event: the session's audit trail
 
 Events are documented in docs/conversation-events.md. The Agent is configured with the
 Bank's URL and a model, never the Bank's admin key.
@@ -17,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from agent.bank import HttpClient
 from agent.conversation import Conversations, UnknownConversation
-from agent.events import Event
+from agent.events import Event, Trace
 from agent.model import ModelClient, model_from_env
 
 
@@ -58,6 +59,10 @@ def create_app(bank: HttpClient, model: ModelClient) -> FastAPI:
             media_type="application/x-ndjson",
             headers={"X-Accel-Buffering": "no"},
         )
+
+    @app.get("/conversations/{conversation_id}/audit-trail")
+    def audit_trail(conversation_id: str) -> Trace:
+        return conversations.audit_trail(conversations.get(conversation_id))
 
     @app.get("/health")
     def health() -> dict[str, str]:

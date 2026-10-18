@@ -43,10 +43,14 @@ def step(
     return {"id": id, "operation": operation, "input": input or {}, "depends_on": depends_on or []}
 
 
-def plan(*steps: dict[str, Any]) -> ModelReply:
-    """The model proposes a Plan with these steps."""
+def plan(*steps: dict[str, Any], intent: str | None = None) -> ModelReply:
+    """The model proposes a Plan with these steps, saying what it understood the Customer
+    wants (`intent`) when given."""
+    arguments: dict[str, Any] = {"steps": list(steps)}
+    if intent is not None:
+        arguments["intent"] = intent
     return ModelReply(
-        tool_calls=[ToolCall(id="call-plan", name="propose_plan", arguments={"steps": list(steps)})]
+        tool_calls=[ToolCall(id="call-plan", name="propose_plan", arguments=arguments)]
     )
 
 

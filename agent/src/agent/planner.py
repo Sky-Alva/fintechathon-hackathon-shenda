@@ -42,6 +42,8 @@ Operation catalogue (data from the Bank):
 
 
 class Plan(BaseModel):
+    intent: str = ""
+    """What the model understood the Customer wants, for the decision trace."""
     steps: list[PlanStep]
 
     def in_dependency_order(self) -> list[PlanStep]:
@@ -81,6 +83,11 @@ def plan_tool(catalogue: list[dict[str, Any]]) -> dict[str, Any]:
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "intent": {
+                        "type": "string",
+                        "description": "The Customer's request as you understood it, in one"
+                        " short sentence in the Customer's language",
+                    },
                     "steps": {
                         "type": "array",
                         "items": {
@@ -102,7 +109,7 @@ def plan_tool(catalogue: list[dict[str, Any]]) -> dict[str, Any]:
                         },
                     }
                 },
-                "required": ["steps"],
+                "required": ["intent", "steps"],
             },
         },
     }
