@@ -113,7 +113,8 @@ def test_the_model_is_never_shown_a_confirmation_token_nor_given_a_way_to_get_on
     for request in model.requests:
         assert "confirmation_token" not in request.text()
         assert "CNF-" not in request.text()  # nor a Confirmation's ID
-        assert [tool["function"]["name"] for tool in request.tools or []] in ([], ["propose_plan"])
+        tools = [tool["function"]["name"] for tool in request.tools or []]
+        assert set(tools) <= {"propose_plan", "decline_request"}
     assert "confirmation_token" not in str(events)
     assert "CNF-" not in str(events)
 
@@ -289,6 +290,18 @@ def test_rejecting_the_plan_card_runs_nothing_and_the_agent_acknowledges_it(
         json={"input": {}},
     ).json()["output"]["accounts"][0]["balance"]
     assert balance == "1180.00"
+
+
+def test_a_rejection_is_acknowledged_in_the_customers_language(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    model.script(two_transfers())
+    conversation = start_conversation(agent, log_in(bank, "liming"))
+    plan_id = send(agent, conversation, "Send Mum 200 and my wife 300")[0]["plan_id"]
+
+    events = act(agent, conversation, "reject", plan_id=plan_id)
+
+    assert "cancelled" in events[0]["text"]
 
 
 def test_after_a_rejection_the_next_turn_knows_the_plan_was_cancelled(

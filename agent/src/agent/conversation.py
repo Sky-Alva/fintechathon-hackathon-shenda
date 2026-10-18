@@ -13,10 +13,18 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent import planner, responder, reviewer
+from agent import planner, refusals, responder, reviewer
 from agent.bank import BankSession, HttpClient
-from agent.events import Answer, ConfirmationRequested, Event, PlanProposed, StepFailed
+from agent.events import (
+    Answer,
+    ConfirmationRequested,
+    Event,
+    PlanProposed,
+    Refusal,
+    StepFailed,
+)
 from agent.executor import StepResult, execute
+from agent.language import Language, customer_language
 from agent.model import ModelClient
 from agent.reviewer import ReviewedPlan
 
@@ -64,7 +72,10 @@ class RejectPlan(BaseModel):
 
 CustomerAction = Annotated[ConfirmPlan | RejectPlan, Field(discriminator="action")]
 
-REJECTED = "好的，已取消这个计划，没有执行任何操作。"
+REJECTED: dict[Language, str] = {
+    "zh": "好的，已取消这个计划，没有执行任何操作。",
+    "en": "OK, I've cancelled that Plan. Nothing was done.",
+}
 """The Agent's acknowledgement of a rejected Plan card: nothing ran, so nothing to report."""
 
 
@@ -105,6 +116,9 @@ class Conversations:
             conversation.history.append({"role": "user", "content": text})
             bank, catalogue = conversation.bank, conversation.bank.catalogue()
             plan = planner.make_plan(self.model, conversation.history, catalogue)
+            if isinstance(plan, planner.Declined):
+                yield self._decline(conversation, plan, catalogue)
+                return
             # Exact details first: run the Green look-ups a later step's input waits on,
             # then have the Planner complete the Plan from what the Bank returned.
             looked_up: list[StepResult] = []
@@ -119,6 +133,9 @@ class Conversations:
                         catalogue,
                         [asdict(result) for result in looked_up],
                     )
+                    if isinstance(plan, planner.Declined):  # not on offer, but just in case
+                        yield self._decline(conversation, plan, catalogue)
+                        return
             reviewed = reviewer.review(plan, bank)
             if reviewed.green_only:
                 yield from self._run(conversation, reviewed, looked_up)
@@ -150,10 +167,21 @@ class Conversations:
             return self._rejected(conversation)
         return self._confirmed(conversation, pending)
 
+    def _decline(
+        self, conversation: Conversation, declined: planner.Declined, catalogue: list[dict[str, Any]]
+    ) -> Refusal:
+        # Nothing runs: the Customer hears what the Agent can do instead.
+        text = refusals.out_of_scope(
+            declined.can_do, catalogue, customer_language(conversation.history)
+        )
+        conversation.history.append({"role": "assistant", "content": text})
+        return Refusal(reason=declined.reason, text=text)
+
     def _rejected(self, conversation: Conversation) -> Iterator[Event]:
         with conversation.lock:
-            conversation.history.append({"role": "assistant", "content": REJECTED})
-            yield Answer(text=REJECTED)
+            text = REJECTED[customer_language(conversation.history)]
+            conversation.history.append({"role": "assistant", "content": text})
+            yield Answer(text=text)
 
     def _confirmed(self, conversation: Conversation, pending: PendingPlan) -> Iterator[Event]:
         with conversation.lock:

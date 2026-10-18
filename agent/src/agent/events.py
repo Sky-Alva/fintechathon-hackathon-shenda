@@ -75,6 +75,20 @@ class Answer(BaseModel):
     text: str
 
 
+class Refusal(BaseModel):
+    """The Agent won't do this; `text` explains and lists what it can do. Ends the turn."""
+
+    type: Literal["refusal"] = "refusal"
+    reason: Literal["out_of_scope", "manipulation", "secret"]
+    text: str
+
+
 Event = (
-    StepStarted | StepSucceeded | StepFailed | Answer | PlanProposed | ConfirmationRequested
+    StepStarted
+    | StepSucceeded
+    | StepFailed
+    | Answer
+    | Refusal
+    | PlanProposed
+    | ConfirmationRequested
 )
