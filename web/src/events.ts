@@ -53,6 +53,15 @@ export type ConfirmationRequested = {
   plan_id: string
   step_ids: string[]
 }
+// Emitted since #38: the Customer tapped stop. `ran` / `not_run` are card step IDs; `text`
+// names them by their number on the card. Answered with resume or cancel, or a new message.
+export type PlanPaused = {
+  type: 'plan_paused'
+  plan_id: string
+  ran: string[]
+  not_run: string[]
+  text: string
+}
 // `reason` is the Bank's refusal reason, or 'bank_unavailable' when the Agent couldn't
 // reach the Bank (#32).
 export type StepFailed = BankRefusal & { type: 'step_failed'; step_id: string; operation: string }
@@ -121,6 +130,7 @@ export type ConversationEvent =
   | Answer
   | PlanProposed
   | ConfirmationRequested
+  | PlanPaused
   | VerificationRequested
   | StepFailed
   | ReversalOffered
