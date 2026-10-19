@@ -1,12 +1,30 @@
 import { type FormEvent, useEffect, useRef, useState } from 'react'
-import { sendMessage } from './api'
-import type { ConversationEvent } from './events'
+import { type CustomerAction, sendAction, sendMessage } from './api'
+import type { BankRefusal, ConversationEvent, PlanStep } from './events'
+import PlanCard, { type PlanCardStatus } from './PlanCard'
 import TracePanel, { type TraceTurn } from './TracePanel'
+
+/** One step's progress line: running, then done or failed (with the Bank's message). */
+type StepItem = {
+  kind: 'step'
+  stepId: string
+  operation: string
+  status: StepStatus
+  failure?: string
+}
 
 type Item =
   | { kind: 'customer'; text: string }
   | { kind: 'agent'; text: string }
-  | { kind: 'step'; stepId: string; operation: string; status: StepStatus }
+  | StepItem
+  | {
+      kind: 'plan'
+      planId: string
+      steps: PlanStep[]
+      refusals: (BankRefusal & { step_id: string })[]
+      confirmIds: string[]
+      status: PlanCardStatus
+    }
   | { kind: 'error'; text: string }
 
 type StepStatus = 'running' | 'done' | 'failed'
@@ -19,34 +37,60 @@ const STEP_LABEL: Record<StepStatus, string> = {
 
 type Props = { customerName: string; conversationId: string; onLogOut: () => void }
 
+/** Settle the latest progress line for this step that is still running. */
+function settle(items: Item[], stepId: string, change: Partial<StepItem>): Item[] {
+  const index = items.findLastIndex(
+    (item) => item.kind === 'step' && item.stepId === stepId && item.status === 'running',
+  )
+  if (index < 0) return items
+  return items.map((item, i) => (i === index && item.kind === 'step' ? { ...item, ...change } : item))
+}
+
 /** Folds one streamed event into the chat. Events this slice doesn't display yet
- * (Plan cards, verification, trace…) are left to the tickets that emit them. */
+ * (verification, trace…) are left to the tickets that emit them. */
 function apply(items: Item[], event: ConversationEvent): Item[] {
   switch (event.type) {
     case 'step_started':
       return [
         ...items,
-        {
-          kind: 'step',
-          stepId: event.step.id,
-          operation: event.step.operation,
-          status: 'running',
-        },
+        { kind: 'step', stepId: event.step.id, operation: event.step.operation, status: 'running' },
       ]
     case 'step_succeeded':
-      return finish(items, event.step_id, 'done')
+      return settle(items, event.step_id, { status: 'done' })
     case 'step_failed': {
-      // A step the Bank's tier preview refused never started.
-      const started = items.some(
-        (item) => item.kind === 'step' && item.stepId === event.step_id && item.status === 'running',
-      )
-      return started
-        ? finish(items, event.step_id, 'failed')
+      const settled = settle(items, event.step_id, { status: 'failed', failure: event.message })
+      // Refused before it started (by the tier preview, or its Confirmation): show it anyway.
+      return settled !== items
+        ? settled
         : [
             ...items,
-            { kind: 'step', stepId: event.step_id, operation: event.operation, status: 'failed' },
+            {
+              kind: 'step',
+              stepId: event.step_id,
+              operation: event.operation,
+              status: 'failed',
+              failure: event.message,
+            },
           ]
     }
+    case 'plan_proposed':
+      return [
+        ...items,
+        {
+          kind: 'plan',
+          planId: event.plan_id,
+          steps: event.steps,
+          refusals: event.refusals,
+          confirmIds: [],
+          status: 'proposed',
+        },
+      ]
+    case 'confirmation_requested':
+      return items.map((item) =>
+        item.kind === 'plan' && item.planId === event.plan_id
+          ? { ...item, confirmIds: event.step_ids, status: 'awaiting' }
+          : item,
+      )
     case 'answer':
     case 'refusal':
       return [...items, { kind: 'agent', text: event.text }]
@@ -55,11 +99,10 @@ function apply(items: Item[], event: ConversationEvent): Item[] {
   }
 }
 
-function finish(items: Item[], stepId: string, status: StepStatus): Item[] {
+/** A Plan card still waiting for an answer is replaced by the Customer's next message. */
+function replaceWaitingPlans(items: Item[]): Item[] {
   return items.map((item) =>
-    item.kind === 'step' && item.stepId === stepId && item.status === 'running'
-      ? { ...item, status }
-      : item,
+    item.kind === 'plan' && item.status === 'awaiting' ? { ...item, status: 'replaced' } : item,
   )
 }
 
@@ -76,16 +119,15 @@ export default function Chat({ customerName, conversationId, onLogOut }: Props) 
 
   useEffect(() => bottom.current?.scrollIntoView({ behavior: 'smooth' }), [items])
 
-  async function submit(event: FormEvent) {
-    event.preventDefault()
-    const text = draft.trim()
-    if (!text || busy) return
-    setDraft('')
+  /** One turn: `label` names it in the decision trace (the message, or the tap). */
+  async function runTurn(
+    label: string,
+    turn: (onEvent: (e: ConversationEvent) => void) => Promise<void>,
+  ) {
     setBusy(true)
-    setItems((current) => [...current, { kind: 'customer', text }])
-    setTraceTurns((turns) => [...turns, { text, traces: [] }])
+    setTraceTurns((turns) => [...turns, { text: label, traces: [] }])
     try {
-      await sendMessage(conversationId, text, (e) => {
+      await turn((e) => {
         // Trace events feed the decision trace panel only, never the chat.
         if (e.type === 'trace')
           setTraceTurns((turns) => [
@@ -100,6 +142,29 @@ export default function Chat({ customerName, conversationId, onLogOut }: Props) 
       setBusy(false)
       setFinishedTurns((n) => n + 1)
     }
+  }
+
+  async function submit(event: FormEvent) {
+    event.preventDefault()
+    const text = draft.trim()
+    if (!text || busy) return
+    setDraft('')
+    setItems((current) => [...replaceWaitingPlans(current), { kind: 'customer', text }])
+    await runTurn(text, (onEvent) => sendMessage(conversationId, text, onEvent))
+  }
+
+  async function answerPlan(planId: string, action: CustomerAction['action']) {
+    if (busy) return
+    const status: PlanCardStatus = action === 'confirm' ? 'confirmed' : 'rejected'
+    setItems((current) =>
+      current.map((item) =>
+        item.kind === 'plan' && item.planId === planId ? { ...item, status } : item,
+      ),
+    )
+    const label = action === 'confirm' ? '（确认计划）' : '（取消计划）'
+    await runTurn(label, (onEvent) =>
+      sendAction(conversationId, { action, plan_id: planId }, onEvent),
+    )
   }
 
   return (
@@ -129,17 +194,37 @@ export default function Chat({ customerName, conversationId, onLogOut }: Props) 
         />
       )}
       <main>
-        {items.map((item, i) =>
-          item.kind === 'step' ? (
-            <div key={i} className={`step ${item.status}`}>
-              {STEP_LABEL[item.status]}：{item.operation}
-            </div>
-          ) : (
-            <div key={i} className={`bubble ${item.kind}`}>
-              {item.text}
-            </div>
-          ),
-        )}
+        {items.map((item, i) => {
+          switch (item.kind) {
+            case 'step':
+              return (
+                <div key={i} className={`step ${item.status}`}>
+                  {STEP_LABEL[item.status]}
+                  ：{item.operation}
+                  {item.failure && `（银行：${item.failure}）`}
+                </div>
+              )
+            case 'plan':
+              return (
+                <PlanCard
+                  key={i}
+                  steps={item.steps}
+                  refusals={item.refusals}
+                  confirmIds={item.confirmIds}
+                  status={item.status}
+                  disabled={busy}
+                  onConfirm={() => answerPlan(item.planId, 'confirm')}
+                  onReject={() => answerPlan(item.planId, 'reject')}
+                />
+              )
+            default:
+              return (
+                <div key={i} className={`bubble ${item.kind}`}>
+                  {item.text}
+                </div>
+              )
+          }
+        })}
         {busy && <div className="typing">助手正在处理…</div>}
         <div ref={bottom} />
       </main>
