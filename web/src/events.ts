@@ -34,7 +34,7 @@ export type Refusal = {
   text: string
 }
 
-// Reserved: proposed payloads, refined by the ticket that first emits each one.
+// Emitted since #31: the Plan card and each step's outcome.
 export type PlanProposed = {
   type: 'plan_proposed'
   plan_id: string
@@ -46,6 +46,9 @@ export type ConfirmationRequested = {
   plan_id: string
   step_ids: string[]
 }
+export type StepFailed = BankRefusal & { type: 'step_failed'; step_id: string; operation: string }
+
+// Reserved: proposed payloads, refined by the ticket that first emits each one.
 export type VerificationRequested = {
   type: 'verification_requested'
   plan_id: string
@@ -54,7 +57,6 @@ export type VerificationRequested = {
   sent_to: string
   expires_at: string
 }
-export type StepFailed = BankRefusal & { type: 'step_failed'; step_id: string; operation: string }
 export type ReversalOffered = {
   type: 'reversal_offered'
   plan_id: string

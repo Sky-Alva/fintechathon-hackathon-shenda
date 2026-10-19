@@ -37,10 +37,32 @@ export async function sendMessage(
   text: string,
   onEvent: (event: ConversationEvent) => void,
 ): Promise<void> {
-  const response = await fetch(`/agent/conversations/${conversationId}/messages`, {
+  await streamTurn(`/agent/conversations/${conversationId}/messages`, { text }, onEvent)
+}
+
+/** The Customer's answer to a prompt, e.g. a tap on a Plan card. */
+export type CustomerAction =
+  | { action: 'confirm'; plan_id: string }
+  | { action: 'reject'; plan_id: string }
+
+/** Send a Customer action; `onEvent` gets each event of the turn as it streams in. */
+export async function sendAction(
+  conversationId: string,
+  action: CustomerAction,
+  onEvent: (event: ConversationEvent) => void,
+): Promise<void> {
+  await streamTurn(`/agent/conversations/${conversationId}/actions`, action, onEvent)
+}
+
+async function streamTurn(
+  url: string,
+  body: unknown,
+  onEvent: (event: ConversationEvent) => void,
+): Promise<void> {
+  const response = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text }),
+    body: JSON.stringify(body),
   })
   if (!response.ok || !response.body) throw new Error('消息发送失败')
   const reader = response.body.pipeThrough(new TextDecoderStream()).getReader()
