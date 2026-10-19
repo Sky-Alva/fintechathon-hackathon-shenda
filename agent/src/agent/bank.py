@@ -98,13 +98,28 @@ class BankSession:
         )["confirmations"]
         return confirmations
 
+    def request_verification(self, operation: str, input: dict[str, Any]) -> dict[str, Any]:
+        """Open a Strong Verification challenge for one Red call: the Bank texts a code to
+        the Customer's simulated phone. Returns `{challenge_id, operation, tier, sent_to,
+        expires_at}`; the code itself never comes back to the Agent's session."""
+        challenge: dict[str, Any] = self._send(
+            "post", "/verifications", json={"operation": operation, "input": input}
+        )
+        return challenge
+
     def call(
-        self, operation: str, input: dict[str, Any], confirmation_token: str | None = None
+        self,
+        operation: str,
+        input: dict[str, Any],
+        confirmation_token: str | None = None,
+        verification_token: str | None = None,
     ) -> dict[str, Any]:
         """Run one Operation through the Bank's policy gate: `{operation, tier, output}`."""
         body: dict[str, Any] = {"input": input}
         if confirmation_token is not None:
             body["confirmation_token"] = confirmation_token
+        if verification_token is not None:
+            body["verification_token"] = verification_token
         result: dict[str, Any] = self._send("post", f"/operations/{operation}", json=body)
         return result
 

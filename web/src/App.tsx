@@ -8,6 +8,8 @@ type Session = { login: BankLogin; conversationId: string }
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(null)
+  // Where the Chat shows the Customer's simulated phone (the SMS inbox), beside the app.
+  const [smsSlot, setSmsSlot] = useState<HTMLDivElement | null>(null)
 
   async function onLogIn(username: string, password: string) {
     const login = await logIn(username, password)
@@ -23,12 +25,15 @@ export default function App() {
           <Chat
             customerName={session.login.customer.name}
             conversationId={session.conversationId}
+            phoneToken={session.login.phone_token}
+            smsSlot={smsSlot}
             onLogOut={() => setSession(null)}
           />
         ) : (
           <Login onLogIn={onLogIn} />
         )}
       </div>
+      {session && <div className="sms-slot" ref={setSmsSlot} />}
       <PresenterClock />
     </div>
   )
