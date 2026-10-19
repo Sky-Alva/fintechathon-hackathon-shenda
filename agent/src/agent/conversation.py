@@ -13,7 +13,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent import planner, refusals, responder, reviewer
+from agent import notices, planner, refusals, responder, reviewer
 from agent.bank import BankRefused, BankSession, BankUnavailable, HttpClient
 from agent.events import (
     Answer,
@@ -24,10 +24,11 @@ from agent.events import (
     HistoryEntry,
     PlanProposed,
     Refusal,
-    StepFailed,
+    SessionLocked,
     Trace,
+    VerificationRequested,
 )
-from agent.executor import StepResult, execute
+from agent.executor import BANK_UNAVAILABLE, StepResult, execute, failed
 from agent.language import Language, customer_language
 from agent.model import ModelClient
 from agent.reviewer import ReviewedPlan
@@ -45,6 +46,20 @@ class PendingPlan:
 
 
 @dataclass
+class PendingVerification:
+    """A confirmed Plan paused at a Red step, waiting for its Strong Verification."""
+
+    plan_id: str
+    plan: ReviewedPlan
+    """The steps still to run, the Red step first."""
+    results: list[StepResult]
+    """What the Bank returned for the Plan so far, look-ups included."""
+    confirmation_tokens: dict[str, str]
+    """The Customer's Confirmations of the Yellow steps still to run."""
+    requested: VerificationRequested
+
+
+@dataclass
 class Conversation:
     conversation_id: str
     bank: BankSession
@@ -54,7 +69,9 @@ class Conversation:
     """`{customer_id, name}`, as the Bank told it."""
     history: list[dict[str, Any]] = field(default_factory=list)
     """The Customer's messages and the Agent's answers, in the model's chat format."""
-    pending: PendingPlan | None = None
+    pending: PendingPlan | PendingVerification | None = None
+    """The prompt waiting for the Customer's answer: a Plan card, or a Red step's
+    verification."""
     plans_proposed: int = 0
     bank_results: list[StepResult] = field(default_factory=list)
     """Every Bank result so far: the facts an answer may state."""
@@ -85,7 +102,32 @@ class RejectPlan(BaseModel):
     plan_id: str
 
 
-CustomerAction = Annotated[ConfirmPlan | RejectPlan, Field(discriminator="action")]
+class VerifiedStep(BaseModel):
+    """The Customer typed the right code into the simulated phone, which sent it straight
+    to the Bank and hands the Agent only the verification token it got back."""
+
+    model_config = ConfigDict(extra="forbid")
+    action: Literal["verified"]
+    plan_id: str
+    step_id: str
+    verification_token: str = Field(min_length=1)
+
+
+class WrongCode(BaseModel):
+    """The Bank refused the code the Customer typed into the simulated phone
+    (`token_invalid`); `failed_attempts` is the Bank's count of wrong codes this session.
+    The Agent asks the Bank itself whether that locked the session."""
+
+    model_config = ConfigDict(extra="forbid")
+    action: Literal["wrong_code"]
+    plan_id: str
+    step_id: str
+    failed_attempts: int = Field(ge=1)
+
+
+CustomerAction = Annotated[
+    ConfirmPlan | RejectPlan | VerifiedStep | WrongCode, Field(discriminator="action")
+]
 
 REJECTED: dict[Language, str] = {
     "zh": "好的，已取消这个计划，没有执行任何操作。",
@@ -103,6 +145,18 @@ def plan_data(plan: ReviewedPlan, look_ups: bool = False) -> dict[str, Any]:
     if plan.refusals:
         data["refusals"] = [refusal.model_dump(mode="json") for refusal in plan.card_refusals]
     return data
+
+
+def answers(action: CustomerAction, pending: PendingPlan | PendingVerification | None) -> bool:
+    """Whether the action answers the prompt waiting for an answer: confirm and reject
+    answer a Plan card, a verification answers its own Red step."""
+    if pending is None or pending.plan_id != action.plan_id:
+        return False
+    if isinstance(action, VerifiedStep | WrongCode):
+        return isinstance(pending, PendingVerification) and (
+            pending.requested.step_id == action.step_id
+        )
+    return isinstance(pending, PendingPlan)
 
 
 class UnknownConversation(Exception):
@@ -214,16 +268,22 @@ class Conversations:
                 yield self._not_retrieved(conversation)
                 return
             yield trace("plan", plan_data(reviewed))
+            if (lock := reviewed.locked) is not None:
+                # Under a Safety Lock only Green Operations run: the notice, no Plan card.
+                yield self._locked(conversation, lock)
+                return
             if reviewed.green_only:
                 yield from self._run(conversation, reviewed, looked_up)
                 return
-            if any(step.tier == "red" for step in reviewed.steps):
-                # Red steps need Strong Verification (#37).
-                raise NotImplementedError("Plans with Red steps need Strong Verification")
             pending = PendingPlan(conversation.next_plan_id(), reviewed, looked_up)
             conversation.pending = pending
             yield PlanProposed(
-                plan_id=pending.plan_id, steps=reviewed.steps, refusals=reviewed.card_refusals
+                plan_id=pending.plan_id,
+                steps=reviewed.steps,
+                refusals=reviewed.card_refusals,
+                warnings=notices.red_warnings(
+                    reviewed.steps, catalogue, customer_language(conversation.history)
+                ),
             )
             yield ConfirmationRequested(
                 plan_id=pending.plan_id, step_ids=[step.id for step in reviewed.yellow_steps]
@@ -237,18 +297,24 @@ class Conversations:
         """
         with conversation.lock:
             pending = conversation.pending
-            if pending is None or pending.plan_id != action.plan_id:
+            if not answers(action, pending):
                 raise PlanNotPending(action.plan_id)
-            conversation.pending = None  # a Plan card is answered once
+            conversation.pending = None  # a prompt is answered once
             conversation.record.append(
                 CustomerActionEntry(action=action.action, plan_id=action.plan_id)
             )
         if isinstance(action, RejectPlan):
             return self._recorded(conversation, self._rejected(conversation))
-        return self._recorded(
-            conversation,
-            with_bank_traces(conversation.bank, self._confirmed(conversation, pending)),
-        )
+        if isinstance(action, VerifiedStep):
+            assert isinstance(pending, PendingVerification)
+            turn = self._verified(conversation, pending, action.verification_token)
+        elif isinstance(action, WrongCode):
+            assert isinstance(pending, PendingVerification)
+            turn = self._wrong_code(conversation, pending, action.failed_attempts)
+        else:
+            assert isinstance(pending, PendingPlan)
+            turn = self._confirmed(conversation, pending)
+        return self._recorded(conversation, with_bank_traces(conversation.bank, turn))
 
     def _decline(
         self,
@@ -275,15 +341,55 @@ class Conversations:
             try:
                 tokens = reviewer.collect_confirmations(pending.plan, conversation.bank)
             except reviewer.ConfirmationRefused as refused:
-                step = refused.step
-                yield StepFailed(step_id=step.id, operation=step.operation, **refused.refusal)
-                failed = StepResult(step.id, step.operation, step.input, None, refused.refusal)
-                yield self._answer(conversation, [*pending.looked_up, failed])
+                results = list(pending.looked_up)
+                yield failed(refused.step, refused.refusal, results)
+                yield from self._finish(conversation, results)
                 return
             except BankUnavailable:
                 yield self._not_retrieved(conversation)
                 return
-            yield from self._run(conversation, pending.plan, pending.looked_up, tokens)
+            yield from self._run(
+                conversation, pending.plan, pending.looked_up, tokens, plan_id=pending.plan_id
+            )
+
+    def _verified(
+        self, conversation: Conversation, pending: PendingVerification, verification_token: str
+    ) -> Iterator[Event]:
+        """Resume the Plan at its Red step, with the step's verification token."""
+        with conversation.lock:
+            yield from self._run(
+                conversation,
+                pending.plan,
+                pending.results,
+                pending.confirmation_tokens,
+                {pending.requested.step_id: verification_token},
+                plan_id=pending.plan_id,
+            )
+
+    def _wrong_code(
+        self, conversation: Conversation, pending: PendingVerification, failed_attempts: int
+    ) -> Iterator[Event]:
+        """The Bank refused a code from the phone: tell the Customer, who can try again on
+        the same challenge."""
+        with conversation.lock:
+            step = pending.plan.steps[0]
+            # The phone's word isn't taken for it: ask the Bank whether the session is
+            # locked now, with a tier preview of the step, which changes nothing.
+            try:
+                [preview] = conversation.bank.tier_preview(
+                    [{"operation": step.operation, "input": step.input}]
+                )
+            except (BankRefused, BankUnavailable):
+                preview = {}
+            if (refusal := preview.get("refusal")) is not None:
+                yield failed(step, refusal, pending.results)
+                yield from self._finish(conversation, pending.results)
+                return
+            text = notices.wrong_code(failed_attempts, customer_language(conversation.history))
+            conversation.history.append({"role": "assistant", "content": text})
+            conversation.pending = pending  # the same challenge still takes the right code
+            yield Answer(text=text)
+            yield pending.requested
 
     def _run(
         self,
@@ -291,11 +397,58 @@ class Conversations:
         plan: ReviewedPlan,
         looked_up: list[StepResult],
         confirmation_tokens: dict[str, str] | None = None,
+        verification_tokens: dict[str, str] | None = None,
+        plan_id: str | None = None,
     ) -> Iterator[Event]:
-        """Run the Plan, then answer from everything the Bank returned for it."""
+        """Run the Plan, then answer from everything the Bank returned for it. A Plan that
+        reaches a Red step pauses there for its Strong Verification instead."""
         results = list(looked_up)
-        yield from execute(plan, conversation.bank, results, confirmation_tokens)
+        tokens = confirmation_tokens or {}
+        paused = yield from execute(plan, conversation.bank, results, tokens, verification_tokens)
+        if paused is None:
+            yield from self._finish(conversation, results)
+            return
+        assert plan_id is not None, "only a confirmed Plan card has Red steps"
+        # The challenge is asked for only now: a step may be Red only because of the
+        # steps that ran before it.
+        try:
+            challenge = conversation.bank.request_verification(paused.operation, paused.input)
+        except BankRefused as refused:
+            yield failed(paused, refused.body(), results)
+            yield from self._finish(conversation, results)
+            return
+        except BankUnavailable:
+            yield failed(paused, BANK_UNAVAILABLE, results)
+            yield from self._finish(conversation, results)
+            return
+        requested = VerificationRequested(
+            plan_id=plan_id,
+            step_id=paused.id,
+            challenge_id=challenge["challenge_id"],
+            sent_to=challenge["sent_to"],
+            expires_at=challenge["expires_at"],
+        )
+        conversation.pending = PendingVerification(
+            plan_id, plan.from_step(paused.id), results, tokens, requested
+        )
+        yield requested
+
+    def _finish(self, conversation: Conversation, results: list[StepResult]) -> Iterator[Event]:
+        """End the Plan's turn: the answer from its results, then, if the Bank refused a
+        step because the session is under a Safety Lock, the notice of what still works."""
         yield self._answer(conversation, results)
+        for result in results:
+            if result.refusal is not None and result.refusal["reason"] == "session_locked":
+                yield self._locked(conversation, result.refusal["detail"])
+                return
+
+    def _locked(self, conversation: Conversation, lock: dict[str, Any]) -> SessionLocked:
+        """The Safety Lock notice, from the detail of the Bank's `session_locked` refusal."""
+        text = notices.safety_lock(
+            lock["trigger"], lock["locked_until"], customer_language(conversation.history)
+        )
+        conversation.history.append({"role": "assistant", "content": text})
+        return SessionLocked(trigger=lock["trigger"], locked_until=lock["locked_until"], text=text)
 
     def _answer(self, conversation: Conversation, results: list[StepResult]) -> Answer:
         """The answer from this Plan's Bank results (and earlier ones in the conversation)."""

@@ -44,14 +44,25 @@ class StepRefusal(BankRefusal):
     step_id: str
 
 
+class PlanWarning(BaseModel):
+    """Why a Red step on the Plan card needs Strong Verification, in the Customer's
+    language: it takes the Daily Transfer Total above ¥1,000, or it is Red in itself."""
+
+    step_id: str
+    reason: Literal["daily_transfer_total", "strong_verification"]
+    text: str
+
+
 class PlanProposed(BaseModel):
     """A Plan card: the Plan has a Yellow or Red step. `steps` are in the order they will
-    run, each with the Bank's tier; `refusals` are steps the tier preview says can't run."""
+    run, each with the Bank's tier; `refusals` are steps the tier preview says can't run;
+    `warnings` say why each Red step needs Strong Verification."""
 
     type: Literal["plan_proposed"] = "plan_proposed"
     plan_id: str
     steps: list[PlanStep]
     refusals: list[StepRefusal]
+    warnings: list[PlanWarning] = []
 
 
 class ConfirmationRequested(BaseModel):
@@ -60,6 +71,19 @@ class ConfirmationRequested(BaseModel):
     type: Literal["confirmation_requested"] = "confirmation_requested"
     plan_id: str
     step_ids: list[str]
+
+
+class VerificationRequested(BaseModel):
+    """A Red step needs Strong Verification: the Bank has texted a code to the Customer's
+    simulated phone. The Customer answers with `verified` and the verification token the
+    phone got back from the Bank; the code itself never reaches the Agent."""
+
+    type: Literal["verification_requested"] = "verification_requested"
+    plan_id: str
+    step_id: str
+    challenge_id: str
+    sent_to: str
+    expires_at: str
 
 
 class StepFailed(BankRefusal):
@@ -93,6 +117,17 @@ class Refusal(BaseModel):
     text: str
 
 
+class SessionLocked(BaseModel):
+    """The Bank has put the session under a Safety Lock: only Green Operations run until
+    `locked_until` or until a Staff Member lifts it. `text` tells the Customer so, in
+    their language. Ends the turn."""
+
+    type: Literal["session_locked"] = "session_locked"
+    trigger: str
+    locked_until: str
+    text: str
+
+
 Event = (
     StepStarted
     | StepSucceeded
@@ -101,6 +136,8 @@ Event = (
     | Refusal
     | PlanProposed
     | ConfirmationRequested
+    | VerificationRequested
+    | SessionLocked
     | Trace
 )
 

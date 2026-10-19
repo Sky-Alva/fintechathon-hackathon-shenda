@@ -8,6 +8,7 @@ reset the Bank and read audit trails.
 """
 
 import json
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -149,6 +150,35 @@ def staff(agent: TestClient, url: str) -> Any:
     response = agent.get(url, headers={"X-Staff-Key": STAFF_KEY})
     assert response.status_code == 200, response.text
     return response.json()
+
+
+def phone_messages(bank: TestClient, login: Login) -> list[dict[str, Any]]:
+    """The SMS on the Customer's simulated phone, read as the Channel's phone does: with
+    the phone token, which the Agent never has."""
+    response = bank.get("/phone/messages", headers={"Authorization": f"Bearer {login.phone_token}"})
+    assert response.status_code == 200, response.text
+    messages: list[dict[str, Any]] = response.json()["messages"]
+    return messages
+
+
+def latest_code(bank: TestClient, login: Login) -> str:
+    """The code in the newest SMS on the simulated phone."""
+    match = re.search(r"\b(\d{6})\b", phone_messages(bank, login)[-1]["text"])
+    assert match, "no code in the latest SMS"
+    return match.group(1)
+
+
+def type_code(bank: TestClient, login: Login, challenge_id: str, code: str) -> dict[str, Any]:
+    """Type a code into the simulated phone, which sends it straight to the Bank with the
+    phone token, as the Channel does. Returns the Bank's body: a verification token, or
+    its refusal."""
+    response = bank.post(
+        f"/verifications/{challenge_id}",
+        headers={"Authorization": f"Bearer {login.phone_token}"},
+        json={"code": code},
+    )
+    body: dict[str, Any] = response.json()
+    return body
 
 
 def bank_audit(bank: TestClient, login: Login) -> list[dict[str, Any]]:

@@ -1,6 +1,6 @@
 """The Executor: runs a reviewed Plan's steps against the Bank, in order, as events."""
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Generator, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -36,34 +36,48 @@ def execute(
     bank: BankSession,
     results: list[StepResult],
     confirmation_tokens: Mapping[str, str] | None = None,
-) -> Iterator[Event]:
+    verification_tokens: Mapping[str, str] | None = None,
+) -> Generator[Event, None, PlanStep | None]:
     """Run the steps in order, appending each Bank result to `results`.
 
     A step the tier preview refused is never sent to the Bank; the steps after it still
     run, as the Plan card showed. A step the Bank refuses (or can't be reached for) when
     it runs stops the Plan: the steps after it don't run. `confirmation_tokens` holds the
-    Customer's Confirmation for each Yellow step, by step ID.
+    Customer's Confirmation for each Yellow step, by step ID, and `verification_tokens`
+    the Strong Verification of each Red step.
+
+    Nothing Red runs without its verification token: the Plan pauses at the first Red
+    step that has none, and that step is returned, not yet run. Otherwise returns None.
     """
-    tokens = confirmation_tokens or {}
+    confirmations = confirmation_tokens or {}
+    verifications = verification_tokens or {}
     for step in plan.steps:
         if (refusal := plan.refusals.get(step.id)) is not None:
-            yield _failed(step, refusal, results)
+            yield failed(step, refusal, results)
             continue
+        if step.tier == "red" and step.id not in verifications:
+            return step
         yield StepStarted(step=step)
         try:
-            result = bank.call(step.operation, step.input, tokens.get(step.id))
+            result = bank.call(
+                step.operation,
+                step.input,
+                confirmations.get(step.id),
+                verifications.get(step.id),
+            )
         except BankRefused as refused:
-            yield _failed(step, refused.body(), results)
-            return
+            yield failed(step, refused.body(), results)
+            return None
         except BankUnavailable:
-            yield _failed(step, BANK_UNAVAILABLE, results)
-            return
+            yield failed(step, BANK_UNAVAILABLE, results)
+            return None
         results.append(StepResult(step.id, step.operation, step.input, result["output"]))
         yield StepSucceeded(
             step_id=step.id, operation=step.operation, tier=result["tier"], output=result["output"]
         )
+    return None
 
 
-def _failed(step: PlanStep, refusal: dict[str, Any], results: list[StepResult]) -> StepFailed:
+def failed(step: PlanStep, refusal: dict[str, Any], results: list[StepResult]) -> StepFailed:
     results.append(StepResult(step.id, step.operation, step.input, None, refusal))
     return StepFailed(step_id=step.id, operation=step.operation, **refusal)
