@@ -22,11 +22,13 @@ from agent.events import (
     PlanProposed,
     Refusal,
     StepFailed,
+    Trace,
 )
 from agent.executor import StepResult, execute
 from agent.language import Language, customer_language
 from agent.model import ModelClient
 from agent.reviewer import ReviewedPlan
+from agent.trace import trace, with_bank_traces
 
 
 @dataclass
@@ -79,6 +81,17 @@ REJECTED: dict[Language, str] = {
 """The Agent's acknowledgement of a rejected Plan card: nothing ran, so nothing to report."""
 
 
+def plan_data(plan: ReviewedPlan, look_ups: bool = False) -> dict[str, Any]:
+    """A reviewed Plan for the decision trace: its look-ups, which run first, are marked
+    `look_ups`, and the steps the tier preview refused are listed under `refusals`."""
+    data: dict[str, Any] = {"steps": [step.model_dump(mode="json") for step in plan.steps]}
+    if look_ups:
+        data["look_ups"] = True
+    if plan.refusals:
+        data["refusals"] = [refusal.model_dump(mode="json") for refusal in plan.refusals]
+    return data
+
+
 class UnknownConversation(Exception):
     pass
 
@@ -109,22 +122,32 @@ class Conversations:
         except KeyError:
             raise UnknownConversation(conversation_id) from None
 
+    def audit_trail(self, conversation: Conversation) -> Trace:
+        """The session's audit trail as the Bank recorded it, for the decision trace."""
+        return trace("audit_trail", conversation.bank.audit_trail())
+
     def send(self, conversation: Conversation, text: str) -> Iterator[Event]:
-        """One turn: the Customer's message in, the turn's events out."""
+        """One turn: the Customer's message in, the turn's events out, with every Bank
+        call of the turn in the decision trace."""
+        yield from with_bank_traces(conversation.bank, self._turn(conversation, text))
+
+    def _turn(self, conversation: Conversation, text: str) -> Iterator[Event]:
         with conversation.lock:
             conversation.pending = None  # a new request replaces an unanswered Plan card
             conversation.history.append({"role": "user", "content": text})
             bank, catalogue = conversation.bank, conversation.bank.catalogue()
             plan = planner.make_plan(self.model, conversation.history, catalogue)
             if isinstance(plan, planner.Declined):
-                yield self._decline(conversation, plan, catalogue)
+                yield from self._decline(conversation, plan, catalogue)
                 return
+            yield trace("intent", {"intent": plan.intent})
             # Exact details first: run the Green look-ups a later step's input waits on,
             # then have the Planner complete the Plan from what the Bank returned.
             looked_up: list[StepResult] = []
             look_ups = plan.look_ups(catalogue)
             if look_ups is not None:
                 reviewed_look_ups = reviewer.review(look_ups, bank)
+                yield trace("plan", plan_data(reviewed_look_ups, look_ups=True))
                 if reviewed_look_ups.green_only:  # the Bank agrees they need no approval
                     yield from execute(reviewed_look_ups, bank, looked_up)
                     plan = planner.make_plan(
@@ -134,9 +157,10 @@ class Conversations:
                         [asdict(result) for result in looked_up],
                     )
                     if isinstance(plan, planner.Declined):  # not on offer, but just in case
-                        yield self._decline(conversation, plan, catalogue)
+                        yield from self._decline(conversation, plan, catalogue)
                         return
             reviewed = reviewer.review(plan, bank)
+            yield trace("plan", plan_data(reviewed))
             if reviewed.green_only:
                 yield from self._run(conversation, reviewed, looked_up)
                 return
@@ -165,17 +189,21 @@ class Conversations:
             conversation.pending = None  # a Plan card is answered once
         if isinstance(action, RejectPlan):
             return self._rejected(conversation)
-        return self._confirmed(conversation, pending)
+        return with_bank_traces(conversation.bank, self._confirmed(conversation, pending))
 
     def _decline(
-        self, conversation: Conversation, declined: planner.Declined, catalogue: list[dict[str, Any]]
-    ) -> Refusal:
+        self,
+        conversation: Conversation,
+        declined: planner.Declined,
+        catalogue: list[dict[str, Any]],
+    ) -> Iterator[Event]:
+        yield trace("intent", {"intent": "", "declined": declined.model_dump(mode="json")})
         # Nothing runs: the Customer hears what the Agent can do instead.
         text = refusals.out_of_scope(
             declined.can_do, catalogue, customer_language(conversation.history)
         )
         conversation.history.append({"role": "assistant", "content": text})
-        return Refusal(reason=declined.reason, text=text)
+        yield Refusal(reason=declined.reason, text=text)
 
     def _rejected(self, conversation: Conversation) -> Iterator[Event]:
         with conversation.lock:

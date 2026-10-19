@@ -36,7 +36,7 @@ def execute(
         try:
             result = bank.call(step.operation, step.input, tokens.get(step.id))
         except BankRefused as refused:
-            refusal = {"reason": refused.reason, "message": refused.message, "detail": refused.detail}
+            refusal = refused.body()
             results.append(StepResult(step.id, step.operation, step.input, {}, refusal))
             yield StepFailed(step_id=step.id, operation=step.operation, **refusal)
             return

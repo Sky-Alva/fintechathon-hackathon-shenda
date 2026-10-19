@@ -1,12 +1,28 @@
+from typing import Any
+
 from fastapi.testclient import TestClient
 
 from agent.model import ModelReply
-from conftest import Login, act, bank_audit, event_types, log_in, send, start_conversation
+from conftest import (
+    Login,
+    act,
+    bank_audit,
+    event_types,
+    log_in,
+    send,
+    start_conversation,
+    traces,
+)
 from fake_model import FakeModel, plan, say, step
 
 TWO_TRANSFERS = "给老妈转200，再给老婆转300"
 TO_MUM = {"payee_id": "PAY-LM-002", "amount": "200.00", "note": ""}
 TO_WIFE = {"payee_id": "PAY-LM-001", "amount": "300.00", "note": ""}
+
+
+def shown(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The turn's events as the chat shows them, leaving out the decision trace."""
+    return [event for event in events if event["type"] != "trace"]
 
 
 def two_transfers() -> ModelReply:
@@ -22,7 +38,7 @@ def test_a_two_transfer_request_yields_one_plan_card_with_both_yellow_steps(
     model.script(two_transfers())
     conversation = start_conversation(agent, log_in(bank, "liming"))
 
-    events = send(agent, conversation, TWO_TRANSFERS)
+    events = shown(send(agent, conversation, TWO_TRANSFERS))
 
     assert event_types(events) == ["plan_proposed", "confirmation_requested"]
     proposed, requested = events
@@ -45,7 +61,7 @@ def test_the_plan_card_shows_a_step_the_bank_says_can_never_run_with_its_reason(
     model.script(plan(step("s1", "transfer", TO_MUM), step("s2", "transfer", too_much)))
     conversation = start_conversation(agent, log_in(bank, "liming"))
 
-    proposed, requested = send(agent, conversation, "给老妈转200，给老婆转5000")
+    proposed, requested = shown(send(agent, conversation, "给老妈转200，给老婆转5000"))
 
     assert [(s["id"], s["tier"]) for s in proposed["steps"]] == [("s1", "yellow"), ("s2", None)]
     assert [(r["step_id"], r["reason"]) for r in proposed["refusals"]] == [
@@ -75,9 +91,9 @@ def test_one_confirm_requests_one_token_per_yellow_step_and_runs_them_all(
     model.script(two_transfers(), say("已向王秀英转账 200.00 元，向韩梅梅转账 300.00 元。"))
     login = log_in(bank, "liming")
     conversation = start_conversation(agent, login)
-    plan_id = send(agent, conversation, TWO_TRANSFERS)[0]["plan_id"]
+    plan_id = shown(send(agent, conversation, TWO_TRANSFERS))[0]["plan_id"]
 
-    events = act(agent, conversation, "confirm", plan_id=plan_id)
+    events = shown(act(agent, conversation, "confirm", plan_id=plan_id))
 
     assert event_types(events) == [
         "step_started", "step_succeeded", "step_started", "step_succeeded", "answer"
@@ -106,9 +122,9 @@ def test_the_model_is_never_shown_a_confirmation_token_nor_given_a_way_to_get_on
 ) -> None:
     model.script(two_transfers(), say("已完成两笔转账。"))
     conversation = start_conversation(agent, log_in(bank, "liming"))
-    plan_id = send(agent, conversation, TWO_TRANSFERS)[0]["plan_id"]
+    plan_id = shown(send(agent, conversation, TWO_TRANSFERS))[0]["plan_id"]
 
-    events = act(agent, conversation, "confirm", plan_id=plan_id)
+    events = shown(act(agent, conversation, "confirm", plan_id=plan_id))
 
     for request in model.requests:
         assert "confirmation_token" not in request.text()
@@ -117,6 +133,30 @@ def test_the_model_is_never_shown_a_confirmation_token_nor_given_a_way_to_get_on
         assert set(tools) <= {"propose_plan", "decline_request"}
     assert "confirmation_token" not in str(events)
     assert "CNF-" not in str(events)
+
+
+def test_a_plan_card_token_never_appears_in_the_decision_trace(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    model.script(two_transfers(), say("已完成两笔转账。"))
+    conversation = start_conversation(agent, log_in(bank, "liming"))
+    plan_id = shown(send(agent, conversation, TWO_TRANSFERS))[0]["plan_id"]
+
+    events = act(agent, conversation, "confirm", plan_id=plan_id)
+
+    exchanges = {
+        (data["method"], data["path"]): data for data in traces(events, "bank_response")
+    }
+    confirmations = exchanges[("POST", "/confirmations")]["body"]["confirmations"]
+    assert [c["confirmation_token"] for c in confirmations] == ["[redacted]", "[redacted]"]
+    assert all(c["confirmation_id"].startswith("CNF-") for c in confirmations)  # IDs show
+    sent = [
+        data["body"]
+        for data in traces(events, "bank_request")
+        if data["path"] == "/operations/transfer"
+    ]
+    assert [body["confirmation_token"] for body in sent] == ["[redacted]", "[redacted]"]
+    assert [body["input"] for body in sent] == [TO_MUM, TO_WIFE]
 
 
 # --- Exact details first: Green look-ups run before the Plan card ---------------------
@@ -145,7 +185,7 @@ def test_a_green_look_up_runs_first_so_the_plan_card_shows_the_exact_amount(
     model.script(*half_my_balance_to_mum())
     conversation = start_conversation(agent, log_in(bank, "liming"))
 
-    events = send(agent, conversation, HALF_TO_MUM)
+    events = shown(send(agent, conversation, HALF_TO_MUM))
 
     assert event_types(events) == [
         "step_started", "step_succeeded", "plan_proposed", "confirmation_requested"
@@ -153,9 +193,8 @@ def test_a_green_look_up_runs_first_so_the_plan_card_shows_the_exact_amount(
     looked_up, proposed = events[1], events[2]
     assert looked_up["step_id"] == "s1"
     assert looked_up["output"]["accounts"][0]["balance"] == "1180.00"
-    assert [(s["id"], s["operation"], s["input"]["amount"], s["tier"]) for s in proposed["steps"]] == [
-        ("s2", "transfer", "590.00", "yellow")
-    ]
+    card = [(s["id"], s["operation"], s["input"]["amount"], s["tier"]) for s in proposed["steps"]]
+    assert card == [("s2", "transfer", "590.00", "yellow")]
     assert events[3]["step_ids"] == ["s2"]
 
 
@@ -179,9 +218,9 @@ def test_the_answer_after_confirming_draws_on_the_look_up_and_the_transfer(
     model.script(*half_my_balance_to_mum(), say("您的余额 1180.00 元，已向王秀英转账 590.00 元。"))
     login = log_in(bank, "liming")
     conversation = start_conversation(agent, login)
-    plan_id = send(agent, conversation, HALF_TO_MUM)[2]["plan_id"]
+    plan_id = shown(send(agent, conversation, HALF_TO_MUM))[2]["plan_id"]
 
-    events = act(agent, conversation, "confirm", plan_id=plan_id)
+    events = shown(act(agent, conversation, "confirm", plan_id=plan_id))
 
     assert event_types(events) == ["step_started", "step_succeeded", "answer"]
     assert events[1]["output"]["balance_after"] == "590.00"
@@ -214,9 +253,10 @@ def test_a_step_the_bank_refuses_streams_step_failed_with_the_banks_reason_and_t
     )
     login = log_in(bank, "liming")
     conversation = start_conversation(agent, login)
-    plan_id = send(agent, conversation, "把工商卡全部锁了，网上交易也锁上，再给老妈转200")[0]["plan_id"]
+    request = "把工商卡全部锁了，网上交易也锁上，再给老妈转200"
+    plan_id = shown(send(agent, conversation, request))[0]["plan_id"]
 
-    events = act(agent, conversation, "confirm", plan_id=plan_id)
+    events = shown(act(agent, conversation, "confirm", plan_id=plan_id))
 
     assert event_types(events) == [
         "step_started", "step_succeeded", "step_started", "step_failed", "answer"
@@ -226,7 +266,8 @@ def test_a_step_the_bank_refuses_streams_step_failed_with_the_banks_reason_and_t
     assert failed["operation"] == "add_card_lock"
     assert failed["reason"] == "invalid_input"
     assert failed["detail"]["locks"] == ["all"]
-    assert "transfer" not in [e["operation"] for e in bank_audit(bank, login) if e["event"] == "operation"]
+    ran = [e["operation"] for e in bank_audit(bank, login) if e["event"] == "operation"]
+    assert ran == ["add_card_lock", "add_card_lock"]  # the second refused; no transfer
     answering = model.requests[-1].text()
     assert "invalid_input" in answering
 
@@ -241,12 +282,12 @@ def test_a_step_the_bank_will_no_longer_confirm_fails_and_nothing_runs(
     )
     login = log_in(bank, "liming")
     conversation = start_conversation(agent, login)
-    plan_id = send(agent, conversation, "给老妈转600")[0]["plan_id"]
+    plan_id = shown(send(agent, conversation, "给老妈转600"))[0]["plan_id"]
     # Before the Customer taps confirm, ¥500 leaves on another device, so the ¥600 would
     # now take the Daily Transfer Total past ¥1,000.
     transfer_directly(bank, login, {"payee_id": "PAY-LM-001", "amount": "500.00", "note": ""})
 
-    events = act(agent, conversation, "confirm", plan_id=plan_id)
+    events = shown(act(agent, conversation, "confirm", plan_id=plan_id))
 
     assert event_types(events) == ["step_failed", "answer"]
     assert events[0]["step_id"] == "s1"
@@ -276,9 +317,9 @@ def test_rejecting_the_plan_card_runs_nothing_and_the_agent_acknowledges_it(
     model.script(two_transfers())
     login = log_in(bank, "liming")
     conversation = start_conversation(agent, login)
-    plan_id = send(agent, conversation, TWO_TRANSFERS)[0]["plan_id"]
+    plan_id = shown(send(agent, conversation, TWO_TRANSFERS))[0]["plan_id"]
 
-    events = act(agent, conversation, "reject", plan_id=plan_id)
+    events = shown(act(agent, conversation, "reject", plan_id=plan_id))
 
     assert event_types(events) == ["answer"]
     assert "取消" in events[0]["text"]
@@ -297,9 +338,9 @@ def test_a_rejection_is_acknowledged_in_the_customers_language(
 ) -> None:
     model.script(two_transfers())
     conversation = start_conversation(agent, log_in(bank, "liming"))
-    plan_id = send(agent, conversation, "Send Mum 200 and my wife 300")[0]["plan_id"]
+    plan_id = shown(send(agent, conversation, "Send Mum 200 and my wife 300"))[0]["plan_id"]
 
-    events = act(agent, conversation, "reject", plan_id=plan_id)
+    events = shown(act(agent, conversation, "reject", plan_id=plan_id))
 
     assert "cancelled" in events[0]["text"]
 
@@ -309,8 +350,8 @@ def test_after_a_rejection_the_next_turn_knows_the_plan_was_cancelled(
 ) -> None:
     model.script(two_transfers(), plan(step("s1", "query_balance")), say("余额 1180.00 元。"))
     conversation = start_conversation(agent, log_in(bank, "liming"))
-    plan_id = send(agent, conversation, TWO_TRANSFERS)[0]["plan_id"]
-    acknowledgement = act(agent, conversation, "reject", plan_id=plan_id)[0]["text"]
+    plan_id = shown(send(agent, conversation, TWO_TRANSFERS))[0]["plan_id"]
+    acknowledgement = shown(act(agent, conversation, "reject", plan_id=plan_id))[0]["text"]
 
     send(agent, conversation, "那我还剩多少钱？")
 
@@ -323,7 +364,7 @@ def test_a_plan_card_is_answered_once(
     model.script(two_transfers(), say("已完成两笔转账。"))
     login = log_in(bank, "liming")
     conversation = start_conversation(agent, login)
-    plan_id = send(agent, conversation, TWO_TRANSFERS)[0]["plan_id"]
+    plan_id = shown(send(agent, conversation, TWO_TRANSFERS))[0]["plan_id"]
     act(agent, conversation, "confirm", plan_id=plan_id)
 
     again = agent.post(
@@ -343,7 +384,7 @@ def test_a_new_request_replaces_an_unanswered_plan_card(
     model.script(two_transfers(), plan(step("s1", "query_balance")), say("余额 1180.00 元。"))
     login = log_in(bank, "liming")
     conversation = start_conversation(agent, login)
-    plan_id = send(agent, conversation, TWO_TRANSFERS)[0]["plan_id"]
+    plan_id = shown(send(agent, conversation, TWO_TRANSFERS))[0]["plan_id"]
     send(agent, conversation, "算了，先看看余额")
 
     late = agent.post(

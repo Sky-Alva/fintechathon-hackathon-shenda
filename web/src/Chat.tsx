@@ -2,6 +2,7 @@ import { type FormEvent, useEffect, useRef, useState } from 'react'
 import { type CustomerAction, sendAction, sendMessage } from './api'
 import type { BankRefusal, ConversationEvent, PlanStep } from './events'
 import PlanCard, { type PlanCardStatus } from './PlanCard'
+import TracePanel, { type TraceTurn } from './TracePanel'
 
 /** One step's progress line: running, then done or failed (with the Bank's message). */
 type StepItem = {
@@ -103,18 +104,35 @@ export default function Chat({ customerName, conversationId, onLogOut }: Props) 
   ])
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
+  const [showTrace, setShowTrace] = useState(false)
+  const [traceTurns, setTraceTurns] = useState<TraceTurn[]>([])
+  const [finishedTurns, setFinishedTurns] = useState(0)
   const bottom = useRef<HTMLDivElement>(null)
 
   useEffect(() => bottom.current?.scrollIntoView({ behavior: 'smooth' }), [items])
 
-  async function runTurn(turn: (onEvent: (e: ConversationEvent) => void) => Promise<void>) {
+  /** One turn: `label` names it in the decision trace (the message, or the tap). */
+  async function runTurn(
+    label: string,
+    turn: (onEvent: (e: ConversationEvent) => void) => Promise<void>,
+  ) {
     setBusy(true)
+    setTraceTurns((turns) => [...turns, { text: label, traces: [] }])
     try {
-      await turn((e) => setItems((current) => apply(current, e)))
+      await turn((e) => {
+        // Trace events feed the decision trace panel only, never the chat.
+        if (e.type === 'trace')
+          setTraceTurns((turns) => [
+            ...turns.slice(0, -1),
+            { ...turns[turns.length - 1], traces: [...turns[turns.length - 1].traces, e] },
+          ])
+        else setItems((current) => apply(current, e))
+      })
     } catch {
       setItems((current) => [...current, { kind: 'error', text: '出错了，请稍后再试。' }])
     } finally {
       setBusy(false)
+      setFinishedTurns((n) => n + 1)
     }
   }
 
@@ -124,7 +142,7 @@ export default function Chat({ customerName, conversationId, onLogOut }: Props) 
     if (!text || busy) return
     setDraft('')
     setItems((current) => [...replaceWaitingPlans(current), { kind: 'customer', text }])
-    await runTurn((onEvent) => sendMessage(conversationId, text, onEvent))
+    await runTurn(text, (onEvent) => sendMessage(conversationId, text, onEvent))
   }
 
   async function answerPlan(planId: string, action: CustomerAction['action']) {
@@ -135,17 +153,38 @@ export default function Chat({ customerName, conversationId, onLogOut }: Props) 
         item.kind === 'plan' && item.planId === planId ? { ...item, status } : item,
       ),
     )
-    await runTurn((onEvent) => sendAction(conversationId, { action, plan_id: planId }, onEvent))
+    const label = action === 'confirm' ? '（确认计划）' : '（取消计划）'
+    await runTurn(label, (onEvent) =>
+      sendAction(conversationId, { action, plan_id: planId }, onEvent),
+    )
   }
 
   return (
     <div className="chat">
       <header>
         <span>智能银行助手</span>
-        <button type="button" className="link" onClick={onLogOut}>
-          {customerName} · 退出
-        </button>
+        <span>
+          <button
+            type="button"
+            className="link"
+            aria-pressed={showTrace}
+            onClick={() => setShowTrace((shown) => !shown)}
+          >
+            {showTrace ? '隐藏追踪' : '决策追踪'}
+          </button>
+          <button type="button" className="link" onClick={onLogOut}>
+            {customerName} · 退出
+          </button>
+        </span>
       </header>
+      {showTrace && (
+        <TracePanel
+          conversationId={conversationId}
+          turns={traceTurns}
+          finishedTurns={finishedTurns}
+          onClose={() => setShowTrace(false)}
+        />
+      )}
       <main>
         {items.map((item, i) => {
           switch (item.kind) {

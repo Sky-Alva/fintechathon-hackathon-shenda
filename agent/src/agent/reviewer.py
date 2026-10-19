@@ -36,7 +36,7 @@ class ConfirmationRefused(Exception):
     def __init__(self, step: PlanStep, refused: BankRefused):
         super().__init__(f"{step.id}: {refused}")
         self.step = step
-        self.refusal = {"reason": refused.reason, "message": refused.message, "detail": refused.detail}
+        self.refusal = refused.body()
 
 
 def collect_confirmations(plan: ReviewedPlan, bank: BankSession) -> dict[str, str]:

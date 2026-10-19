@@ -57,6 +57,8 @@ inputs taken from these results. Do not repeat the steps that already ran.
 
 
 class Plan(BaseModel):
+    intent: str = ""
+    """What the model understood the Customer wants, for the decision trace."""
     steps: list[PlanStep]
 
     def in_dependency_order(self) -> list[PlanStep]:
@@ -137,6 +139,11 @@ def plan_tool(catalogue: list[dict[str, Any]]) -> dict[str, Any]:
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "intent": {
+                        "type": "string",
+                        "description": "The Customer's request as you understood it, in one"
+                        " short sentence in the Customer's language",
+                    },
                     "steps": {
                         "type": "array",
                         "items": {
@@ -158,7 +165,7 @@ def plan_tool(catalogue: list[dict[str, Any]]) -> dict[str, Any]:
                         },
                     }
                 },
-                "required": ["steps"],
+                "required": ["intent", "steps"],
             },
         },
     }
@@ -229,7 +236,9 @@ def make_plan(
         if call.name == PLAN_TOOL:
             plan = Plan.model_validate(call.arguments)
             done = {result["step_id"] for result in looked_up or []}
-            return Plan(steps=[step for step in plan.steps if step.id not in done])
+            return plan.model_copy(
+                update={"steps": [step for step in plan.steps if step.id not in done]}
+            )
         if call.name == DECLINE_TOOL:
             return Declined.model_validate(call.arguments)
     raise PlannerFailed(f"the model did not propose a Plan: {reply.content!r}")
