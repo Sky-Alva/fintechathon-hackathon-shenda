@@ -50,9 +50,14 @@ export async function sendMessage(
 
 /** The Customer's answer to a prompt, e.g. a tap on a Plan card. */
 export type CustomerAction =
-  | { action: 'confirm'; plan_id: string }
+  // `removed_step_ids`: steps the Customer took off the card; the Bank re-tiers the rest.
+  | { action: 'confirm'; plan_id: string; removed_step_ids?: string[] }
   | { action: 'reject'; plan_id: string }
   | { action: 'ask_for_human' }
+  // The stop button, sent alongside the running Plan's turn: that turn ends with plan_paused.
+  | { action: 'stop'; plan_id: string }
+  | { action: 'resume'; plan_id: string }
+  | { action: 'cancel'; plan_id: string }
 
 /** Send a Customer action; `onEvent` gets each event of the turn as it streams in. */
 export async function sendAction(
