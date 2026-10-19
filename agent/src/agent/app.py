@@ -31,7 +31,9 @@ from agent.conversation import (
     Conversations,
     CustomerAction,
     PlanNotPending,
+    PlanNotRunning,
     UnknownConversation,
+    UnknownStep,
 )
 from agent.events import Event, Trace
 from agent.model import ModelClient, model_from_env
@@ -78,6 +80,14 @@ def create_app(bank: HttpClient, model: ModelClient, staff_key: str) -> FastAPI:
     @app.exception_handler(PlanNotPending)
     async def on_not_pending(_: Request, error: PlanNotPending) -> JSONResponse:
         return JSONResponse(status_code=409, content={"error": "plan_not_pending"})
+
+    @app.exception_handler(UnknownStep)
+    async def on_unknown_step(_: Request, error: UnknownStep) -> JSONResponse:
+        return JSONResponse(status_code=422, content={"error": "unknown_step"})
+
+    @app.exception_handler(PlanNotRunning)
+    async def on_not_running(_: Request, error: PlanNotRunning) -> JSONResponse:
+        return JSONResponse(status_code=409, content={"error": "plan_not_running"})
 
     @app.exception_handler(BankUnavailable)
     async def on_bank_unavailable(_: Request, error: BankUnavailable) -> JSONResponse:

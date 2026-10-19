@@ -8,7 +8,7 @@ reset the Bank and read audit trails.
 """
 
 import json
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -46,17 +46,29 @@ class BankLink:
     def __init__(self, bank: TestClient):
         self.bank = bank
         self.cut_at: str | None = None
+        self.hooks: list[tuple[str, Callable[[], object]]] = []
 
     def cut(self, url_prefix: str = "/") -> None:
         """From now on, every request to a URL starting with `url_prefix` can't connect."""
         self.cut_at = url_prefix
+
+    def after_first(self, url_prefix: str, then: Callable[[], object]) -> None:
+        """Once the Bank has answered the next request to a URL starting with `url_prefix`,
+        call `then` (e.g. the Customer taps stop while the Plan runs), before the Agent
+        sees the answer."""
+        self.hooks.append((url_prefix, then))
 
     def request(
         self, method: str, url: str, *, headers: dict[str, str], json: Any = None
     ) -> Any:
         if self.cut_at is not None and url.startswith(self.cut_at):
             raise httpx.ConnectError(f"cannot reach the Bank: {method} {url}")
-        return self.bank.request(method, url, headers=headers, json=json)
+        response = self.bank.request(method, url, headers=headers, json=json)
+        for hook in list(self.hooks):
+            if url.startswith(hook[0]):
+                self.hooks.remove(hook)
+                hook[1]()
+        return response
 
 
 @pytest.fixture

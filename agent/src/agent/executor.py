@@ -1,6 +1,7 @@
 """The Executor: runs a reviewed Plan's steps against the Bank, in order, as events."""
 
-from collections.abc import Iterator, Mapping
+import threading
+from collections.abc import Generator, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -36,16 +37,22 @@ def execute(
     bank: BankSession,
     results: list[StepResult],
     confirmation_tokens: Mapping[str, str] | None = None,
-) -> Iterator[Event]:
+    stop: threading.Event | None = None,
+) -> Generator[Event, None, list[PlanStep]]:
     """Run the steps in order, appending each Bank result to `results`.
 
     A step the tier preview refused is never sent to the Bank; the steps after it still
     run, as the Plan card showed. A step the Bank refuses (or can't be reached for) when
     it runs stops the Plan: the steps after it don't run. `confirmation_tokens` holds the
     Customer's Confirmation for each Yellow step, by step ID.
+
+    Once `stop` is set (the Customer tapped stop), no further step starts: a step already
+    with the Bank finishes, and the steps still to run are returned. Otherwise returns [].
     """
     tokens = confirmation_tokens or {}
-    for step in plan.steps:
+    for index, step in enumerate(plan.steps):
+        if stop is not None and stop.is_set():
+            return plan.steps[index:]
         if (refusal := plan.refusals.get(step.id)) is not None:
             yield _failed(step, refusal, results)
             continue
@@ -54,14 +61,15 @@ def execute(
             result = bank.call(step.operation, step.input, tokens.get(step.id))
         except BankRefused as refused:
             yield _failed(step, refused.body(), results)
-            return
+            return []
         except BankUnavailable:
             yield _failed(step, BANK_UNAVAILABLE, results)
-            return
+            return []
         results.append(StepResult(step.id, step.operation, step.input, result["output"]))
         yield StepSucceeded(
             step_id=step.id, operation=step.operation, tier=result["tier"], output=result["output"]
         )
+    return []
 
 
 def _failed(step: PlanStep, refusal: dict[str, Any], results: list[StepResult]) -> StepFailed:
