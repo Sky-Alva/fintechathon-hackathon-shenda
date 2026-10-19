@@ -9,6 +9,8 @@ docker compose up --build
 
 Open http://localhost:8080 and log in as `liming` or `hanmei` (password `demo1234`).
 
+Beside the phone, a dashed **demo control** shows the Bank clock and moves it forward (+30 minutes, +1 hour, +1 day, or to a chosen time), so time-based behaviour, such as a Safety Lock expiring, happens live. It is the presenter's, not the Customer's: type the Bank's admin key (`BANK_ADMIN_KEY`, `demo-admin-key` by default) into it first. The key stays in that browser tab and goes only to the Bank; the Agent never holds it.
+
 Services: web Channel `:8080`, Agent `:8001` ([agent/README.md](agent/README.md)), Bank `:8000` ([bank/README.md](bank/README.md)).
 
 To work on the web Channel (`web/`, React + Vite) against a running Bank and Agent: `cd web && npm install && npm run dev`. The dev server proxies `/bank` to `:8000` and `/agent` to `:8001`, as nginx does in Compose. The Channel only displays events ([docs/conversation-events.md](docs/conversation-events.md)), so it is checked by hand.
