@@ -181,6 +181,15 @@ function AgentEntry({ entry }: { entry: HistoryEntry }) {
           <b>Agent 回答</b> {entry.text}
         </>
       )
+    case 'step_failed':
+      return (
+        <>
+          <b>步骤失败</b> <code>{entry.step_id}</code> {entry.operation}{' '}
+          <span className="refused">
+            {entry.reason}：{entry.message}
+          </span>
+        </>
+      )
     case 'refusal':
       return (
         <>

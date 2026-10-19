@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -39,10 +40,34 @@ def model() -> FakeModel:
     return FakeModel()
 
 
+class BankLink:
+    """The Agent's line to the Bank, which a test can cut to make the Bank unreachable."""
+
+    def __init__(self, bank: TestClient):
+        self.bank = bank
+        self.cut_at: str | None = None
+
+    def cut(self, url_prefix: str = "/") -> None:
+        """From now on, every request to a URL starting with `url_prefix` can't connect."""
+        self.cut_at = url_prefix
+
+    def request(
+        self, method: str, url: str, *, headers: dict[str, str], json: Any = None
+    ) -> Any:
+        if self.cut_at is not None and url.startswith(self.cut_at):
+            raise httpx.ConnectError(f"cannot reach the Bank: {method} {url}")
+        return self.bank.request(method, url, headers=headers, json=json)
+
+
 @pytest.fixture
-def agent(bank: TestClient, model: FakeModel) -> Iterator[TestClient]:
+def bank_link(bank: TestClient) -> BankLink:
+    return BankLink(bank)
+
+
+@pytest.fixture
+def agent(bank_link: BankLink, model: FakeModel) -> Iterator[TestClient]:
     # The Bank test client has no admin key on it: the Agent is an untrusted caller.
-    with TestClient(create_agent(bank=bank, model=model, staff_key=STAFF_KEY)) as client:
+    with TestClient(create_agent(bank=bank_link, model=model, staff_key=STAFF_KEY)) as client:
         yield client
 
 

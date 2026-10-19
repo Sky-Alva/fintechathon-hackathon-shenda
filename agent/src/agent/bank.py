@@ -8,6 +8,8 @@ Agent is an untrusted caller, and the Bank enforces every Permission Tier).
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+import httpx
+
 
 class HttpResponse(Protocol):
     status_code: int
@@ -34,6 +36,14 @@ class BankRefused(Exception):
         self.reason = reason
         self.message = message
         self.detail = detail
+
+    def body(self) -> dict[str, Any]:
+        """The refusal as the Bank sent it."""
+        return {"reason": self.reason, "message": self.message, "detail": self.detail}
+
+
+class BankUnavailable(Exception):
+    """The Bank couldn't be reached, or failed without a refusal."""
 
 
 @dataclass(frozen=True)
@@ -99,14 +109,22 @@ class BankSession:
         return taken
 
     def _send(self, method: str, url: str, json: Any = None, *, traced: bool = True) -> Any:
-        response = self.http.request(
-            method, url, headers={"Authorization": f"Bearer {self.session_token}"}, json=json
-        )
-        body = response.json()
+        try:
+            response = self.http.request(
+                method, url, headers={"Authorization": f"Bearer {self.session_token}"}, json=json
+            )
+        except httpx.HTTPError as error:
+            raise BankUnavailable(f"{method} {url}: {error}") from error
+        try:
+            body = response.json()
+        except ValueError:
+            body = None
         if traced:
             self.exchanges.append(
                 BankExchange(method.upper(), url, json, response.status_code, body)
             )
+        if response.status_code >= 500 or not isinstance(body, dict):
+            raise BankUnavailable(f"{method} {url}: HTTP {response.status_code}")
         if "refusal" in body:
             refusal = body["refusal"]
             raise BankRefused(refusal["reason"], refusal["message"], refusal["detail"])

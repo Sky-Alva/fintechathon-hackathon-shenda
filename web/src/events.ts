@@ -34,6 +34,10 @@ export type Refusal = {
   text: string
 }
 
+// Emitted since #32. `reason` is the Bank's refusal reason, or 'bank_unavailable' when
+// the Agent couldn't reach the Bank.
+export type StepFailed = BankRefusal & { type: 'step_failed'; step_id: string; operation: string }
+
 // Reserved: proposed payloads, refined by the ticket that first emits each one.
 export type PlanProposed = {
   type: 'plan_proposed'
@@ -54,7 +58,6 @@ export type VerificationRequested = {
   sent_to: string
   expires_at: string
 }
-export type StepFailed = BankRefusal & { type: 'step_failed'; step_id: string; operation: string }
 export type ReversalOffered = {
   type: 'reversal_offered'
   plan_id: string

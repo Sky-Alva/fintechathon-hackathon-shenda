@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from agent import planner, refusals, responder, reviewer
-from agent.bank import BankRefused, BankSession, HttpClient
+from agent.bank import BankRefused, BankSession, BankUnavailable, HttpClient
 from agent.events import Answer, CustomerMessageEntry, Event, HistoryEntry, Refusal, Trace
 from agent.executor import StepResult, execute
 from agent.language import customer_language
@@ -29,6 +29,8 @@ class Conversation:
     """`{customer_id, name}`, as the Bank told it."""
     history: list[dict[str, Any]] = field(default_factory=list)
     """The Customer's messages and the Agent's answers, in the model's chat format."""
+    bank_results: list[StepResult] = field(default_factory=list)
+    """Every Bank result so far: the facts an answer may state."""
     record: list[HistoryEntry] = field(default_factory=list)
     """Everything Staff Members read: each Customer message and every event sent (the
     decision trace included, so the Plan, its tiers and every Bank call), in order."""
@@ -94,7 +96,11 @@ class Conversations:
         with conversation.lock:
             conversation.record.append(CustomerMessageEntry(text=text))
             conversation.history.append({"role": "user", "content": text})
-            catalogue = conversation.bank.catalogue()
+            try:
+                catalogue = conversation.bank.catalogue()
+            except (BankRefused, BankUnavailable):
+                yield self._not_retrieved(conversation)
+                return
             plan = planner.make_plan(self.model, conversation.history, catalogue)
             if isinstance(plan, planner.Declined):
                 yield trace("intent", {"intent": "", "declined": plan.model_dump(mode="json")})
@@ -106,13 +112,27 @@ class Conversations:
                 yield Refusal(reason=plan.reason, text=refusal)
                 return
             yield trace("intent", {"intent": plan.intent})
-            reviewed = reviewer.review(plan, conversation.bank)
+            try:
+                reviewed = reviewer.review(plan, conversation.bank)
+            except (BankRefused, BankUnavailable):
+                yield self._not_retrieved(conversation)
+                return
             yield trace("plan", {"steps": [s.model_dump(mode="json") for s in reviewed.steps]})
             if not reviewed.green_only:
                 # Yellow and Red steps need a Plan card first (#31).
                 raise NotImplementedError("Plans with Yellow or Red steps need a Plan card")
             results: list[StepResult] = []
             yield from execute(reviewed, conversation.bank, results)
-            text = responder.answer(self.model, conversation.history, results)
+            text = responder.answer(
+                self.model, conversation.history, results, conversation.bank_results
+            )
+            conversation.bank_results.extend(results)
             conversation.history.append({"role": "assistant", "content": text})
             yield Answer(text=text)
+
+    def _not_retrieved(self, conversation: Conversation) -> Answer:
+        """The answer when the Bank can't be reached, or refuses the session, before
+        anything could run: nothing to plan from and nothing to state."""
+        text = responder.NOT_RETRIEVED[customer_language(conversation.history)]
+        conversation.history.append({"role": "assistant", "content": text})
+        return Answer(text=text)

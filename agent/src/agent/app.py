@@ -24,7 +24,7 @@ from fastapi import APIRouter, Depends, FastAPI, Header, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent.bank import BankRefused, HttpClient
+from agent.bank import BankRefused, BankUnavailable, HttpClient
 from agent.conversation import Conversation, Conversations, UnknownConversation
 from agent.events import Event, Trace
 from agent.model import ModelClient, model_from_env
@@ -67,6 +67,11 @@ def create_app(bank: HttpClient, model: ModelClient, staff_key: str) -> FastAPI:
     @app.exception_handler(UnknownConversation)
     async def on_unknown(_: Request, error: UnknownConversation) -> JSONResponse:
         return JSONResponse(status_code=404, content={"error": "unknown_conversation"})
+
+    @app.exception_handler(BankUnavailable)
+    async def on_bank_unavailable(_: Request, error: BankUnavailable) -> JSONResponse:
+        # Outside a turn (starting a conversation, the staff views): say so, guess nothing.
+        return JSONResponse(status_code=503, content={"error": "bank_unavailable"})
 
     @app.exception_handler(StaffKeyRequired)
     async def on_staff_key_required(_: Request, error: StaffKeyRequired) -> JSONResponse:

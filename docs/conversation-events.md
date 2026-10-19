@@ -16,6 +16,7 @@ The contract between the Agent's conversation service and everything that talks 
 - **The Customer's language.** Replies (`answer`, `refusal`, and later the other events' `text`) are in Chinese, or in English when the Customer's latest message with any words in it is in English (has Latin letters and no Chinese characters).
 - **An unknown conversation** is `404 {"error": "unknown_conversation"}`.
 - **A session the Bank doesn't know** (unknown or ended token): `POST /conversations` is `401 {"error": "not_authenticated"}`. The Agent asks the Bank which session and Customer the token is (`GET /sessions/current`) when the conversation starts.
+- **The Bank can't be reached** outside a turn (starting a conversation, the staff views): `503 {"error": "bank_unavailable"}`.
 
 ## The staff interface
 
@@ -82,6 +83,8 @@ The Bank ran the step. `tier` is the tier the Bank ran it at; `output` is the Ba
 
 The Agent's reply to the Customer, written only from the Bank's results this turn and the conversation. Ends a normal turn.
 
+Every amount, date, card and Payee it mentions appears in a Bank result from this turn or earlier in the conversation (#32). A draft that fails that check is regenerated once; if the new one fails too, `text` is the raw Bank result. When the turn's queries all failed, or the Bank couldn't be reached at all, `text` says the information couldn't be retrieved and states no figures.
+
 ```json
 {"type": "answer", "text": "您的活期账户余额为 1,180.00 元。"}
 ```
@@ -112,9 +115,9 @@ A Red step needs Strong Verification. The Bank has texted a code to the simulate
 {"type": "verification_requested", "plan_id": "p1", "step_id": "s3", "challenge_id": "…", "sent_to": "138****0001", "expires_at": "2026-10-20T09:05:00+08:00"}
 ```
 
-### `step_failed` (reserved, #42)
+### `step_failed` (emitted, #32)
 
-The Bank refused or failed the step. `reason`, `message` and `detail` are the Bank's refusal, unchanged.
+The step didn't run. `reason`, `message` and `detail` are the Bank's refusal, unchanged, or `reason: "bank_unavailable"` when the Agent couldn't reach the Bank. A step the Bank's tier preview refused is never sent to the Bank, so it gets `step_failed` with no `step_started` before it.
 
 ```json
 {"type": "step_failed", "step_id": "s2", "operation": "transfer", "reason": "insufficient_funds", "message": "…", "detail": {}}

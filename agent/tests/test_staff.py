@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from conftest import (
     ADMIN_KEY,
+    BankLink,
     STAFF_KEY,
     admin,
     event_types,
@@ -85,6 +86,21 @@ def test_a_conversation_needs_a_session_the_bank_knows(
     assert response.status_code == 401
     assert response.json() == {"error": "not_authenticated"}
     assert staff(agent, "/staff/conversations")["conversations"] == []
+
+
+def test_when_the_bank_cant_be_reached_the_session_list_says_so_and_guesses_nothing(
+    agent: TestClient, bank: TestClient, bank_link: BankLink
+) -> None:
+    login = log_in(bank, "liming")
+    start_conversation(agent, login)
+    bank_link.cut()
+
+    listed = agent.get("/staff/conversations", headers={"X-Staff-Key": STAFF_KEY})
+    started = agent.post("/conversations", json={"session_token": login.session_token})
+
+    for response in [listed, started]:
+        assert response.status_code == 503
+        assert response.json() == {"error": "bank_unavailable"}
 
 
 # --- A conversation's history ---------------------------------------------------------
