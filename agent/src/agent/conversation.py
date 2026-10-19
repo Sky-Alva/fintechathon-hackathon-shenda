@@ -12,17 +12,11 @@ from typing import Any
 
 from agent import planner, refusals, responder, reviewer
 from agent.bank import BankRefused, BankSession, HttpClient
-from agent.events import (
-    Answer,
-    CustomerMessageEntry,
-    Event,
-    HistoryEntry,
-    PlanEntry,
-    Refusal,
-)
+from agent.events import Answer, CustomerMessageEntry, Event, HistoryEntry, Refusal, Trace
 from agent.executor import StepResult, execute
 from agent.language import customer_language
 from agent.model import ModelClient
+from agent.trace import trace, with_bank_traces
 
 
 @dataclass
@@ -36,7 +30,8 @@ class Conversation:
     history: list[dict[str, Any]] = field(default_factory=list)
     """The Customer's messages and the Agent's answers, in the model's chat format."""
     record: list[HistoryEntry] = field(default_factory=list)
-    """Everything Staff Members read: messages, Plans and every event sent, in order."""
+    """Everything Staff Members read: each Customer message and every event sent (the
+    decision trace included, so the Plan, its tiers and every Bank call), in order."""
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -84,33 +79,40 @@ class Conversations:
                 active.append(conversation)
         return active
 
+    def audit_trail(self, conversation: Conversation) -> Trace:
+        """The session's audit trail as the Bank recorded it, for the decision trace."""
+        return trace("audit_trail", conversation.bank.audit_trail())
+
     def send(self, conversation: Conversation, text: str) -> Iterator[Event]:
-        """One turn: the Customer's message in, the turn's events out."""
-        with conversation.lock:
-            conversation.record.append(CustomerMessageEntry(text=text))
-            for event in self._turn(conversation, text):
-                conversation.record.append(event)
-                yield event
+        """One turn: the Customer's message in, the turn's events out, with every Bank
+        call of the turn in the decision trace."""
+        for event in with_bank_traces(conversation.bank, self._turn(conversation, text)):
+            conversation.record.append(event)
+            yield event
 
     def _turn(self, conversation: Conversation, text: str) -> Iterator[Event]:
-        conversation.history.append({"role": "user", "content": text})
-        catalogue = conversation.bank.catalogue()
-        plan = planner.make_plan(self.model, conversation.history, catalogue)
-        if isinstance(plan, planner.Declined):
-            # Nothing runs: the Customer hears what the Agent can do instead.
-            refusal = refusals.out_of_scope(
-                plan.can_do, catalogue, customer_language(conversation.history)
-            )
-            conversation.history.append({"role": "assistant", "content": refusal})
-            yield Refusal(reason=plan.reason, text=refusal)
-            return
-        reviewed = reviewer.review(plan, conversation.bank)
-        conversation.record.append(PlanEntry(steps=reviewed.steps))
-        if not reviewed.green_only:
-            # Yellow and Red steps need a Plan card first (#31).
-            raise NotImplementedError("Plans with Yellow or Red steps need a Plan card")
-        results: list[StepResult] = []
-        yield from execute(reviewed, conversation.bank, results)
-        text = responder.answer(self.model, conversation.history, results)
-        conversation.history.append({"role": "assistant", "content": text})
-        yield Answer(text=text)
+        with conversation.lock:
+            conversation.record.append(CustomerMessageEntry(text=text))
+            conversation.history.append({"role": "user", "content": text})
+            catalogue = conversation.bank.catalogue()
+            plan = planner.make_plan(self.model, conversation.history, catalogue)
+            if isinstance(plan, planner.Declined):
+                yield trace("intent", {"intent": "", "declined": plan.model_dump(mode="json")})
+                # Nothing runs: the Customer hears what the Agent can do instead.
+                refusal = refusals.out_of_scope(
+                    plan.can_do, catalogue, customer_language(conversation.history)
+                )
+                conversation.history.append({"role": "assistant", "content": refusal})
+                yield Refusal(reason=plan.reason, text=refusal)
+                return
+            yield trace("intent", {"intent": plan.intent})
+            reviewed = reviewer.review(plan, conversation.bank)
+            yield trace("plan", {"steps": [s.model_dump(mode="json") for s in reviewed.steps]})
+            if not reviewed.green_only:
+                # Yellow and Red steps need a Plan card first (#31).
+                raise NotImplementedError("Plans with Yellow or Red steps need a Plan card")
+            results: list[StepResult] = []
+            yield from execute(reviewed, conversation.bank, results)
+            text = responder.answer(self.model, conversation.history, results)
+            conversation.history.append({"role": "assistant", "content": text})
+            yield Answer(text=text)

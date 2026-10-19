@@ -1,7 +1,7 @@
 // The staff console's calls. Conversations and their history come from the Agent with the
 // Agent's staff key; audit trails and Safety Locks come from the Bank with the Bank's
 // admin key, directly: the Agent never holds the Bank's admin key (ADR-0001).
-import type { HistoryEntry } from '../events'
+import type { AuditEntry as SessionAuditEntry, HistoryEntry } from '../events'
 
 export type StaffKeys = { agentStaffKey: string; bankAdminKey: string }
 
@@ -19,19 +19,8 @@ export type SafetyLock =
   | { session_id: string; locked: false }
   | { session_id: string; locked: true; trigger: string; locked_at: string; locked_until: string }
 
-/** One entry of the Bank's audit trail, as a Staff Member sees it. */
-export type AuditEntry = {
-  entry_id: number
-  session_id: string
-  at: string
-  event: string
-  operation: string | null
-  input: unknown
-  tier: 'green' | 'yellow' | 'red' | null
-  outcome: 'ok' | 'refused'
-  reason: string | null
-  detail: Record<string, unknown>
-}
+/** One entry of the Bank's audit trail, as a Staff Member reads it with the admin key. */
+export type AuditEntry = SessionAuditEntry & { session_id: string }
 
 async function read<T>(response: Response): Promise<T> {
   const body = await response.json()

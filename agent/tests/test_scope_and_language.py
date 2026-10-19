@@ -25,7 +25,7 @@ def test_a_wealth_request_is_refused_with_what_the_agent_can_do(
     events = send(agent, start_conversation(agent, login), WEALTH_REQUEST)
 
     assert event_types(events) == ["refusal"]
-    refusal = events[0]
+    refusal = events[-1]
     assert refusal["reason"] == "out_of_scope"
     assert refusal["text"].startswith("抱歉")
     operations = catalogue(bank)
@@ -43,8 +43,8 @@ def test_a_non_banking_question_gets_the_same_kind_of_answer(
     events = send(agent, start_conversation(agent, login), "今天天气怎么样？推荐个电影吧")
 
     assert event_types(events) == ["refusal"]
-    assert events[0]["reason"] == "out_of_scope"
-    assert catalogue(bank)["list_cards"]["description_zh"] in events[0]["text"]
+    assert events[-1]["reason"] == "out_of_scope"
+    assert catalogue(bank)["list_cards"]["description_zh"] in events[-1]["text"]
     assert bank_audit(bank, login) == []
 
 
@@ -65,8 +65,8 @@ def test_the_agent_may_offer_only_operations_in_the_catalogue(
     ]
     offered = decline_tool["function"]["parameters"]["properties"]["can_do"]["items"]["enum"]
     assert offered == list(catalogue(bank))
-    assert "buy_wealth_product" not in events[0]["text"]
-    assert catalogue(bank)["transfer"]["description_zh"] in events[0]["text"]
+    assert "buy_wealth_product" not in events[-1]["text"]
+    assert catalogue(bank)["transfer"]["description_zh"] in events[-1]["text"]
 
 
 def test_when_the_model_offers_nothing_the_customer_still_hears_what_the_agent_can_do(
@@ -76,7 +76,7 @@ def test_when_the_model_offers_nothing_the_customer_still_hears_what_the_agent_c
 
     events = send(agent, start_conversation(agent, log_in(bank, "liming")), WEALTH_REQUEST)
 
-    listed = [op for op in catalogue(bank).values() if op["description_zh"] in events[0]["text"]]
+    listed = [op for op in catalogue(bank).values() if op["description_zh"] in events[-1]["text"]]
     assert 1 <= len(listed) <= 5
 
 
@@ -89,7 +89,7 @@ def test_the_next_turn_is_planned_knowing_what_the_customer_was_told(
         say("您的余额为 1180.00 元。"),
     )
     conversation = start_conversation(agent, log_in(bank, "liming"))
-    refusal = send(agent, conversation, WEALTH_REQUEST)[0]
+    refusal = send(agent, conversation, WEALTH_REQUEST)[-1]
 
     events = send(agent, conversation, "那查一下余额吧")
 
@@ -113,7 +113,7 @@ def test_an_english_request_is_refused_in_english(
         "Can you buy me some wealth management products?",
     )
 
-    text = events[0]["text"]
+    text = events[-1]["text"]
     transfer = catalogue(bank)["transfer"]
     assert text.startswith("Sorry")
     assert transfer["description_en"] in text
@@ -153,4 +153,4 @@ def test_a_reply_without_words_keeps_the_conversations_language(
 
     events = send(agent, conversation, "10000")
 
-    assert events[0]["text"].startswith("Sorry")
+    assert events[-1]["text"].startswith("Sorry")

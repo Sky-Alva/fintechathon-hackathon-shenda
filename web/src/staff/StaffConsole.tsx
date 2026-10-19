@@ -2,7 +2,7 @@
 // session's full audit trail, and lifting a Safety Lock. It only displays what the
 // Agent and the Bank return, so it is checked by hand.
 import { type FormEvent, useCallback, useEffect, useState } from 'react'
-import type { HistoryEntry } from '../events'
+import type { HistoryEntry, Trace } from '../events'
 import {
   type AuditEntry,
   type SafetyLock,
@@ -98,8 +98,77 @@ function KeysForm({ onSubmit }: { onSubmit: (keys: StaffKeys) => void }) {
   )
 }
 
+function TraceEntry({ entry }: { entry: Trace }) {
+  switch (entry.stage) {
+    case 'intent':
+      return entry.data.declined ? (
+        <>
+          <b>理解意图</b> 拒绝（{entry.data.declined.reason}），可办理：
+          {entry.data.declined.can_do.join('、')}
+        </>
+      ) : (
+        <>
+          <b>理解意图</b> {entry.data.intent}
+        </>
+      )
+    case 'plan':
+      return (
+        <>
+          <b>Plan</b>
+          <ol className="plan">
+            {entry.data.steps.map((step) => (
+              <li key={step.id}>
+                <code>{step.id}</code> {step.operation} <Tier tier={step.tier} />{' '}
+                <code>{JSON.stringify(step.input)}</code>
+                {step.depends_on.length > 0 && (
+                  <span className="muted"> · 依赖 {step.depends_on.join(', ')}</span>
+                )}
+              </li>
+            ))}
+          </ol>
+        </>
+      )
+    case 'bank_request':
+      return (
+        <>
+          <b>请求银行</b> <code>
+            {entry.data.method} {entry.data.path}
+          </code>
+          <details>
+            <summary>请求内容</summary>
+            <pre>{json(entry.data.body)}</pre>
+          </details>
+        </>
+      )
+    case 'bank_response':
+      return (
+        <>
+          <b>银行响应</b> <code>
+            {entry.data.status} {entry.data.path}
+          </code>
+          <details>
+            <summary>原始响应</summary>
+            <pre>{json(entry.data.body)}</pre>
+          </details>
+        </>
+      )
+    default:
+      return (
+        <>
+          <b>trace · {entry.stage}</b>
+          <details>
+            <summary>内容</summary>
+            <pre>{json(entry.data)}</pre>
+          </details>
+        </>
+      )
+  }
+}
+
 function AgentEntry({ entry }: { entry: HistoryEntry }) {
   switch (entry.type) {
+    case 'trace':
+      return <TraceEntry entry={entry} />
     case 'customer_message':
       return (
         <>
@@ -116,23 +185,6 @@ function AgentEntry({ entry }: { entry: HistoryEntry }) {
       return (
         <>
           <b>Agent 拒绝（{entry.reason}）</b> {entry.text}
-        </>
-      )
-    case 'plan':
-      return (
-        <>
-          <b>Plan</b>
-          <ol className="plan">
-            {entry.steps.map((step) => (
-              <li key={step.id}>
-                <code>{step.id}</code> {step.operation} <Tier tier={step.tier} />{' '}
-                <code>{JSON.stringify(step.input)}</code>
-                {step.depends_on.length > 0 && (
-                  <span className="muted"> · 依赖 {step.depends_on.join(', ')}</span>
-                )}
-              </li>
-            ))}
-          </ol>
         </>
       )
     case 'step_started':
@@ -186,8 +238,11 @@ function Trail({ items }: { items: TrailItem[] }) {
   return (
     <ol className="trail">
       {items.map((item, i) => (
-        <li key={i} className={item.source}>
-          <span className="source">{item.source === 'agent' ? 'Agent' : '银行'}</span>
+        <li
+          key={i}
+          className={item.source === 'agent' && item.entry.type === 'trace' ? 'trace' : item.source}
+        >
+          <span className="source">{item.source === 'agent' ? 'Agent' : '银行审计'}</span>
           <div>
             {item.source === 'agent' ? (
               <AgentEntry entry={item.entry} />

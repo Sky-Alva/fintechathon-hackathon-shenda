@@ -37,6 +37,15 @@ class Answer(BaseModel):
     text: str
 
 
+class Trace(BaseModel):
+    """Decision-trace data for the Channel's toggleable panel. Never carries a token,
+    password or verification code."""
+
+    type: Literal["trace"] = "trace"
+    stage: Literal["intent", "plan", "bank_request", "bank_response", "audit_trail"]
+    data: dict[str, Any]
+
+
 class Refusal(BaseModel):
     """The Agent won't do this; `text` explains and lists what it can do. Ends the turn."""
 
@@ -45,11 +54,11 @@ class Refusal(BaseModel):
     text: str
 
 
-Event = StepStarted | StepSucceeded | Answer | Refusal
+Event = StepStarted | StepSucceeded | Answer | Refusal | Trace
 
 
-# A conversation's history, as Staff Members read it: the Customer's messages, each Plan
-# with the Bank's tiers, and every event the Customer was sent, in order.
+# A conversation's history, as Staff Members read it: each Customer message, then every
+# event the Customer was sent (the decision trace included), in order.
 
 
 class CustomerMessageEntry(BaseModel):
@@ -57,11 +66,4 @@ class CustomerMessageEntry(BaseModel):
     text: str
 
 
-class PlanEntry(BaseModel):
-    """A Plan the Agent made, after the Bank's tier preview: every Plan, Green-only too."""
-
-    type: Literal["plan"] = "plan"
-    steps: list[PlanStep]
-
-
-HistoryEntry = CustomerMessageEntry | PlanEntry | Event
+HistoryEntry = CustomerMessageEntry | Event

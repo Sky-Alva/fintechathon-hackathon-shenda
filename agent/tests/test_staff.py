@@ -4,7 +4,17 @@ trail and lifts Safety Locks through the Bank's admin API, never through the Age
 
 from fastapi.testclient import TestClient
 
-from conftest import ADMIN_KEY, STAFF_KEY, admin, log_in, send, staff, start_conversation
+from conftest import (
+    ADMIN_KEY,
+    STAFF_KEY,
+    admin,
+    event_types,
+    log_in,
+    send,
+    staff,
+    start_conversation,
+    traces,
+)
 from fake_model import FakeModel, decline, plan, say, step
 
 BALANCE_QUESTION = "我卡里还有多少钱？"
@@ -80,7 +90,7 @@ def test_a_conversation_needs_a_session_the_bank_knows(
 # --- A conversation's history ---------------------------------------------------------
 
 
-def test_a_staff_member_reads_the_conversations_messages_plan_and_results_in_order(
+def test_a_staff_member_reads_the_customers_message_then_everything_the_turn_sent(
     agent: TestClient, bank: TestClient, model: FakeModel
 ) -> None:
     model.script(plan(step("s1", "query_balance")), say("您的活期账户余额为 1180.00 元。"))
@@ -93,16 +103,29 @@ def test_a_staff_member_reads_the_conversations_messages_plan_and_results_in_ord
     assert history["conversation_id"] == conversation
     assert history["session_id"] == login.session_id
     assert history["customer"] == {"customer_id": "CUST-LM", "name": "李明"}
-    customer_message, proposed, *turn = history["entries"]
+    customer_message, *turn = history["entries"]
     assert customer_message == {"type": "customer_message", "text": BALANCE_QUESTION}
-    assert proposed == {
-        "type": "plan",
-        "steps": [
-            {"id": "s1", "operation": "query_balance", "input": {}, "depends_on": [],
-             "tier": "green"}
-        ],
-    }
-    assert turn == events  # what the Customer was sent, as it was sent
+    assert turn == events  # what the Customer was sent, as it was sent, trace included
+
+
+def test_the_history_shows_the_plan_with_its_tiers_and_every_bank_call(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    model.script(plan(step("s1", "query_balance")), say("您的余额为 1180.00 元。"))
+    conversation = start_conversation(agent, log_in(bank, "liming"))
+    staff(agent, "/staff/conversations")  # staff reads are not part of any turn
+    send(agent, conversation, BALANCE_QUESTION)
+
+    entries = staff(agent, f"/staff/conversations/{conversation}")["entries"]
+
+    assert traces(entries, "plan") == [
+        {"steps": [{"id": "s1", "operation": "query_balance", "input": {}, "depends_on": [],
+                    "tier": "green"}]}
+    ]
+    assert [(r["method"], r["path"]) for r in traces(entries, "bank_request")] == [
+        ("POST", "/tier-preview"),
+        ("POST", "/operations/query_balance"),
+    ]
 
 
 def test_the_history_keeps_every_turn_in_order(
@@ -120,14 +143,12 @@ def test_the_history_keeps_every_turn_in_order(
 
     entries = staff(agent, f"/staff/conversations/{conversation}")["entries"]
 
-    assert [(e["type"], e.get("text")) for e in entries] == [
+    assert [(e["type"], e.get("text")) for e in entries if e["type"] != "trace"] == [
         ("customer_message", BALANCE_QUESTION),
-        ("plan", None),
         ("step_started", None),
         ("step_succeeded", None),
         ("answer", "您的余额为 1180.00 元。"),
         ("customer_message", "就是活期那张"),
-        ("plan", None),
         ("step_started", None),
         ("step_succeeded", None),
         ("answer", "活期账户 ACC-LM-001 余额 1180.00 元。"),
@@ -144,7 +165,8 @@ def test_a_declined_request_shows_the_refusal_and_no_plan(
     entries = staff(agent, f"/staff/conversations/{conversation}")["entries"]
 
     assert entries == [{"type": "customer_message", "text": "帮我买点基金"}, *events]
-    assert [e["type"] for e in events] == ["refusal"]
+    assert event_types(events) == ["refusal"]
+    assert traces(entries, "plan") == []
 
 
 def test_a_conversation_whose_session_ended_can_still_be_read(
@@ -153,13 +175,13 @@ def test_a_conversation_whose_session_ended_can_still_be_read(
     model.script(plan(step("s1", "query_balance")), say("您的余额为 1180.00 元。"))
     login = log_in(bank, "liming")
     conversation = start_conversation(agent, login)
-    send(agent, conversation, BALANCE_QUESTION)
+    events = send(agent, conversation, BALANCE_QUESTION)
     admin(bank, "post", "/admin/reset")
 
     history = staff(agent, f"/staff/conversations/{conversation}")
 
     assert history["session_id"] == login.session_id
-    assert len(history["entries"]) == 5
+    assert history["entries"][1:] == events
 
 
 def test_reading_an_unknown_conversation_is_not_found(agent: TestClient) -> None:
