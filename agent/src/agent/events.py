@@ -95,6 +95,18 @@ class StepFailed(BankRefusal):
     operation: str
 
 
+class PlanPaused(BaseModel):
+    """The Customer tapped stop: no further step of the Plan starts until they resume,
+    change or cancel it. `ran` are the card's steps the Bank ran, `not_run` those still to
+    run; `text` tells the Customer which, by their number on the Plan card. Ends the turn."""
+
+    type: Literal["plan_paused"] = "plan_paused"
+    plan_id: str
+    ran: list[str]
+    not_run: list[str]
+    text: str
+
+
 class Answer(BaseModel):
     type: Literal["answer"] = "answer"
     text: str
@@ -166,6 +178,7 @@ Event = (
     | Refusal
     | PlanProposed
     | ConfirmationRequested
+    | PlanPaused
     | VerificationRequested
     | SessionLocked
     | HumanRequested

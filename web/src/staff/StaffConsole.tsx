@@ -178,6 +178,14 @@ function TraceEntry({ entry }: { entry: Trace }) {
   }
 }
 
+const ACTION_LABELS: Record<string, string> = {
+  confirm: '确认',
+  reject: '拒绝',
+  stop: '停止',
+  resume: '继续',
+  cancel: '取消剩余',
+}
+
 function AgentEntry({ entry }: { entry: HistoryEntry }) {
   switch (entry.type) {
     case 'trace':
@@ -204,8 +212,14 @@ function AgentEntry({ entry }: { entry: HistoryEntry }) {
         )
       return (
         <>
-          <b>客户操作</b> {entry.action === 'confirm' ? '确认' : entry.action === 'reject' ? '拒绝' : entry.action}计划{' '}
+          <b>客户操作</b> {ACTION_LABELS[entry.action] ?? entry.action}计划{' '}
           <code>{entry.plan_id}</code>
+        </>
+      )
+    case 'plan_paused':
+      return (
+        <>
+          <b>计划已暂停</b> 已执行 {entry.ran.join('、') || '无'}；未执行 {entry.not_run.join('、')}
         </>
       )
     case 'answer':
