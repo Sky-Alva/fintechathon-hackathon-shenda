@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { BankRefusal, PlanStep, Tier } from './events'
+import type { BankRefusal, PlanStep, PlanWarning, Tier } from './events'
 
 /** proposed → awaiting (confirmation_requested) → confirmed | rejected, or replaced when the
  * Customer sends a new message instead of answering. */
@@ -8,6 +8,8 @@ export type PlanCardStatus = 'proposed' | 'awaiting' | 'confirmed' | 'rejected' 
 type Props = {
   steps: PlanStep[]
   refusals: (BankRefusal & { step_id: string })[]
+  /** Why each Red step needs Strong Verification, e.g. it crosses the ¥1,000 daily line. */
+  warnings: PlanWarning[]
   confirmIds: string[]
   status: PlanCardStatus
   disabled: boolean
@@ -56,10 +58,12 @@ const STATUS_TEXT: Partial<Record<PlanCardStatus, string>> = {
 }
 
 /** One Plan card: every step that will run, with its exact details and the Bank's tier.
- * The Customer can take steps off it first; one tap confirms every Yellow step left. */
+ * The Customer can take steps off it first; one tap confirms every Yellow step left, and
+ * each Red step then asks for its own SMS code when it is reached. */
 export default function PlanCard({
   steps,
   refusals,
+  warnings,
   confirmIds,
   status,
   disabled,
@@ -84,6 +88,8 @@ export default function PlanCard({
             confirmIds.includes(step.id) ? 'to-confirm' : '',
             isRemoved ? 'removed' : '',
           ].join(' ')
+          // A removal re-tiers the rest, so a warning about the daily line may no longer hold.
+          const warning = removed.length ? undefined : warnings.find((w) => w.step_id === step.id)
           return (
             <li key={step.id} className={classes.trim()}>
               <div className="plan-step-head">
@@ -115,6 +121,11 @@ export default function PlanCard({
                   </div>
                 ))}
               </dl>
+              {warning && (
+                <div className="plan-warning" role="note">
+                  {warning.text}
+                </div>
+              )}
               {refusal && <div className="plan-refusal">银行提示无法执行：{refusal.message}</div>}
             </li>
           )

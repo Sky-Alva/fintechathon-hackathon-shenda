@@ -1,7 +1,15 @@
 import { type FormEvent, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { type CustomerAction, fetchUpdates, sendAction, sendMessage } from './api'
-import type { BankRefusal, ConversationEvent, PlanStep } from './events'
+import type {
+  BankRefusal,
+  ConversationEvent,
+  PlanStep,
+  PlanWarning,
+  VerificationRequested,
+} from './events'
 import PlanCard, { type PlanCardStatus } from './PlanCard'
+import SimulatedPhone from './SimulatedPhone'
 import TracePanel, { type TraceTurn } from './TracePanel'
 
 /** One step's progress line: running, then done or failed (with the Bank's message). */
@@ -18,12 +26,15 @@ type Item =
   | { kind: 'agent'; text: string }
   | { kind: 'staff'; staff: string; text: string }
   | { kind: 'notice'; text: string }
+  // The Safety Lock notice: only queries work until it is lifted or expires.
+  | { kind: 'locked'; text: string }
   | StepItem
   | {
       kind: 'plan'
       planId: string
       steps: PlanStep[]
       refusals: (BankRefusal & { step_id: string })[]
+      warnings: PlanWarning[]
       confirmIds: string[]
       status: PlanCardStatus
     }
@@ -47,7 +58,15 @@ const STEP_LABEL: Record<StepStatus, string> = {
   failed: '未能完成',
 }
 
-type Props = { customerName: string; conversationId: string; onLogOut: () => void }
+type Props = {
+  customerName: string
+  conversationId: string
+  /** For the simulated phone only: it goes to the Bank, never to the Agent. */
+  phoneToken: string
+  /** Where the simulated phone is shown, beside the Customer's banking app. */
+  smsSlot: HTMLElement | null
+  onLogOut: () => void
+}
 
 /** How often the Channel asks for what a Staff Member sent between the Customer's turns. */
 const UPDATES_MS = 2000
@@ -62,7 +81,7 @@ function settle(items: Item[], stepId: string, change: Partial<StepItem>): Item[
 }
 
 /** Folds one streamed event into the chat. Events this slice doesn't display yet
- * (verification, trace…) are left to the tickets that emit them. */
+ * (trace…) are left to the tickets that emit them. */
 function apply(items: Item[], event: ConversationEvent): Item[] {
   switch (event.type) {
     case 'step_started':
@@ -96,6 +115,7 @@ function apply(items: Item[], event: ConversationEvent): Item[] {
           planId: event.plan_id,
           steps: event.steps,
           refusals: event.refusals,
+          warnings: event.warnings ?? [],
           confirmIds: [],
           status: 'proposed',
         },
@@ -115,6 +135,13 @@ function apply(items: Item[], event: ConversationEvent): Item[] {
     case 'refusal':
     case 'human_requested':
       return [...items, { kind: 'agent', text: event.text }]
+    case 'verification_requested':
+      return [
+        ...items,
+        { kind: 'notice', text: `验证码已发送至 ${event.sent_to}，请在模拟手机上输入以继续` },
+      ]
+    case 'session_locked':
+      return [...items, { kind: 'locked', text: event.text }]
     case 'handed_over':
       return [...items, { kind: 'notice', text: `人工客服 ${event.staff} 已接入对话` }]
     case 'staff_message':
@@ -136,7 +163,13 @@ function replaceWaitingPlans(items: Item[]): Item[] {
   })
 }
 
-export default function Chat({ customerName, conversationId, onLogOut }: Props) {
+export default function Chat({
+  customerName,
+  conversationId,
+  phoneToken,
+  smsSlot,
+  onLogOut,
+}: Props) {
   const [items, setItems] = useState<Item[]>([
     { kind: 'agent', text: `${customerName}，您好！我是您的智能银行助手，有什么可以帮您？` },
   ])
@@ -150,6 +183,8 @@ export default function Chat({ customerName, conversationId, onLogOut }: Props) 
   // The confirmed Plan whose steps are running: the stop button pauses it.
   const [runningPlan, setRunningPlan] = useState<string | null>(null)
   const [stopping, setStopping] = useState(false)
+  // The Red step waiting for the code typed into the simulated phone.
+  const [verification, setVerification] = useState<VerificationRequested | null>(null)
   const bottom = useRef<HTMLDivElement>(null)
 
   useEffect(() => bottom.current?.scrollIntoView({ behavior: 'smooth' }), [items])
@@ -194,7 +229,10 @@ export default function Chat({ customerName, conversationId, onLogOut }: Props) 
             ...turns.slice(0, -1),
             { ...turns[turns.length - 1], traces: [...turns[turns.length - 1].traces, e] },
           ])
-        else setItems((current) => apply(current, e))
+        else {
+          if (e.type === 'verification_requested') setVerification(e)
+          setItems((current) => apply(current, e))
+        }
       })
     } catch {
       setItems((current) => [...current, { kind: 'error', text: '出错了，请稍后再试。' }])
@@ -209,6 +247,7 @@ export default function Chat({ customerName, conversationId, onLogOut }: Props) 
     const text = draft.trim()
     if (!text || busy) return
     setDraft('')
+    setVerification(null) // a new request drops a Plan paused for verification
     setItems((current) => [...replaceWaitingPlans(current), { kind: 'customer', text }])
     await runTurn(text, (onEvent) => sendMessage(conversationId, text, onEvent))
   }
@@ -272,6 +311,46 @@ export default function Chat({ customerName, conversationId, onLogOut }: Props) 
       )
   }
 
+  /** The simulated phone got a verification token from the Bank for the right code: the
+   * Plan runs on from its Red step, and can be stopped. */
+  async function verified(waiting: VerificationRequested, token: string) {
+    if (busy) return
+    setVerification(null)
+    await runPlan(waiting.plan_id, '（短信验证通过）', {
+      action: 'verified',
+      plan_id: waiting.plan_id,
+      step_id: waiting.step_id,
+      verification_token: token,
+    })
+  }
+
+  /** Stop a Plan waiting at a Red step for its code: the stop's own events pause it. */
+  async function stopWaiting(waiting: VerificationRequested) {
+    if (busy) return
+    setVerification(null)
+    await runTurn('（停止计划）', (onEvent) =>
+      sendAction(conversationId, { action: 'stop', plan_id: waiting.plan_id }, onEvent),
+    )
+  }
+
+  /** The Bank refused the code typed into the simulated phone. */
+  async function wrongCode(waiting: VerificationRequested, failedAttempts: number) {
+    if (busy) return
+    setVerification(null)
+    await runTurn('（验证码错误）', (onEvent) =>
+      sendAction(
+        conversationId,
+        {
+          action: 'wrong_code',
+          plan_id: waiting.plan_id,
+          step_id: waiting.step_id,
+          failed_attempts: failedAttempts,
+        },
+        onEvent,
+      ),
+    )
+  }
+
   async function askForHuman() {
     if (busy) return
     setItems((current) => [...current, { kind: 'customer', text: '转人工' }])
@@ -328,6 +407,7 @@ export default function Chat({ customerName, conversationId, onLogOut }: Props) 
                   key={i}
                   steps={item.steps}
                   refusals={item.refusals}
+                  warnings={item.warnings}
                   confirmIds={item.confirmIds}
                   status={item.status}
                   disabled={busy || staffMember !== null}
@@ -371,6 +451,13 @@ export default function Chat({ customerName, conversationId, onLogOut }: Props) 
                   {item.text}
                 </div>
               )
+            case 'locked':
+              return (
+                <div key={i} className="locked-notice" role="alert">
+                  <strong>会话已安全锁定</strong>
+                  {item.text}
+                </div>
+              )
             case 'notice':
               return (
                 <div key={i} className="notice">
@@ -391,8 +478,24 @@ export default function Chat({ customerName, conversationId, onLogOut }: Props) 
             {stopping ? '正在停止…' : '■ 停止'}
           </button>
         )}
+        {verification && !busy && !staffMember && (
+          <button type="button" className="stop-plan" onClick={() => stopWaiting(verification)}>
+            ■ 停止（暂不验证）
+          </button>
+        )}
         <div ref={bottom} />
       </main>
+      {smsSlot &&
+        createPortal(
+          <SimulatedPhone
+            phoneToken={phoneToken}
+            verification={verification}
+            disabled={busy || staffMember !== null}
+            onVerified={verified}
+            onWrongCode={wrongCode}
+          />,
+          smsSlot,
+        )}
       <form className="composer" onSubmit={submit}>
         <input
           value={draft}

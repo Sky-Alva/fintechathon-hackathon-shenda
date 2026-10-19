@@ -11,12 +11,15 @@ from conftest import (
     act,
     bank_audit,
     event_types,
+    latest_code,
     log_in,
+    phone_messages,
     send,
     staff,
     start_conversation,
     take_over,
     traces,
+    type_code,
 )
 from fake_model import FakeModel, plan, say, step
 from test_plan_card import transfer_directly
@@ -96,6 +99,119 @@ def test_the_rest_are_re_tiered_in_their_new_order(
     assert event_types(events) == ["step_started", "step_succeeded", "answer"]
     assert (events[1]["step_id"], events[1]["tier"]) == ("s2", "yellow")
     assert events[1]["output"]["daily_transfer_total"] == "900.00"
+
+
+TO_HUSBAND = {"payee_id": "PAY-HM-001", "amount": "600.00", "note": ""}
+
+
+def two_600s() -> ModelReply:
+    """韩梅梅 sends her husband ¥600 twice: the second crosses ¥1,000, so it is Red."""
+    return plan(step("s1", "transfer", TO_HUSBAND), step("s2", "transfer", TO_HUSBAND))
+
+
+def test_removing_an_earlier_transfer_turns_a_red_step_yellow(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    model.script(two_600s(), say("已向李明转账 600.00 元。"))
+    login = log_in(bank, "hanmei")
+    conversation = start_conversation(agent, login)
+    proposed = shown(send(agent, conversation, "给老公转两笔600"))[0]
+    assert [(s["id"], s["tier"]) for s in proposed["steps"]] == [("s1", "yellow"), ("s2", "red")]
+
+    events = shown(
+        act(agent, conversation, "confirm", plan_id=proposed["plan_id"], removed_step_ids=["s1"])
+    )
+
+    assert event_types(events) == ["step_started", "step_succeeded", "answer"]
+    assert (events[0]["step"]["id"], events[0]["step"]["tier"]) == ("s2", "yellow")
+    assert (events[1]["tier"], events[1]["output"]["amount"]) == ("yellow", "600.00")
+    entries = bank_audit(bank, login)
+    assert [e["event"] for e in entries] == [
+        "tier_preview", "tier_preview", "confirmation_issued", "operation"
+    ]  # no verification: s2 is Yellow on its own
+    assert phone_messages(bank, login) == []
+
+
+def test_stopping_a_plan_waiting_for_verification_pauses_it_there(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    model.script(two_600s())
+    login = log_in(bank, "hanmei")
+    conversation = start_conversation(agent, login)
+    plan_id = shown(send(agent, conversation, "给老公转两笔600"))[0]["plan_id"]
+    act(agent, conversation, "confirm", plan_id=plan_id)  # s1 runs; s2 waits for its code
+
+    events = shown(act(agent, conversation, "stop", plan_id=plan_id))
+
+    assert event_types(events) == ["plan_paused"]
+    assert (events[0]["ran"], events[0]["not_run"]) == (["s1"], ["s2"])
+    assert transfers_run(bank, login) == ["600.00"]
+
+
+def test_resuming_a_stopped_plan_asks_again_to_verify_its_red_step(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    model.script(two_600s(), say("已向李明转账两笔，各 600.00 元。"))
+    login = log_in(bank, "hanmei")
+    conversation = start_conversation(agent, login)
+    plan_id = shown(send(agent, conversation, "给老公转两笔600"))[0]["plan_id"]
+    act(agent, conversation, "confirm", plan_id=plan_id)
+    act(agent, conversation, "stop", plan_id=plan_id)
+
+    resumed = shown(act(agent, conversation, "resume", plan_id=plan_id))
+
+    assert event_types(resumed) == ["verification_requested"]
+    requested = resumed[0]
+    assert (requested["plan_id"], requested["step_id"]) == (plan_id, "s2")
+    verification = type_code(bank, login, requested["challenge_id"], latest_code(bank, login))
+    events = shown(
+        act(
+            agent,
+            conversation,
+            "verified",
+            plan_id=plan_id,
+            step_id="s2",
+            verification_token=verification["verification_token"],
+        )
+    )
+    assert event_types(events) == ["step_started", "step_succeeded", "answer"]
+    assert events[1]["tier"] == "red"
+    assert transfers_run(bank, login) == ["600.00", "600.00"]
+
+
+def test_a_verified_red_step_can_be_stopped_before_the_steps_after_it(
+    agent: TestClient, bank: TestClient, bank_link: BankLink, model: FakeModel
+) -> None:
+    model.script(
+        plan(
+            step("s1", "transfer", TO_HUSBAND),
+            step("s2", "transfer", TO_HUSBAND),
+            step("s3", "lower_card_limit", {"card_id": "CARD-HM-001", "new_limit": "100.00"}),
+        )
+    )
+    login = log_in(bank, "hanmei")
+    conversation = start_conversation(agent, login)
+    plan_id = shown(send(agent, conversation, "给老公转两笔600，再把卡限额调低到100"))[0]["plan_id"]
+    requested = shown(act(agent, conversation, "confirm", plan_id=plan_id))[-1]
+    verification = type_code(bank, login, requested["challenge_id"], latest_code(bank, login))
+    bank_link.after_first(
+        "/operations/transfer", lambda: act(agent, conversation, "stop", plan_id=plan_id)
+    )
+
+    events = shown(
+        act(
+            agent,
+            conversation,
+            "verified",
+            plan_id=plan_id,
+            step_id="s2",
+            verification_token=verification["verification_token"],
+        )
+    )
+
+    assert event_types(events) == ["step_started", "step_succeeded", "plan_paused"]
+    assert (events[-1]["ran"], events[-1]["not_run"]) == (["s1", "s2"], ["s3"])
+    assert "第 1、2 步" in events[-1]["text"] and "第 3 步" in events[-1]["text"]
 
 
 def test_removing_a_step_the_card_does_not_have_is_refused_and_the_card_still_waits(

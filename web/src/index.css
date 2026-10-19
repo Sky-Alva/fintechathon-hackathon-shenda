@@ -345,6 +345,113 @@ button.secondary {
   color: var(--brand);
 }
 
+/* A Red step: why it needs an SMS code, before the Customer confirms. */
+.plan-warning {
+  margin-top: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--brand-dark);
+  background: #fdecee;
+  border-left: 3px solid var(--brand);
+  border-radius: 4px;
+}
+
+/* The Safety Lock notice: what still works, and until when. */
+.locked-notice {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--brand-dark);
+  background: #fdecee;
+  border: 1px solid var(--brand);
+  border-radius: 10px;
+}
+
+/* --- The Customer's simulated phone: the SMS the Bank texts codes to --- */
+
+.sms-phone {
+  width: 260px;
+  max-width: calc(100vw - 32px);
+  height: min(520px, 80vh);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 12px;
+  background: #111827;
+  color: #f9fafb;
+  border-radius: 28px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+  font-size: 13px;
+}
+
+.sms-badge {
+  align-self: center;
+  font-size: 12px;
+  color: #9ca3af;
+}
+
+.sms-list {
+  flex: 1;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sms-list li {
+  padding: 8px 10px;
+  background: #1f2937;
+  border-radius: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.sms-list li.sms-empty {
+  background: none;
+  color: #6b7280;
+  text-align: center;
+}
+
+.sms-meta {
+  font-size: 11px;
+  color: #9ca3af;
+}
+
+.sms-code {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sms-code > div {
+  display: flex;
+  gap: 6px;
+}
+
+.sms-code input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  font: inherit;
+  letter-spacing: 4px;
+  border: 1px solid #374151;
+  border-radius: 10px;
+  background: #f9fafb;
+  color: var(--text);
+}
+
+.sms-error {
+  color: #fca5a5;
+  font-size: 12px;
+}
+
 .plan-actions {
   display: flex;
   justify-content: flex-end;

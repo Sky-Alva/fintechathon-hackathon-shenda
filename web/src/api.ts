@@ -55,9 +55,14 @@ export type CustomerAction =
   | { action: 'reject'; plan_id: string }
   | { action: 'ask_for_human' }
   // The stop button, sent alongside the running Plan's turn: that turn ends with plan_paused.
+  // A Plan waiting for verification is paused at once: the stop's own events say so.
   | { action: 'stop'; plan_id: string }
   | { action: 'resume'; plan_id: string }
   | { action: 'cancel'; plan_id: string }
+  // The phone got this token from the Bank for the right code (#37); never the code.
+  | { action: 'verified'; plan_id: string; step_id: string; verification_token: string }
+  // The Bank refused the code typed into the phone; the Agent checks the lock itself.
+  | { action: 'wrong_code'; plan_id: string; step_id: string; failed_attempts: number }
 
 /** Send a Customer action; `onEvent` gets each event of the turn as it streams in. */
 export async function sendAction(

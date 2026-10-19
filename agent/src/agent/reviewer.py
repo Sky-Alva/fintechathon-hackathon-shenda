@@ -26,9 +26,25 @@ class ReviewedPlan:
         return all(step.tier == "green" for step in self.steps if step.id not in self.refusals)
 
     @property
+    def locked(self) -> dict[str, Any] | None:
+        """The Safety Lock (`trigger`, `locked_until`) if the Bank refused a step because
+        the session is under one: then nothing but Green Operations would run."""
+        for refusal in self.refusals.values():
+            if refusal["reason"] == "session_locked":
+                lock: dict[str, Any] = refusal["detail"]
+                return lock
+        return None
+
+    @property
     def yellow_steps(self) -> list[PlanStep]:
         """The steps one tap on the Plan card confirms."""
         return [step for step in self.steps if step.tier == "yellow"]
+
+    def from_step(self, step_id: str) -> "ReviewedPlan":
+        """The steps still to run from this one on, as when the Plan resumes after it
+        paused for this step's Strong Verification."""
+        ids = [step.id for step in self.steps]
+        return ReviewedPlan(steps=self.steps[ids.index(step_id) :], refusals=self.refusals)
 
     @property
     def card_refusals(self) -> list[StepRefusal]:

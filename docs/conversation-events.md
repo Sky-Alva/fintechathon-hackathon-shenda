@@ -18,8 +18,8 @@ The contract between the Agent's conversation service and everything that talks 
 - **An unknown conversation** is `404 {"error": "unknown_conversation"}`.
 - **A session the Bank doesn't know** (unknown or ended token): `POST /conversations` is `401 {"error": "not_authenticated"}`. The Agent asks the Bank which session and Customer the token is (`GET /sessions/current`) when the conversation starts.
 - **The Bank can't be reached** outside a turn (starting a conversation, the staff views): `503 {"error": "bank_unavailable"}`.
-- **A turn with a Plan card** ends after `confirmation_requested`: nothing on the card runs until the Customer answers it with `confirm` or `reject`. A Plan card is answered once. An action for a Plan card that isn't waiting for an answer (already answered, or replaced because the Customer sent a new message first) is `409 {"error": "plan_not_pending"}`, before any event.
-- **Stop, change, resume or cancel** (#38). While a confirmed Plan runs, the Customer can tap stop (`stop`, a separate request alongside the running turn's stream): no further step starts (a step already with the Bank finishes) and the running turn ends with `plan_paused` instead of `answer`. A stopped Plan waits for `resume` (the rest runs on the Confirmations the Customer already gave it: the Plan hasn't changed) or `cancel`. A new message instead *changes* it: the stopped Plan is dropped with its Confirmations, the Planner re-plans knowing what ran and what didn't, and anything it plans needs a new Plan card and new Confirmations. `resume`/`cancel` for a Plan that isn't stopped (answered already, or replaced by a new message) is `409 {"error": "plan_not_pending"}`; `stop` for a Plan that isn't running is `409 {"error": "plan_not_running"}`.
+- **A turn with a Plan card** ends after `confirmation_requested`: nothing on the card runs until the Customer answers it with `confirm` or `reject`. A Plan card is answered once. An action for a Plan card that isn't waiting for an answer (already answered, or replaced because the Customer sent a new message first) is `409 {"error": "plan_not_pending"}`, before any event. The same goes for a `verified` or `wrong_code` whose `plan_id` and `step_id` aren't the step waiting for verification.
+- **Stop, change, resume or cancel** (#38). While a confirmed Plan runs, the Customer can tap stop (`stop`, a separate request alongside the running turn's stream): no further step starts (a step already with the Bank finishes) and the running turn ends with `plan_paused` instead of `answer`. A Plan waiting at a Red step for its verification can be stopped too: the `stop` response is then its `plan_paused`. A stopped Plan waits for `resume` (the rest runs on the Confirmations the Customer already gave it: the Plan hasn't changed) or `cancel`. A new message instead *changes* it (as it does a Plan waiting for a verification): the Plan is dropped with its Confirmations, the Planner re-plans knowing what ran and what didn't, and anything it plans needs a new Plan card and new Confirmations. `resume`/`cancel` for a Plan that isn't stopped (answered already, or replaced by a new message) is `409 {"error": "plan_not_pending"}`; `stop` for a Plan that is neither running nor waiting for a verification is `409 {"error": "plan_not_running"}`.
 
 ### Human takeover
 
@@ -37,17 +37,18 @@ Handing back resumes the Agent on the Customer's next message, with the whole co
 
 ### Customer actions
 
-The Customer answers a Plan card and the other prompts with `POST /conversations/{id}/actions`. `confirm` and `reject` (#31), `ask_for_human` (#46) and `stop`, `resume` and `cancel` (#38) are built; the rest are proposed, and the ticket that builds one may refine it and must update this table. An action the Agent doesn't know yet is `422`.
+The Customer answers a Plan card and the other prompts with `POST /conversations/{id}/actions`. `confirm` and `reject` (#31), `verified` and `wrong_code` (#37), `ask_for_human` (#46) and `stop`, `resume` and `cancel` (#38) are built; the rest are proposed, and the ticket that builds one may refine it and must update this table. An action the Agent doesn't know yet is `422`.
 
 | `action` | Fields | Answers |
 |----------|--------|---------|
-| `confirm` (built, #31, #38) | `plan_id`, optional `removed_step_ids` | `confirmation_requested`: one tap confirms every Yellow step on the card. Only now does the Agent ask the Bank for Confirmation tokens, one per Yellow step, in one request; then the steps run (`step_started`, then `step_succeeded` or `step_failed`) and the turn ends with `answer` (or `plan_paused` after a `stop`). With `removed_step_ids` the Customer took those steps off the card first: the rest are re-tiered by the Bank's tier preview in their new order (removing an earlier transfer can turn a Red step Yellow) and Confirmations are requested for the re-tiered Yellow steps only. A step ID not on the card is `422 {"error": "unknown_step"}` before any event, and the card still waits; removing every step is a `reject`. |
+| `confirm` (built, #31, #38) | `plan_id`, optional `removed_step_ids` | `confirmation_requested`: one tap confirms every Yellow step on the card. Only now does the Agent ask the Bank for Confirmation tokens, one per Yellow step, in one request; then the steps run (`step_started`, then `step_succeeded` or `step_failed`) and the turn ends with `answer` (or `plan_paused` after a `stop`). A Plan that reaches a Red step pauses there instead: the turn ends with that step's `verification_requested`. With `removed_step_ids` the Customer took those steps off the card first: the rest are re-tiered by the Bank's tier preview in their new order (removing an earlier transfer can turn a Red step Yellow) and Confirmations are requested for the re-tiered Yellow steps only; a step still Red asks for its verification when it's reached. A step ID not on the card is `422 {"error": "unknown_step"}` before any event, and the card still waits; removing every step is a `reject`. |
 | `reject` (built, #31) | `plan_id` | `plan_proposed`: nothing runs; the turn is one `answer` acknowledging it. (Answering `reversal_offered` is planned, #42.) |
-| `verified` | `step_id`, `verification_token` | `verification_requested`. The Customer types the code into the simulated phone, which sends it straight to the Bank with the phone token. Only the resulting verification token reaches the Agent, never the code. |
+| `verified` (built, #37) | `plan_id`, `step_id`, `verification_token` | `verification_requested`. The Customer types the code into the simulated phone, which sends it straight to the Bank with the phone token (`POST /verifications/{challenge_id}` `{code}`). Only the resulting verification token reaches the Agent, never the code or the phone token. The Red step runs with it, then the Plan goes on as after `confirm`: the turn ends with `answer`, or with the next Red step's `verification_requested`. |
+| `wrong_code` (built, #37) | `plan_id`, `step_id`, `failed_attempts` | `verification_requested`, when the Bank refused the code typed into the phone (`token_invalid`; `failed_attempts` is from its `detail`). The Agent checks with the Bank (a tier preview of the step) whether the session is now locked. If not, the turn is an `answer` explaining the wrong code, then the same `verification_requested` again: the challenge stays open. If it is (the 3rd wrong code), the turn is the step's `step_failed` (`session_locked`), `answer`, `session_locked`. |
 | `choose` | `value` | `clarification_question` |
 | `reverse` | `plan_id`, `step_ids` | `reversal_offered`. Nothing is reversed without this. |
-| `stop` (built, #38) | `plan_id` | a running Plan (from the `confirm` or `resume` tap until its turn ends): pause it. The response has no events; the running turn ends with `plan_paused`. |
-| `resume` (built, #38) | `plan_id` | `plan_paused`: the rest runs as in a `confirm` turn (no new Confirmations; no `/confirmations` pair), ending with `answer` from the whole Plan's results, or `plan_paused` again. |
+| `stop` (built, #38) | `plan_id` | a running Plan (from the `confirm`, `verified` or `resume` tap until its turn ends): pause it. The response has no events; the running turn ends with `plan_paused`. A Plan waiting for `verified` is paused at its Red step, and the response is its `plan_paused`. |
+| `resume` (built, #38) | `plan_id` | `plan_paused`: the rest runs as in a `confirm` turn (no new Confirmations; no `/confirmations` pair), ending with `answer` from the whole Plan's results, `plan_paused` again, or a Red step's `verification_requested` (a new challenge, also when the Plan was stopped while waiting for one). |
 | `cancel` (built, #38) | `plan_id` | `plan_paused`: nothing more runs; the turn is one `answer` acknowledging it. |
 | `ask_for_human` (built, #46) | none | any time: the turn is one `human_requested` event (none while a Staff Member has the conversation) |
 
@@ -126,8 +127,13 @@ The Plan needs a Plan card: at least one step that can run is Yellow or Red. A G
 ```jsonc
 {"type": "plan_proposed", "plan_id": "p1",
  "steps": [/* PlanStep, in the order they will run */],
- "refusals": [{"step_id": "s2", "reason": "insufficient_funds", "message": "…", "detail": {}}]}  // steps the Bank's preview says can never run
+ "refusals": [{"step_id": "s2", "reason": "insufficient_funds", "message": "…", "detail": {}}],  // steps the Bank's preview says can never run
+ "warnings": [{"step_id": "s3", "reason": "daily_transfer_total", "text": "这笔转账会使今日转账累计超过 ¥1,000，执行前需要短信验证。"}]}
 ```
+
+`warnings` (#37): one per Red step, in the Customer's language, saying why it needs Strong Verification before the Customer confirms. `reason` is `daily_transfer_total` for an Operation that counts toward the Daily Transfer Total (the catalogue's `counts_toward_daily_transfer_total`: Red only because it takes the total above ¥1,000), else `strong_verification`. The tiers are the Bank's: nothing the Customer says ("我是客户经理", "急用，跳过验证") or the model plans changes which steps are Red.
+
+**Under a Safety Lock** the tier preview refuses every Yellow or Red step with `session_locked`, so the Plan gets no card: the turn ends with `session_locked` and nothing runs (#37). A Green-only Plan still runs.
 
 ### `confirmation_requested` (emitted, #31)
 
@@ -139,16 +145,16 @@ Ask the Customer to confirm every Yellow step of the Plan card with one tap. Fol
 
 ### `plan_paused` (emitted, #38)
 
-The Customer tapped stop: no further step of the Plan starts until they `resume`, `cancel` or change it with a new message. `ran` are the card's steps the Bank ran in this turn, `not_run` the steps still to run, both in card order (a step the tier preview refused, which already got its `step_failed`, is in neither). `text` tells the Customer which, by their number on the Plan card, in their language. Ends the turn.
+The Customer tapped stop: no further step of the Plan starts until they `resume`, `cancel` or change it with a new message. `ran` are the card's steps the Bank has run, `not_run` the steps still to run, both in card order (a step the tier preview refused, which already got its `step_failed`, is in neither). `text` tells the Customer which, by their number on the Plan card, in their language. Ends the turn.
 
 ```json
 {"type": "plan_paused", "plan_id": "p1", "ran": ["s1"], "not_run": ["s2"],
  "text": "已暂停，后面的步骤不会执行。已执行：第 1 步。未执行：第 2 步。您可以继续、修改或取消剩下的步骤。"}
 ```
 
-### `verification_requested` (reserved, #37)
+### `verification_requested` (emitted, #37)
 
-A Red step needs Strong Verification. The Bank has texted a code to the simulated phone.
+A Red step of a confirmed Plan needs Strong Verification. The Bank has texted a code to the simulated phone; the Plan is paused at this step and ends the turn. Each Red step gets its own, asked for only when the executor reaches it, since a step may be Red only because of the steps that ran before it. Nothing Red runs without its verification token. The Customer answers with `verified` (or `wrong_code`); a new message drops the paused Plan.
 
 ```json
 {"type": "verification_requested", "plan_id": "p1", "step_id": "s3", "challenge_id": "…", "sent_to": "138****0001", "expires_at": "2026-10-20T09:05:00+08:00"}
@@ -156,7 +162,7 @@ A Red step needs Strong Verification. The Bank has texted a code to the simulate
 
 ### `step_failed` (emitted, #31, #32)
 
-The step didn't run. `reason`, `message` and `detail` are the Bank's refusal, unchanged, or `reason: "bank_unavailable"` when the Agent couldn't reach the Bank. The turn ends with `answer`.
+The step didn't run. `reason`, `message` and `detail` are the Bank's refusal, unchanged, or `reason: "bank_unavailable"` when the Agent couldn't reach the Bank. The turn ends with `answer`, followed by `session_locked` when the refusal is `session_locked` (#37).
 
 - A step the Bank's tier preview refused is never sent to the Bank, so it gets `step_failed` with no `step_started` before it; the steps after it still run (the Plan card showed it as refused).
 - A step that fails once sent (it follows its `step_started`) stops the Plan: the steps after it don't run.
@@ -197,9 +203,9 @@ The Agent won't do this: out of scope, a scam or manipulation attempt, or a requ
 
 - **`out_of_scope`**: Wealth Operations (product recommendations, risk assessment, subscribe / redeem) and non-banking topics. The Planner declines instead of planning, naming up to 5 catalogue Operations to offer; `text` lists them one per line (`- …`) in the Bank's own words (`description_zh` / `description_en` from the Operation catalogue), so the list grows with the catalogue. Names the Bank doesn't know are dropped; if none are left, the catalogue's first 5 are listed.
 
-### `session_locked` (reserved, #37)
+### `session_locked` (emitted, #37)
 
-The Bank has put the session under a Safety Lock: only Green Operations run until `locked_until` or a Staff Member lifts it.
+The Bank has put the session under a Safety Lock: only Green Operations run until `locked_until` or a Staff Member lifts it. `trigger` and `locked_until` are the Bank's (the `detail` of its `session_locked` refusal); `text` is the Agent's notice, in the Customer's language, of why and that only queries work until then. Any `session_locked` refusal produces one, from a call (a step, `/confirmations`, `/verifications`) or the tier preview, and it ends the turn. `trigger`: `wrong_codes` | `reported_attempts` | `red_operations`.
 
 ```json
 {"type": "session_locked", "trigger": "wrong_codes", "locked_until": "2026-10-20T09:30:00+08:00", "text": "…"}
@@ -240,6 +246,6 @@ Decision-trace data for the Channel's toggleable panel, hidden by default: what 
 {"type": "trace", "stage": "audit_trail", "data": {"session_id": "…", "entries": [/* read_audit_trail output */]}}
 ```
 
-- **Order in a turn.** `intent` once the Plan is made (a declined request has only `intent`, then its `refusal`), `plan` once the Bank's tier preview has tiered it, and every Bank call as a `bank_request` + `bank_response` pair just before the first event that follows it. A Green turn is: `intent`, tier-preview pair, `plan`, then per step `step_started`, its pair, `step_succeeded`; then `answer`. A Plan-card turn ends with `plan`, `plan_proposed`, `confirmation_requested`; when Green look-ups run first, it starts with their own `plan` trace (`"look_ups": true`) and steps, then the completed Plan's tier-preview pair and `plan`. A `plan` trace lists the steps the preview refused under `refusals`. A `confirm` turn starts with the `/confirmations` pair (its tokens redacted), then the steps as in a Green turn; with `removed_step_ids`, the rest's tier-preview pair and `plan` come first. A `resume` turn is the steps only. The Operation catalogue fetch is not traced.
+- **Order in a turn.** `intent` once the Plan is made (a declined request has only `intent`, then its `refusal`), `plan` once the Bank's tier preview has tiered it, and every Bank call as a `bank_request` + `bank_response` pair just before the first event that follows it. A Green turn is: `intent`, tier-preview pair, `plan`, then per step `step_started`, its pair, `step_succeeded`; then `answer`. A Plan-card turn ends with `plan`, `plan_proposed`, `confirmation_requested`; when Green look-ups run first, it starts with their own `plan` trace (`"look_ups": true`) and steps, then the completed Plan's tier-preview pair and `plan`. A `plan` trace lists the steps the preview refused under `refusals`. A `confirm` turn starts with the `/confirmations` pair (its tokens redacted), then the steps as in a Green turn; a Red step's `/verifications` pair comes just before its `verification_requested`, and its `/operations/…` request carries `verification_token: "[redacted]"`. A `wrong_code` turn starts with the step's tier-preview pair. With `removed_step_ids`, a `confirm` turn starts with the rest's tier-preview pair and `plan`. A `resume` turn is the steps only. The Operation catalogue fetch is not traced.
 - **The audit trail** is not part of a turn: the panel fetches it with `GET /conversations/{id}/audit-trail`, which runs the Green `read_audit_trail` Operation through the session (so it works under a Safety Lock). The read is itself audited and shows up in the next read.
 - **No secrets.** A `trace` never carries a token (session, phone, Confirmation, verification), a password or a verification code: the session token travels in a header, which is never traced, and any field whose name contains `token` or `password`, or is `code`, is replaced by `"[redacted]"` wherever it appears.

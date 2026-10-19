@@ -203,6 +203,13 @@ function AgentEntry({ entry }: { entry: HistoryEntry }) {
             <b>客户操作</b> 请求人工客服
           </>
         )
+      if (entry.action === 'verified' || entry.action === 'wrong_code')
+        return (
+          <>
+            <b>客户操作</b> {entry.action === 'verified' ? '短信验证通过' : '验证码错误'}，计划{' '}
+            <code>{entry.plan_id}</code>
+          </>
+        )
       return (
         <>
           <b>客户操作</b> {ACTION_LABELS[entry.action] ?? entry.action}计划{' '}
@@ -234,6 +241,20 @@ function AgentEntry({ entry }: { entry: HistoryEntry }) {
       return (
         <>
           <b>Agent 拒绝（{entry.reason}）</b> {entry.text}
+        </>
+      )
+    case 'verification_requested':
+      return (
+        <>
+          <b>短信验证</b> <code>{entry.step_id}</code> 验证码已发送至 {entry.sent_to}（
+          <code>{entry.challenge_id}</code>）
+        </>
+      )
+    case 'session_locked':
+      return (
+        <>
+          <b className="locked">安全锁定（{entry.trigger}）</b> 至 {entry.locked_until.slice(11, 16)}：
+          {entry.text}
         </>
       )
     case 'human_requested':
