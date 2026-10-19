@@ -1,6 +1,6 @@
 import { type FormEvent, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { fetchUpdates, sendAction, sendMessage } from './api'
+import { type CustomerAction, fetchUpdates, sendAction, sendMessage } from './api'
 import type {
   BankRefusal,
   ConversationEvent,
@@ -38,7 +38,17 @@ type Item =
       confirmIds: string[]
       status: PlanCardStatus
     }
+  | { kind: 'paused'; planId: string; text: string; status: PausedStatus }
   | { kind: 'error'; text: string }
+
+/** A stopped Plan: waiting → resumed | cancelled, or changed by the Customer's next message. */
+type PausedStatus = 'waiting' | 'resumed' | 'cancelled' | 'changed'
+
+const PAUSED_STATUS_TEXT: Record<Exclude<PausedStatus, 'waiting'>, string> = {
+  resumed: '已继续',
+  cancelled: '已取消剩余步骤',
+  changed: '已修改，需重新确认',
+}
 
 type StepStatus = 'running' | 'done' | 'failed'
 
@@ -119,6 +129,11 @@ function apply(items: Item[], event: ConversationEvent): Item[] {
           ? { ...item, confirmIds: event.step_ids, status: 'awaiting' }
           : item,
       )
+    case 'plan_paused':
+      return [
+        ...items,
+        { kind: 'paused', planId: event.plan_id, text: event.text, status: 'waiting' },
+      ]
     case 'answer':
     case 'refusal':
     case 'human_requested':
@@ -141,11 +156,14 @@ function apply(items: Item[], event: ConversationEvent): Item[] {
   }
 }
 
-/** A Plan card still waiting for an answer is replaced by the Customer's next message. */
+/** A Plan card still waiting for an answer is replaced by the Customer's next message, and a
+ * stopped Plan is changed by it (whatever the Agent plans then needs a new Plan card). */
 function replaceWaitingPlans(items: Item[]): Item[] {
-  return items.map((item) =>
-    item.kind === 'plan' && item.status === 'awaiting' ? { ...item, status: 'replaced' } : item,
-  )
+  return items.map((item) => {
+    if (item.kind === 'plan' && item.status === 'awaiting') return { ...item, status: 'replaced' }
+    if (item.kind === 'paused' && item.status === 'waiting') return { ...item, status: 'changed' }
+    return item
+  })
 }
 
 export default function Chat({
@@ -165,6 +183,9 @@ export default function Chat({
   const [finishedTurns, setFinishedTurns] = useState(0)
   // The Staff Member who has the conversation: the Agent is paused meanwhile.
   const [staffMember, setStaffMember] = useState<string | null>(null)
+  // The confirmed Plan whose steps are running: the stop button pauses it.
+  const [runningPlan, setRunningPlan] = useState<string | null>(null)
+  const [stopping, setStopping] = useState(false)
   // The Red step waiting for the code typed into the simulated phone.
   const [verification, setVerification] = useState<VerificationRequested | null>(null)
   const bottom = useRef<HTMLDivElement>(null)
@@ -237,7 +258,18 @@ export default function Chat({
     await runTurn(shown, (onEvent) => sendMessage(conversationId, text, onEvent))
   }
 
-  async function answerPlan(planId: string, action: 'confirm' | 'reject') {
+  /** A turn that runs a confirmed Plan's steps: the stop button shows until it ends. */
+  async function runPlan(planId: string, label: string, action: CustomerAction) {
+    setRunningPlan(planId)
+    try {
+      await runTurn(label, (onEvent) => sendAction(conversationId, action, onEvent))
+    } finally {
+      setRunningPlan(null)
+      setStopping(false)
+    }
+  }
+
+  async function answerPlan(planId: string, action: 'confirm' | 'reject', removed: string[] = []) {
     if (busy) return
     const status: PlanCardStatus = action === 'confirm' ? 'confirmed' : 'rejected'
     setItems((current) =>
@@ -245,27 +277,65 @@ export default function Chat({
         item.kind === 'plan' && item.planId === planId ? { ...item, status } : item,
       ),
     )
-    const label = action === 'confirm' ? '（确认计划）' : '（取消计划）'
-    await runTurn(label, (onEvent) =>
-      sendAction(conversationId, { action, plan_id: planId }, onEvent),
-    )
+    if (action === 'reject') {
+      await runTurn('（取消计划）', (onEvent) =>
+        sendAction(conversationId, { action, plan_id: planId }, onEvent),
+      )
+      return
+    }
+    const label = removed.length ? `（确认计划，移除 ${removed.length} 步）` : '（确认计划）'
+    const confirm: CustomerAction = removed.length
+      ? { action, plan_id: planId, removed_step_ids: removed }
+      : { action, plan_id: planId }
+    await runPlan(planId, label, confirm)
   }
 
-  /** The simulated phone got a verification token from the Bank for the right code. */
+  /** The stop button: sent alongside the running turn, whose stream then ends with
+   * plan_paused. */
+  async function stopPlan() {
+    if (!runningPlan || stopping) return
+    setStopping(true)
+    try {
+      await sendAction(conversationId, { action: 'stop', plan_id: runningPlan }, () => {})
+    } catch {
+      // The Plan finished first: nothing left to stop.
+    }
+  }
+
+  async function answerPaused(planId: string, action: 'resume' | 'cancel') {
+    if (busy) return
+    const status: PausedStatus = action === 'resume' ? 'resumed' : 'cancelled'
+    setItems((current) =>
+      current.map((item) =>
+        item.kind === 'paused' && item.planId === planId ? { ...item, status } : item,
+      ),
+    )
+    if (action === 'resume') await runPlan(planId, '（继续计划）', { action, plan_id: planId })
+    else
+      await runTurn('（取消剩余步骤）', (onEvent) =>
+        sendAction(conversationId, { action, plan_id: planId }, onEvent),
+      )
+  }
+
+  /** The simulated phone got a verification token from the Bank for the right code: the
+   * Plan runs on from its Red step, and can be stopped. */
   async function verified(waiting: VerificationRequested, token: string) {
     if (busy) return
     setVerification(null)
-    await runTurn('（短信验证通过）', (onEvent) =>
-      sendAction(
-        conversationId,
-        {
-          action: 'verified',
-          plan_id: waiting.plan_id,
-          step_id: waiting.step_id,
-          verification_token: token,
-        },
-        onEvent,
-      ),
+    await runPlan(waiting.plan_id, '（短信验证通过）', {
+      action: 'verified',
+      plan_id: waiting.plan_id,
+      step_id: waiting.step_id,
+      verification_token: token,
+    })
+  }
+
+  /** Stop a Plan waiting at a Red step for its code: the stop's own events pause it. */
+  async function stopWaiting(waiting: VerificationRequested) {
+    if (busy) return
+    setVerification(null)
+    await runTurn('（停止计划）', (onEvent) =>
+      sendAction(conversationId, { action: 'stop', plan_id: waiting.plan_id }, onEvent),
     )
   }
 
@@ -347,9 +417,38 @@ export default function Chat({
                   confirmIds={item.confirmIds}
                   status={item.status}
                   disabled={busy || staffMember !== null}
-                  onConfirm={() => answerPlan(item.planId, 'confirm')}
+                  onConfirm={(removed) => answerPlan(item.planId, 'confirm', removed)}
                   onReject={() => answerPlan(item.planId, 'reject')}
                 />
+              )
+            case 'paused':
+              return (
+                <div key={i} className="paused-card">
+                  <div>{item.text}</div>
+                  {item.status === 'waiting' ? (
+                    <div className="plan-actions">
+                      <span className="plan-note">如需修改，直接告诉我</span>
+                      <button
+                        type="button"
+                        className="secondary"
+                        disabled={busy || staffMember !== null}
+                        onClick={() => answerPaused(item.planId, 'cancel')}
+                      >
+                        取消剩余
+                      </button>
+                      <button
+                        type="button"
+                        className="primary"
+                        disabled={busy || staffMember !== null}
+                        onClick={() => answerPaused(item.planId, 'resume')}
+                      >
+                        继续
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="plan-status">{PAUSED_STATUS_TEXT[item.status]}</div>
+                  )}
+                </div>
               )
             case 'staff':
               return (
@@ -380,6 +479,16 @@ export default function Chat({
           }
         })}
         {busy && !staffMember && <div className="typing">助手正在处理…</div>}
+        {runningPlan && (
+          <button type="button" className="stop-plan" disabled={stopping} onClick={stopPlan}>
+            {stopping ? '正在停止…' : '■ 停止'}
+          </button>
+        )}
+        {verification && !busy && !staffMember && (
+          <button type="button" className="stop-plan" onClick={() => stopWaiting(verification)}>
+            ■ 停止（暂不验证）
+          </button>
+        )}
         <div ref={bottom} />
       </main>
       {smsSlot &&
