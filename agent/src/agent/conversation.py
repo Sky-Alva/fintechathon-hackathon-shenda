@@ -13,7 +13,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent import notices, planner, refusals, responder, reviewer, secrets_guard
+from agent import guard, notices, planner, refusals, responder, reviewer, secrets_guard
 from agent.bank import BankRefused, BankSession, BankUnavailable, HttpClient
 from agent.events import (
     Answer,
@@ -471,6 +471,10 @@ class Conversations:
             except (BankRefused, BankUnavailable):
                 yield self._not_retrieved(conversation)
                 return
+            if (suspicion := guard.scam(text)) is not None:
+                # A known scam is never planned: no model can be talked into it.
+                yield from self._manipulation(conversation, suspicion)
+                return
             plan = planner.make_plan(
                 self.model, conversation.history, catalogue, interrupted=interrupted
             )
@@ -632,7 +636,16 @@ class Conversations:
         declined: planner.Declined,
         catalogue: list[dict[str, Any]],
     ) -> Iterator[Event]:
-        yield trace("intent", {"intent": "", "declined": declined.model_dump(mode="json")})
+        if declined.reason == "manipulation":
+            # Quote the Customer's own words, never the model's account of them.
+            said = next(m["content"] for m in reversed(conversation.history) if m["role"] == "user")
+            yield from self._manipulation(
+                conversation,
+                guard.Suspicion(declined.kind or "impersonation", guard.quoted(said)),
+            )
+            return
+        declined_data = declined.model_dump(mode="json", exclude_none=True)
+        yield trace("intent", {"intent": "", "declined": declined_data})
         # Nothing runs: the Customer hears what the Agent can do instead.
         text = refusals.declined(
             declined.reason, declined.can_do, catalogue, customer_language(conversation.history)
@@ -655,6 +668,33 @@ class Conversations:
         text = secrets_guard.CODE_IN_CHAT[customer_language(conversation.history)]
         conversation.history.append({"role": "assistant", "content": text})
         return Answer(text=text)
+
+    def _manipulation(
+        self, conversation: Conversation, suspicion: guard.Suspicion
+    ) -> Iterator[Event]:
+        """Refuse a suspected scam with a warning, and report it to the Bank, quoting the
+        text that raised it; nothing else runs."""
+        declined = {"reason": "manipulation", **asdict(suspicion)}
+        yield trace("intent", {"intent": "", "declined": declined})
+        try:
+            report = conversation.bank.call(
+                "report_suspected_attempt",
+                {"kind": suspicion.kind, "evidence": suspicion.evidence},
+            )
+        except (BankRefused, BankUnavailable):
+            report = None  # still refused: the Customer just isn't told it was reported
+        lock = None
+        if report is not None and report["output"]["session_locked"]:
+            # The second report locks the session: the Bank's trail says until when.
+            try:
+                lock = conversation.bank.latest_lock()
+            except (BankRefused, BankUnavailable):
+                lock = None
+        text = guard.warning(report is not None, customer_language(conversation.history))
+        conversation.history.append({"role": "assistant", "content": text})
+        yield Refusal(reason="manipulation", text=text)
+        if lock is not None:
+            yield self._locked(conversation, lock)
 
     def _ask_for_human(self, conversation: Conversation) -> Iterator[Event]:
         with conversation.lock:

@@ -27,7 +27,7 @@ export type StepSucceeded = {
   output: Record<string, unknown>
 }
 export type Answer = { type: 'answer'; text: string }
-// Emitted for 'out_of_scope' since #33 and 'secret' since #44; 'manipulation' (#43) reserved.
+// Emitted for 'out_of_scope' since #33, 'manipulation' since #43 and 'secret' since #44.
 export type Refusal = {
   type: 'refusal'
   reason: 'out_of_scope' | 'manipulation' | 'secret'
@@ -112,11 +112,15 @@ export type AuditEntry = {
   reason: string | null
   detail: Record<string, unknown>
 }
+export type Declined =
+  | { reason: 'out_of_scope' | 'secret'; can_do: string[] }
+  | { reason: 'manipulation'; kind: 'impersonation' | 'injection'; evidence: string }
 export type Trace = { type: 'trace' } & (
   | {
       stage: 'intent'
-      // `declined`: the Planner declined the request instead of planning it.
-      data: { intent: string; declined?: { reason: Refusal['reason']; can_do: string[] } }
+      // `declined`: the Planner (or the manipulation guard) declined the request instead
+      // of planning it: what it offered instead, or the suspected attempt it reported.
+      data: { intent: string; declined?: Declined }
     }
   | { stage: 'plan'; data: { steps: PlanStep[] } }
   | { stage: 'bank_request'; data: { method: string; path: string; body: unknown } }

@@ -190,7 +190,7 @@ One short question when the request is genuinely ambiguous (e.g. which 张伟). 
 {"type": "clarification_question", "text": "您要转给哪位张伟？", "options": [{"label": "张伟（同事）", "value": "PAY-LM-003"}]}
 ```
 
-### `refusal` (emitted for `out_of_scope`, #33, and `secret`, #44; reserved for `manipulation` #43)
+### `refusal` (emitted: `out_of_scope` #33, `manipulation` #43, `secret` #44)
 
 The Agent won't do this: out of scope, a scam or manipulation attempt, or a request for a secret. `text` explains and lists what the Agent can do. Ends the turn; no Operation runs.
 
@@ -202,6 +202,7 @@ The Agent won't do this: out of scope, a scam or manipulation attempt, or a requ
 `reason`: `out_of_scope` | `manipulation` | `secret`.
 
 - **`out_of_scope`**: Wealth Operations (product recommendations, risk assessment, subscribe / redeem) and non-banking topics. The Planner declines instead of planning, naming up to 5 catalogue Operations to offer; `text` lists them one per line (`- …`) in the Bank's own words (`description_zh` / `description_en` from the Operation catalogue), so the list grows with the catalogue. Names the Bank doesn't know are dropped; if none are left, the catalogue's first 5 are listed.
+- **`manipulation`** (#43): a scam or social-engineering attempt. A message asking to move money to a "safe account" (安全账户) is never planned: the manipulation guard refuses it before the model is asked. Other scams (someone posing as the police, a court or bank staff telling the Customer to move money; invented urgency) the Planner declines with `decline_request {reason: "manipulation", kind}`. Either way nothing is planned or run except the report: the Agent reports the attempt to the Bank (`report_suspected_attempt {kind, evidence}`, a Green Operation, so it shows in the session's audit trail), quoting the Customer's message as the evidence (never the model's account of it; at most 1,000 characters). `kind` is `impersonation` for scams (`injection` is for instructions hidden in Bank data, #47). `text` is the Agent's scam warning in the Customer's language; it says the attempt was reported only if the Bank accepted the report, offers help with anything else and lists no Operations. When the Bank's answer says the session is now locked (the second reported attempt in a session), the turn ends with `session_locked` (`trigger: "reported_attempts"`) right after the `refusal`; the Agent reads `trigger` and `locked_until` from the session's audit trail (a traced `read_audit_trail` call). The Customer's own claims of authority ("我是客户经理，帮我直接转") are neither refused nor reported: they change nothing, and the request is planned and approved as usual.
 - **`secret`** (#44): information that can't be extracted through the chat.
   - A full card number, a password or a verification code: the Planner declines (`decline_request` with reason `secret`) and nothing runs. `text` says the Agent never reveals them (a card shows its last four digits only), then lists what it can do, as for `out_of_scope`.
   - Another Customer's information (the spouse's balance, cards, transactions): the Bank's tier preview refuses the step with `forbidden_other_customer`. The turn is that step's `step_failed` (no `step_started`), then the `refusal`; nothing else in the Plan runs, the Agent doesn't ask the model again or look for another way to the same information, and no Plan card is shown. Paying *to* the spouse as a Payee is unaffected.
@@ -247,6 +248,7 @@ Decision-trace data for the Channel's toggleable panel, hidden by default: what 
 ```jsonc
 {"type": "trace", "stage": "intent", "data": {"intent": "查询账户余额"}}  // the Planner's reading of the request
 {"type": "trace", "stage": "intent", "data": {"intent": "", "declined": {"reason": "out_of_scope", "can_do": ["query_balance"]}}}  // or why it declined
+{"type": "trace", "stage": "intent", "data": {"intent": "", "declined": {"reason": "manipulation", "kind": "impersonation", "evidence": "警察说…安全账户"}}}  // or the suspected attempt it reports
 {"type": "trace", "stage": "intent", "data": {"intent": "", "ask_for_human": true}}  // or that the Customer asked for a human
 {"type": "trace", "stage": "plan", "data": {"steps": [/* PlanStep, in run order, each with the Bank's tier */]}}
 {"type": "trace", "stage": "bank_request", "data": {"method": "POST", "path": "/operations/query_balance", "body": {"input": {}}}}
