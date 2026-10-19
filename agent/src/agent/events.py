@@ -67,3 +67,15 @@ class Refusal(BaseModel):
 
 
 Event = StepStarted | StepSucceeded | StepFailed | Answer | Refusal | Trace
+
+
+# A conversation's history, as Staff Members read it: each Customer message, then every
+# event the Customer was sent (the decision trace included), in order.
+
+
+class CustomerMessageEntry(BaseModel):
+    type: Literal["customer_message"] = "customer_message"
+    text: str
+
+
+HistoryEntry = CustomerMessageEntry | Event

@@ -115,3 +115,8 @@ export type ConversationEvent =
   | HandedOver
   | HandedBack
   | Trace
+
+// A conversation's history, as Staff Members read it (GET /staff/conversations/{id}):
+// each Customer message, then every event sent, the decision trace included.
+export type CustomerMessageEntry = { type: 'customer_message'; text: string }
+export type HistoryEntry = CustomerMessageEntry | ConversationEvent

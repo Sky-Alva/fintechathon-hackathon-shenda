@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from conftest import BankLink, Login, event_types, log_in, send, start_conversation
+from conftest import BankLink, admin, event_types, log_in, send, start_conversation
 from fake_model import FakeModel, plan, say, step
 
 BALANCE_QUESTION = "我卡里还有多少钱？"
@@ -311,10 +311,11 @@ def test_an_english_customer_is_told_in_english_that_the_bank_cant_be_reached(
 
 
 def test_when_the_bank_refuses_the_session_the_answer_says_so_and_guesses_nothing(
-    agent: TestClient, model: FakeModel
+    agent: TestClient, bank: TestClient, model: FakeModel
 ) -> None:
     model.script(plan(step("s1", "query_balance")))
-    conversation = start_conversation(agent, Login("no-session", "not-a-token", "no-phone"))
+    conversation = start_conversation(agent, log_in(bank, "liming"))
+    admin(bank, "post", "/admin/reset")  # ends the session under the conversation
 
     events = send(agent, conversation, BALANCE_QUESTION)
 

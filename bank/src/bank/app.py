@@ -1,6 +1,6 @@
 """The Bank's HTTP API.
 
-Customer-facing: log in, read the Bank clock, read the Operation catalogue, call an
+Customer-facing: log in, read which session a token is, read the Bank clock, read the Operation catalogue, call an
 Operation, preview a Plan's tiers, get Confirmation tokens, pass Strong Verification,
 read the simulated phone.
 Admin (X-Admin-Key): reset, set or advance the Bank clock, read any session's audit
@@ -148,6 +148,16 @@ def create_app(db_path: Path, admin_key: str) -> FastAPI:
             "session_id": session.session_id,
             "session_token": session.session_token,
             "phone_token": session.phone_token,
+            "customer": {"customer_id": session.customer_id, "name": session.customer_name},
+        }
+
+    @app.get("/sessions/current")
+    def current_session(authorization: Annotated[str | None, Header()] = None) -> dict[str, Any]:
+        """Which session and Customer a session token is. Not an Operation: not audited."""
+        with db.transaction(db_path) as conn:
+            session = sessions.authenticate(conn, bearer_token(authorization))
+        return {
+            "session_id": session.session_id,
             "customer": {"customer_id": session.customer_id, "name": session.customer_name},
         }
 

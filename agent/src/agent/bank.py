@@ -65,6 +65,13 @@ class BankSession:
     exchanges: list[BankExchange] = field(default_factory=list)
     """Every traced call since the last `take_exchanges()`, in order."""
 
+    def current(self) -> dict[str, Any]:
+        """Which Bank session and Customer this is: `{session_id, customer}`. Refused with
+        `not_authenticated` once the session has ended."""
+        # Not traced: it is asked outside turns (at start, by staff views) and decides nothing.
+        current: dict[str, Any] = self._send("get", "/sessions/current", traced=False)
+        return current
+
     def catalogue(self) -> list[dict[str, Any]]:
         """The Bank's Operation catalogue, which the Planner plans from."""
         # Not traced: the catalogue is the same every turn and decides nothing.

@@ -12,7 +12,7 @@ from typing import Any
 
 from agent import planner, refusals, responder, reviewer
 from agent.bank import BankRefused, BankSession, BankUnavailable, HttpClient
-from agent.events import Answer, Event, Refusal, Trace
+from agent.events import Answer, CustomerMessageEntry, Event, HistoryEntry, Refusal, Trace
 from agent.executor import StepResult, execute
 from agent.language import customer_language
 from agent.model import ModelClient
@@ -23,10 +23,17 @@ from agent.trace import trace, with_bank_traces
 class Conversation:
     conversation_id: str
     bank: BankSession
+    session_id: str
+    """The Bank's ID for the session: Staff Members read its audit trail by it."""
+    customer: dict[str, str]
+    """`{customer_id, name}`, as the Bank told it."""
     history: list[dict[str, Any]] = field(default_factory=list)
     """The Customer's messages and the Agent's answers, in the model's chat format."""
     bank_results: list[StepResult] = field(default_factory=list)
     """Every Bank result so far: the facts an answer may state."""
+    record: list[HistoryEntry] = field(default_factory=list)
+    """Everything Staff Members read: each Customer message and every event sent (the
+    decision trace included, so the Plan, its tiers and every Bank call), in order."""
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -41,10 +48,15 @@ class Conversations:
         self.conversations: dict[str, Conversation] = {}
 
     def start(self, session_token: str) -> Conversation:
-        """A conversation acting through one Customer's own Bank session."""
+        """A conversation acting through one Customer's own Bank session. Refused
+        (`BankRefused`, `not_authenticated`) if the Bank doesn't know the session."""
+        bank = BankSession(self.bank, session_token)
+        current = bank.current()
         conversation = Conversation(
             conversation_id=secrets.token_urlsafe(16),
-            bank=BankSession(self.bank, session_token),
+            bank=bank,
+            session_id=current["session_id"],
+            customer=current["customer"],
         )
         self.conversations[conversation.conversation_id] = conversation
         return conversation
@@ -55,6 +67,20 @@ class Conversations:
         except KeyError:
             raise UnknownConversation(conversation_id) from None
 
+    def active(self) -> list[Conversation]:
+        """The conversations whose Bank session is still active, in the order they
+        started."""
+        active = []
+        for conversation in list(self.conversations.values()):
+            try:
+                conversation.bank.current()
+            except BankRefused as refused:
+                if refused.reason != "not_authenticated":
+                    raise
+            else:
+                active.append(conversation)
+        return active
+
     def audit_trail(self, conversation: Conversation) -> Trace:
         """The session's audit trail as the Bank recorded it, for the decision trace."""
         return trace("audit_trail", conversation.bank.audit_trail())
@@ -62,10 +88,13 @@ class Conversations:
     def send(self, conversation: Conversation, text: str) -> Iterator[Event]:
         """One turn: the Customer's message in, the turn's events out, with every Bank
         call of the turn in the decision trace."""
-        yield from with_bank_traces(conversation.bank, self._turn(conversation, text))
+        for event in with_bank_traces(conversation.bank, self._turn(conversation, text)):
+            conversation.record.append(event)
+            yield event
 
     def _turn(self, conversation: Conversation, text: str) -> Iterator[Event]:
         with conversation.lock:
+            conversation.record.append(CustomerMessageEntry(text=text))
             conversation.history.append({"role": "user", "content": text})
             try:
                 catalogue = conversation.bank.catalogue()

@@ -24,6 +24,8 @@ services:
     environment:
       BANK_URL: http://bank:8000
       BANK_ADMIN_KEY: ""
+      # Guards the Agent's own staff views (/staff). Not the Bank's admin key.
+      AGENT_STAFF_KEY: ${AGENT_STAFF_KEY:-demo-staff-key}
     depends_on:
       bank:
         condition: service_healthy

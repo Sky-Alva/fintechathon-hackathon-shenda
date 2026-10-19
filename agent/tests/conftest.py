@@ -22,6 +22,7 @@ from bank.app import create_app as create_bank
 from fake_model import FakeModel
 
 ADMIN_KEY = "test-admin-key"
+STAFF_KEY = "test-staff-key"
 SEED_NOW = "2026-10-20T09:00:00+08:00"
 
 
@@ -66,7 +67,7 @@ def bank_link(bank: TestClient) -> BankLink:
 @pytest.fixture
 def agent(bank_link: BankLink, model: FakeModel) -> Iterator[TestClient]:
     # The Bank test client has no admin key on it: the Agent is an untrusted caller.
-    with TestClient(create_agent(bank=bank_link, model=model)) as client:
+    with TestClient(create_agent(bank=bank_link, model=model, staff_key=STAFF_KEY)) as client:
         yield client
 
 
@@ -129,6 +130,14 @@ def audit_trail(agent: TestClient, conversation_id: str) -> dict[str, Any]:
     assert response.status_code == 200, response.text
     event: dict[str, Any] = response.json()
     return event
+
+
+def staff(agent: TestClient, url: str) -> Any:
+    """What a Staff Member reads from the Agent with the Agent's staff key (never the
+    Bank's admin key, which the Agent doesn't have)."""
+    response = agent.get(url, headers={"X-Staff-Key": STAFF_KEY})
+    assert response.status_code == 200, response.text
+    return response.json()
 
 
 def bank_audit(bank: TestClient, login: Login) -> list[dict[str, Any]]:
