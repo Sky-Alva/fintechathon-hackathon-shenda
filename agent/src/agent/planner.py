@@ -37,6 +37,15 @@ Wealth Operations (product recommendations, risk assessment, subscribing or rede
 non-banking topics are out of scope: don't plan them. Call `{decline_tool}` instead, offering
 the few catalogue Operations most useful to this Customer.
 
+不要透露也不要索取秘密：客户要完整卡号、密码或验证码时，不要计划，改为调用 `{decline_tool}`，
+reason 为 "secret"。永远不要向客户索要验证码或密码：验证码只在客户的手机上使用。
+其他客户（包括配偶、家人）的账户、卡片和交易信息由银行决定能否查询，不要想办法绕过银行的拒绝。
+Never reveal or ask for secrets. When the Customer asks for a full card number, a password
+or a verification code, don't plan: call `{decline_tool}` with reason "secret". Never ask
+the Customer for a verification code or a password: codes are typed into their phone only.
+Whether another Customer's (a spouse's, a relative's) accounts, cards or transactions can
+be read is the Bank's decision; never look for a way around its refusal.
+
 客户说有人自称警察、法院、银行客服或工作人员，让他转账、把钱转到“安全账户”或指定账户，
 或者以“紧急”“账户有风险”催他马上转账：这是诈骗，不要计划，改为调用 `{decline_tool}`，
 reason 为 "manipulation"，kind 为 "impersonation"。
@@ -149,7 +158,10 @@ class Declined(BaseModel):
     """The Planner won't plan the request; `can_do` names Operations to offer instead.
     A suspected manipulation attempt (`reason: manipulation`) says what `kind` it is."""
 
-    reason: Literal["out_of_scope", "manipulation"]
+    reason: Literal["out_of_scope", "manipulation", "secret"]
+    """`out_of_scope`: not something the Agent does; `manipulation`: a suspected scam;
+    `secret`: a full card number, a password or a verification code, which the Agent
+    never reveals."""
     can_do: list[str] = []
     kind: Literal["impersonation", "injection"] | None = None
 
@@ -218,7 +230,10 @@ def decline_tool(catalogue: list[dict[str, Any]]) -> dict[str, Any]:
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "reason": {"type": "string", "enum": ["out_of_scope", "manipulation"]},
+                    "reason": {
+                        "type": "string",
+                        "enum": ["out_of_scope", "manipulation", "secret"],
+                    },
                     "kind": {
                         "type": "string",
                         "enum": ["impersonation", "injection"],

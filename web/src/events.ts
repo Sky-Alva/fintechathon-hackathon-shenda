@@ -27,7 +27,7 @@ export type StepSucceeded = {
   output: Record<string, unknown>
 }
 export type Answer = { type: 'answer'; text: string }
-// Emitted for 'out_of_scope' since #33 and 'manipulation' since #43; 'secret' (#44) reserved.
+// Emitted for 'out_of_scope' since #33, 'manipulation' since #43 and 'secret' since #44.
 export type Refusal = {
   type: 'refusal'
   reason: 'out_of_scope' | 'manipulation' | 'secret'

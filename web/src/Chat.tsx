@@ -71,6 +71,9 @@ type Props = {
 /** How often the Channel asks for what a Staff Member sent between the Customer's turns. */
 const UPDATES_MS = 2000
 
+/** Six digits on their own: what the Agent takes for a verification code in the chat. */
+const CODE_IN_CHAT = /(?<![A-Za-z0-9_.,¥￥-])\d{6}(?![A-Za-z0-9_-])/g
+
 /** Settle the latest progress line for this step that is still running. */
 function settle(items: Item[], stepId: string, change: Partial<StepItem>): Item[] {
   const index = items.findLastIndex(
@@ -247,9 +250,12 @@ export default function Chat({
     const text = draft.trim()
     if (!text || busy) return
     setDraft('')
+    // A code typed into the chat while a verification is pending isn't shown back: the
+    // Agent masks it too, and points the Customer to the simulated phone.
+    const shown = verification ? text.replace(CODE_IN_CHAT, '******') : text
     setVerification(null) // a new request drops a Plan paused for verification
-    setItems((current) => [...replaceWaitingPlans(current), { kind: 'customer', text }])
-    await runTurn(text, (onEvent) => sendMessage(conversationId, text, onEvent))
+    setItems((current) => [...replaceWaitingPlans(current), { kind: 'customer', text: shown }])
+    await runTurn(shown, (onEvent) => sendMessage(conversationId, text, onEvent))
   }
 
   /** A turn that runs a confirmed Plan's steps: the stop button shows until it ends. */
