@@ -204,6 +204,31 @@ input {
   border-top-right-radius: 4px;
 }
 
+/* A Staff Member's reply: from a person, not the Agent. */
+.bubble.staff {
+  align-self: flex-start;
+  background: #fff4e0;
+  border: 1px solid #f0c36d;
+  border-top-left-radius: 4px;
+}
+
+.bubble.staff .from {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: #a86b00;
+  margin-bottom: 2px;
+}
+
+.notice {
+  align-self: center;
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--surface);
+  padding: 4px 10px;
+  border-radius: 999px;
+}
+
 .bubble.error {
   align-self: center;
   background: none;

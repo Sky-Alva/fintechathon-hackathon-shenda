@@ -1,5 +1,5 @@
 import { type FormEvent, useEffect, useRef, useState } from 'react'
-import { type CustomerAction, sendAction, sendMessage } from './api'
+import { type CustomerAction, fetchUpdates, sendAction, sendMessage } from './api'
 import type { BankRefusal, ConversationEvent, PlanStep } from './events'
 import PlanCard, { type PlanCardStatus } from './PlanCard'
 import TracePanel, { type TraceTurn } from './TracePanel'
@@ -16,6 +16,8 @@ type StepItem = {
 type Item =
   | { kind: 'customer'; text: string }
   | { kind: 'agent'; text: string }
+  | { kind: 'staff'; staff: string; text: string }
+  | { kind: 'notice'; text: string }
   | StepItem
   | {
       kind: 'plan'
@@ -36,6 +38,9 @@ const STEP_LABEL: Record<StepStatus, string> = {
 }
 
 type Props = { customerName: string; conversationId: string; onLogOut: () => void }
+
+/** How often the Channel asks for what a Staff Member sent between the Customer's turns. */
+const UPDATES_MS = 2000
 
 /** Settle the latest progress line for this step that is still running. */
 function settle(items: Item[], stepId: string, change: Partial<StepItem>): Item[] {
@@ -93,7 +98,14 @@ function apply(items: Item[], event: ConversationEvent): Item[] {
       )
     case 'answer':
     case 'refusal':
+    case 'human_requested':
       return [...items, { kind: 'agent', text: event.text }]
+    case 'handed_over':
+      return [...items, { kind: 'notice', text: `人工客服 ${event.staff} 已接入对话` }]
+    case 'staff_message':
+      return [...items, { kind: 'staff', staff: event.staff, text: event.text }]
+    case 'handed_back':
+      return [...items, { kind: 'notice', text: '人工客服已离开，智能助手继续为您服务' }]
     default:
       return items
   }
@@ -115,9 +127,36 @@ export default function Chat({ customerName, conversationId, onLogOut }: Props) 
   const [showTrace, setShowTrace] = useState(false)
   const [traceTurns, setTraceTurns] = useState<TraceTurn[]>([])
   const [finishedTurns, setFinishedTurns] = useState(0)
+  // The Staff Member who has the conversation: the Agent is paused meanwhile.
+  const [staffMember, setStaffMember] = useState<string | null>(null)
   const bottom = useRef<HTMLDivElement>(null)
 
   useEffect(() => bottom.current?.scrollIntoView({ behavior: 'smooth' }), [items])
+
+  // A Staff Member's takeover, replies and hand-back arrive between the Customer's turns.
+  useEffect(() => {
+    let seen = 0
+    let polling = false
+    async function poll() {
+      if (polling) return
+      polling = true
+      try {
+        const { events, next } = await fetchUpdates(conversationId, seen)
+        seen = next
+        for (const event of events) {
+          if (event.type === 'handed_over') setStaffMember(event.staff)
+          if (event.type === 'handed_back') setStaffMember(null)
+          setItems((current) => apply(current, event))
+        }
+      } catch {
+        // Try again on the next tick.
+      } finally {
+        polling = false
+      }
+    }
+    const timer = setInterval(() => void poll(), UPDATES_MS)
+    return () => clearInterval(timer)
+  }, [conversationId])
 
   /** One turn: `label` names it in the decision trace (the message, or the tap). */
   async function runTurn(
@@ -167,11 +206,24 @@ export default function Chat({ customerName, conversationId, onLogOut }: Props) 
     )
   }
 
+  async function askForHuman() {
+    if (busy) return
+    setItems((current) => [...current, { kind: 'customer', text: '转人工' }])
+    await runTurn('（转人工）', (onEvent) =>
+      sendAction(conversationId, { action: 'ask_for_human' }, onEvent),
+    )
+  }
+
   return (
     <div className="chat">
       <header>
-        <span>智能银行助手</span>
+        <span>{staffMember ? `人工客服 · ${staffMember}` : '智能银行助手'}</span>
         <span>
+          {!staffMember && (
+            <button type="button" className="link" onClick={askForHuman} disabled={busy}>
+              转人工
+            </button>
+          )}
           <button
             type="button"
             className="link"
@@ -212,10 +264,23 @@ export default function Chat({ customerName, conversationId, onLogOut }: Props) 
                   refusals={item.refusals}
                   confirmIds={item.confirmIds}
                   status={item.status}
-                  disabled={busy}
+                  disabled={busy || staffMember !== null}
                   onConfirm={() => answerPlan(item.planId, 'confirm')}
                   onReject={() => answerPlan(item.planId, 'reject')}
                 />
+              )
+            case 'staff':
+              return (
+                <div key={i} className="bubble staff">
+                  <span className="from">人工客服 · {item.staff}</span>
+                  {item.text}
+                </div>
+              )
+            case 'notice':
+              return (
+                <div key={i} className="notice">
+                  {item.text}
+                </div>
               )
             default:
               return (
@@ -225,7 +290,7 @@ export default function Chat({ customerName, conversationId, onLogOut }: Props) 
               )
           }
         })}
-        {busy && <div className="typing">助手正在处理…</div>}
+        {busy && !staffMember && <div className="typing">助手正在处理…</div>}
         <div ref={bottom} />
       </main>
       <form className="composer" onSubmit={submit}>

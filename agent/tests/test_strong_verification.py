@@ -25,6 +25,7 @@ from conftest import (
     send,
     staff,
     start_conversation,
+    take_over,
     traces,
     type_code,
 )
@@ -427,6 +428,32 @@ def test_urgency_or_authority_claims_do_not_change_which_steps_need_verification
     assert event_types(confirmed) == ["step_started", "step_succeeded", "verification_requested"]
     transfers = [e for e in bank_audit(bank, login) if e["event"] == "operation"]
     assert [e["tier"] for e in transfers] == ["yellow"]  # nothing Red without the code
+
+
+def test_while_a_staff_member_has_the_conversation_a_verification_starts_nothing(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    model.script(two_600s())
+    login = log_in(bank, "hanmei")
+    conversation = start_conversation(agent, login)
+    requested = confirmed_up_to_the_red_step(agent, bank, conversation)
+    verified = type_code(bank, login, requested["challenge_id"], latest_code(bank, login))
+    take_over(agent, conversation, "王经理")
+
+    response = agent.post(
+        f"/conversations/{conversation}/actions",
+        json={
+            "action": "verified",
+            "plan_id": requested["plan_id"],
+            "step_id": "s2",
+            "verification_token": verified["verification_token"],
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"error": "already_handed_over", "staff": "王经理"}
+    transfers = [e for e in bank_audit(bank, login) if e["event"] == "operation"]
+    assert [e["tier"] for e in transfers] == ["yellow"]
 
 
 def test_a_verification_for_a_step_not_waiting_for_one_is_refused(

@@ -187,3 +187,36 @@ def bank_audit(bank: TestClient, login: Login) -> list[dict[str, Any]]:
         "entries"
     ]
     return entries
+
+
+def updates(agent: TestClient, conversation_id: str, after: int = 0) -> dict[str, Any]:
+    """The events the Customer was sent outside their own turns (a Staff Member taking
+    over, replying, handing back), from the `after`-th on, as the Channel polls them."""
+    response = agent.get(f"/conversations/{conversation_id}/updates", params={"after": after})
+    assert response.status_code == 200, response.text
+    body: dict[str, Any] = response.json()
+    return body
+
+
+def staff_post(agent: TestClient, url: str, json: Any = None) -> Any:
+    """What a Staff Member does through the Agent with the Agent's staff key."""
+    response = agent.post(url, headers={"X-Staff-Key": STAFF_KEY}, json=json)
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def take_over(agent: TestClient, conversation_id: str, staff_member: str = "staff-1") -> Any:
+    """A Staff Member takes the conversation over from the Agent."""
+    return staff_post(
+        agent, f"/staff/conversations/{conversation_id}/takeover", {"staff": staff_member}
+    )
+
+
+def staff_reply(agent: TestClient, conversation_id: str, text: str) -> Any:
+    """The Staff Member who took the conversation over replies to the Customer."""
+    return staff_post(agent, f"/staff/conversations/{conversation_id}/messages", {"text": text})
+
+
+def hand_back(agent: TestClient, conversation_id: str) -> Any:
+    """The Staff Member hands the conversation back to the Agent."""
+    return staff_post(agent, f"/staff/conversations/{conversation_id}/hand-back")
