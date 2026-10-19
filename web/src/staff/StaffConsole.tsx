@@ -1,5 +1,6 @@
-// The staff console (/staff): the active sessions with their Safety Lock status, a
-// session's full audit trail, and lifting a Safety Lock. It only displays what the
+// The staff console (/staff): the active sessions with their Safety Lock status and
+// requests for a human, a session's full audit trail, lifting a Safety Lock, and taking a
+// conversation over from the Agent, replying and handing it back. It only displays what the
 // Agent and the Bank return, so it is checked by hand.
 import { type FormEvent, useCallback, useEffect, useState } from 'react'
 import type { HistoryEntry, Trace } from '../events'
@@ -11,8 +12,11 @@ import {
   activeConversations,
   auditTrail,
   conversationHistory,
+  handBack,
   liftSafetyLock,
   safetyLock,
+  staffReply,
+  takeOver,
 } from './api'
 import { type TrailItem, mergeTrail } from './trail'
 import './staff.css'
@@ -62,10 +66,11 @@ function LockStatus({ lock }: { lock: SafetyLock | undefined }) {
 function KeysForm({ onSubmit }: { onSubmit: (keys: StaffKeys) => void }) {
   const [agentStaffKey, setAgentStaffKey] = useState('')
   const [bankAdminKey, setBankAdminKey] = useState('')
+  const [staffName, setStaffName] = useState('')
 
   function submit(event: FormEvent) {
     event.preventDefault()
-    onSubmit({ agentStaffKey, bankAdminKey })
+    onSubmit({ agentStaffKey, bankAdminKey, staffName: staffName.trim() })
   }
 
   return (
@@ -91,7 +96,15 @@ function KeysForm({ onSubmit }: { onSubmit: (keys: StaffKeys) => void }) {
           onChange={(e) => setBankAdminKey(e.target.value)}
         />
       </label>
-      <button type="submit" className="primary" disabled={!agentStaffKey || !bankAdminKey}>
+      <label>
+        您的名字（接管对话时客户看到的称呼）
+        <input value={staffName} onChange={(e) => setStaffName(e.target.value)} />
+      </label>
+      <button
+        type="submit"
+        className="primary"
+        disabled={!agentStaffKey || !bankAdminKey || !staffName.trim()}
+      >
         进入
       </button>
     </form>
@@ -176,6 +189,12 @@ function AgentEntry({ entry }: { entry: HistoryEntry }) {
         </>
       )
     case 'customer_action':
+      if (entry.action === 'ask_for_human')
+        return (
+          <>
+            <b>客户操作</b> 请求人工客服
+          </>
+        )
       return (
         <>
           <b>客户操作</b> {entry.action === 'confirm' ? '确认' : entry.action === 'reject' ? '拒绝' : entry.action}计划{' '}
@@ -201,6 +220,30 @@ function AgentEntry({ entry }: { entry: HistoryEntry }) {
       return (
         <>
           <b>Agent 拒绝（{entry.reason}）</b> {entry.text}
+        </>
+      )
+    case 'human_requested':
+      return (
+        <>
+          <b className="locked">客户请求人工</b> {entry.text}
+        </>
+      )
+    case 'handed_over':
+      return (
+        <>
+          <b>人工接管</b> {entry.staff} 接管了对话，Agent 暂停
+        </>
+      )
+    case 'staff_message':
+      return (
+        <>
+          <b>人工客服 {entry.staff}</b> {entry.text}
+        </>
+      )
+    case 'handed_back':
+      return (
+        <>
+          <b>交还 Agent</b> Agent 恢复服务
         </>
       )
     case 'step_started':
@@ -276,16 +319,19 @@ function SessionView({
   keys,
   conversation,
   lock,
-  onLifted,
+  onChanged,
 }: {
   keys: StaffKeys
   conversation: StaffConversation
   lock: SafetyLock | undefined
-  onLifted: () => void
+  /** The session changed (lock lifted, taken over, handed back): refresh the list. */
+  onChanged: () => void
 }) {
   const [items, setItems] = useState<TrailItem[]>([])
   const [error, setError] = useState<string | null>(null)
   const [lifting, setLifting] = useState(false)
+  const [handing, setHanding] = useState(false)
+  const [reply, setReply] = useState('')
 
   const refresh = useCallback(async () => {
     try {
@@ -306,7 +352,7 @@ function SessionView({
     setLifting(true)
     try {
       await liftSafetyLock(keys, conversation.session_id)
-      onLifted()
+      onChanged()
       await refresh()
     } catch (e) {
       setError(e instanceof Error ? e.message : '解除失败')
@@ -314,6 +360,30 @@ function SessionView({
       setLifting(false)
     }
   }
+
+  /** A takeover call, then fresh history and session list. */
+  async function hand(call: () => Promise<unknown>) {
+    setHanding(true)
+    try {
+      await call()
+      onChanged()
+      await refresh()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '操作失败')
+    } finally {
+      setHanding(false)
+    }
+  }
+
+  async function sendReply(event: FormEvent) {
+    event.preventDefault()
+    const text = reply.trim()
+    if (!text) return
+    await hand(() => staffReply(keys, conversation.conversation_id, text))
+    setReply('')
+  }
+
+  const handedOver = conversation.handed_over_to !== null
 
   return (
     <section className="session-view">
@@ -327,9 +397,45 @@ function SessionView({
             {lifting ? '解除中…' : '解除安全锁'}
           </button>
         )}
+        {handedOver ? (
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => hand(() => handBack(keys, conversation.conversation_id))}
+            disabled={handing}
+          >
+            交还 Agent
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="primary"
+            onClick={() => hand(() => takeOver(keys, conversation.conversation_id))}
+            disabled={handing}
+          >
+            接管对话
+          </button>
+        )}
       </header>
+      {handedOver && (
+        <p className="muted">
+          {conversation.handed_over_to} 正在接管：Agent 已暂停，客户的消息由您回复。
+        </p>
+      )}
       {error && <p className="error">{error}</p>}
       <Trail items={items} />
+      {handedOver && (
+        <form className="staff-reply" onSubmit={sendReply}>
+          <input
+            value={reply}
+            onChange={(e) => setReply(e.target.value)}
+            placeholder={`以 ${conversation.handed_over_to} 的身份回复客户`}
+          />
+          <button type="submit" className="primary" disabled={handing || !reply.trim()}>
+            发送
+          </button>
+        </form>
+      )}
     </section>
   )
 }
@@ -380,6 +486,10 @@ function Console({ keys, onLeave }: { keys: StaffKeys; onLeave: () => void }) {
                 <span className="customer">{c.customer.name}</span>
                 <span className="muted">{c.session_id}</span>
                 <LockStatus lock={locks[c.session_id]} />
+                {c.human_requested && <span className="locked">请求人工</span>}
+                {c.handed_over_to && (
+                  <span className="muted">人工接管中 · {c.handed_over_to}</span>
+                )}
               </button>
             </li>
           ))}
@@ -392,7 +502,7 @@ function Console({ keys, onLeave }: { keys: StaffKeys; onLeave: () => void }) {
             keys={keys}
             conversation={current}
             lock={locks[current.session_id]}
-            onLifted={() => void refresh()}
+            onChanged={() => void refresh()}
           />
         ) : (
           <p className="muted">选择一个会话查看完整审计记录。</p>
