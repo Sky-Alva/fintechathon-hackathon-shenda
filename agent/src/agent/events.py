@@ -32,6 +32,18 @@ class StepSucceeded(BaseModel):
     output: dict[str, Any]
 
 
+class StepFailed(BaseModel):
+    """The step didn't run. `reason`, `message` and `detail` are the Bank's refusal,
+    unchanged, or `bank_unavailable` when the Agent couldn't reach the Bank."""
+
+    type: Literal["step_failed"] = "step_failed"
+    step_id: str
+    operation: str
+    reason: str
+    message: str
+    detail: dict[str, Any]
+
+
 class Answer(BaseModel):
     type: Literal["answer"] = "answer"
     text: str
@@ -54,4 +66,4 @@ class Refusal(BaseModel):
     text: str
 
 
-Event = StepStarted | StepSucceeded | Answer | Refusal | Trace
+Event = StepStarted | StepSucceeded | StepFailed | Answer | Refusal | Trace
