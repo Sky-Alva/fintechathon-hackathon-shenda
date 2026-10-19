@@ -109,7 +109,26 @@ def send(agent: TestClient, conversation_id: str, text: str) -> list[dict[str, A
 
 
 def event_types(events: list[dict[str, Any]]) -> list[str]:
-    return [event["type"] for event in events]
+    """The turn's event types, leaving out the decision trace (see test_decision_trace.py)."""
+    return [event["type"] for event in events if event["type"] != "trace"]
+
+
+def traces(events: list[dict[str, Any]], stage: str | None = None) -> list[dict[str, Any]]:
+    """The `data` of the turn's `trace` events, of one stage if given."""
+    return [
+        event["data"]
+        for event in events
+        if event["type"] == "trace" and (stage is None or event["stage"] == stage)
+    ]
+
+
+def audit_trail(agent: TestClient, conversation_id: str) -> dict[str, Any]:
+    """The `trace` event with the session's audit trail, as the decision trace panel
+    fetches it from the Agent."""
+    response = agent.get(f"/conversations/{conversation_id}/audit-trail")
+    assert response.status_code == 200, response.text
+    event: dict[str, Any] = response.json()
+    return event
 
 
 def bank_audit(bank: TestClient, login: Login) -> list[dict[str, Any]]:

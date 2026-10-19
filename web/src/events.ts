@@ -27,6 +27,12 @@ export type StepSucceeded = {
   output: Record<string, unknown>
 }
 export type Answer = { type: 'answer'; text: string }
+// Emitted for 'out_of_scope' since #33; 'manipulation' (#43) and 'secret' (#44) reserved.
+export type Refusal = {
+  type: 'refusal'
+  reason: 'out_of_scope' | 'manipulation' | 'secret'
+  text: string
+}
 
 // Emitted since #32. `reason` is the Bank's refusal reason, or 'bank_unavailable' when
 // the Agent couldn't reach the Bank.
@@ -62,11 +68,6 @@ export type ClarificationQuestion = {
   text: string
   options: { label: string; value: string }[]
 }
-export type Refusal = {
-  type: 'refusal'
-  reason: 'out_of_scope' | 'manipulation' | 'secret'
-  text: string
-}
 export type SessionLocked = {
   type: 'session_locked'
   trigger: string
@@ -75,11 +76,29 @@ export type SessionLocked = {
 }
 export type HandedOver = { type: 'handed_over'; staff: string }
 export type HandedBack = { type: 'handed_back' }
-export type Trace = {
-  type: 'trace'
-  stage: 'intent' | 'plan' | 'bank_request' | 'bank_response'
-  data: unknown
+// Emitted since #34. Never carries a token, password or verification code.
+export type AuditEntry = {
+  entry_id: number
+  at: string
+  event: string
+  operation: string | null
+  input: unknown
+  tier: Tier | null
+  outcome: 'ok' | 'refused'
+  reason: string | null
+  detail: Record<string, unknown>
 }
+export type Trace = { type: 'trace' } & (
+  | {
+      stage: 'intent'
+      // `declined`: the Planner declined the request instead of planning it.
+      data: { intent: string; declined?: { reason: Refusal['reason']; can_do: string[] } }
+    }
+  | { stage: 'plan'; data: { steps: PlanStep[] } }
+  | { stage: 'bank_request'; data: { method: string; path: string; body: unknown } }
+  | { stage: 'bank_response'; data: { method: string; path: string; status: number; body: unknown } }
+  | { stage: 'audit_trail'; data: { session_id: string; entries: AuditEntry[] } }
+)
 
 export type ConversationEvent =
   | StepStarted

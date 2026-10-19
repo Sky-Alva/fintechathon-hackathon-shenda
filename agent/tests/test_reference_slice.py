@@ -21,7 +21,7 @@ def test_balance_question_runs_one_green_step_and_is_answered(
     events = send(agent, conversation, BALANCE_QUESTION)
 
     assert event_types(events) == ["step_started", "step_succeeded", "answer"]
-    started, succeeded, answer = events
+    started, succeeded, answer = [e for e in events if e["type"] != "trace"]
     assert started["step"] == {
         "id": "s1",
         "operation": "query_balance",

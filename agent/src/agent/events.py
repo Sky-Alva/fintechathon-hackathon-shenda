@@ -49,4 +49,21 @@ class Answer(BaseModel):
     text: str
 
 
-Event = StepStarted | StepSucceeded | StepFailed | Answer
+class Trace(BaseModel):
+    """Decision-trace data for the Channel's toggleable panel. Never carries a token,
+    password or verification code."""
+
+    type: Literal["trace"] = "trace"
+    stage: Literal["intent", "plan", "bank_request", "bank_response", "audit_trail"]
+    data: dict[str, Any]
+
+
+class Refusal(BaseModel):
+    """The Agent won't do this; `text` explains and lists what it can do. Ends the turn."""
+
+    type: Literal["refusal"] = "refusal"
+    reason: Literal["out_of_scope", "manipulation", "secret"]
+    text: str
+
+
+Event = StepStarted | StepSucceeded | StepFailed | Answer | Refusal | Trace

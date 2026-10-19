@@ -9,9 +9,11 @@ The contract between the Agent's conversation service and everything that talks 
 | `POST /conversations` | `{session_token}` | `{conversation_id}` |
 | `POST /conversations/{conversation_id}/messages` | `{text}` | the turn's events |
 | `POST /conversations/{conversation_id}/actions` | `{action, ...}` | the turn's events (not built yet, see below) |
+| `GET /conversations/{conversation_id}/audit-trail` | none | one `trace` event (`stage: "audit_trail"`): the session's audit trail, for the decision trace panel |
 
 - **Login stays with the Channel.** The Channel logs the Customer in with the Bank (`POST /sessions`), keeps the `phone_token` for its simulated phone and hands the Agent the `session_token` only. `POST /conversations` refuses any other field (422), so the Agent never sees a password or the phone token. The Agent acts only through that session and holds no Bank admin key ([ADR-0001](adr/0001-bank-enforces-permission-tiers.md)).
 - **A turn is one streamed response.** It is newline-delimited JSON (`application/x-ndjson`): one event object per line, each with a `type`. The turn is over when the stream ends.
+- **The Customer's language.** Replies (`answer`, `refusal`, and later the other events' `text`) are in Chinese, or in English when the Customer's latest message with any words in it is in English (has Latin letters and no Chinese characters).
 - **An unknown conversation** is `404 {"error": "unknown_conversation"}`.
 
 ### Customer actions (planned)
@@ -117,15 +119,18 @@ One short question when the request is genuinely ambiguous (e.g. which 张伟). 
 {"type": "clarification_question", "text": "您要转给哪位张伟？", "options": [{"label": "张伟（同事）", "value": "PAY-LM-003"}]}
 ```
 
-### `refusal` (reserved, #33, #43, #44)
+### `refusal` (emitted for `out_of_scope`, #33; reserved for `manipulation` #43, `secret` #44)
 
-The Agent won't do this: out of scope, a scam or manipulation attempt, or a request for a secret. `text` explains and lists what the Agent can do.
+The Agent won't do this: out of scope, a scam or manipulation attempt, or a request for a secret. `text` explains and lists what the Agent can do. Ends the turn; no Operation runs.
 
 ```json
-{"type": "refusal", "reason": "out_of_scope", "text": "…"}
+{"type": "refusal", "reason": "out_of_scope",
+ "text": "抱歉，这个我暂时帮不了您。我可以帮您：\n- 从当前客户的活期账户向一位收款人转账。\n- 查询当前客户名下所有账户（或其中指定一个账户）的余额。"}
 ```
 
 `reason`: `out_of_scope` | `manipulation` | `secret`.
+
+- **`out_of_scope`**: Wealth Operations (product recommendations, risk assessment, subscribe / redeem) and non-banking topics. The Planner declines instead of planning, naming up to 5 catalogue Operations to offer; `text` lists them one per line (`- …`) in the Bank's own words (`description_zh` / `description_en` from the Operation catalogue), so the list grows with the catalogue. Names the Bank doesn't know are dropped; if none are left, the catalogue's first 5 are listed.
 
 ### `session_locked` (reserved, #37)
 
@@ -144,10 +149,20 @@ A Staff Member took over the conversation (the Agent stays silent) / handed it b
 {"type": "handed_back"}
 ```
 
-### `trace` (reserved, #34)
+### `trace` (emitted, #34)
 
-Decision-trace data for the toggleable panel, hidden by default. One event per stage, in order.
+Decision-trace data for the Channel's toggleable panel, hidden by default: what the Agent understood, planned and was told by the Bank. The other events of a turn don't depend on it; a client that shows no trace skips every `trace` event.
 
 ```jsonc
-{"type": "trace", "stage": "intent", "data": {}}   // stage: "intent" | "plan" | "bank_request" | "bank_response"
+{"type": "trace", "stage": "intent", "data": {"intent": "查询账户余额"}}  // the Planner's reading of the request
+{"type": "trace", "stage": "intent", "data": {"intent": "", "declined": {"reason": "out_of_scope", "can_do": ["query_balance"]}}}  // or why it declined
+{"type": "trace", "stage": "plan", "data": {"steps": [/* PlanStep, in run order, each with the Bank's tier */]}}
+{"type": "trace", "stage": "bank_request", "data": {"method": "POST", "path": "/operations/query_balance", "body": {"input": {}}}}
+{"type": "trace", "stage": "bank_response", "data": {"method": "POST", "path": "/operations/query_balance", "status": 200,
+  "body": {"operation": "query_balance", "tier": "green", "output": {}}}}   // the Bank's raw body, refusals included
+{"type": "trace", "stage": "audit_trail", "data": {"session_id": "…", "entries": [/* read_audit_trail output */]}}
 ```
+
+- **Order in a turn.** `intent` once the Plan is made (a declined request has only `intent`, then its `refusal`), `plan` once the Bank's tier preview has tiered it, and every Bank call as a `bank_request` + `bank_response` pair just before the first event that follows it. A Green turn is: `intent`, tier-preview pair, `plan`, then per step `step_started`, its pair, `step_succeeded`; then `answer`. The Operation catalogue fetch is not traced.
+- **The audit trail** is not part of a turn: the panel fetches it with `GET /conversations/{id}/audit-trail`, which runs the Green `read_audit_trail` Operation through the session (so it works under a Safety Lock). The read is itself audited and shows up in the next read.
+- **No secrets.** A `trace` never carries a token (session, phone, Confirmation, verification), a password or a verification code: the session token travels in a header, which is never traced, and any field whose name contains `token` or `password`, or is `code`, is replaced by `"[redacted]"` wherever it appears.

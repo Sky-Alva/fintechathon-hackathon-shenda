@@ -1,4 +1,4 @@
-import type { ConversationEvent } from './events'
+import type { AuditEntry, ConversationEvent } from './events'
 
 /** What the Channel holds after logging the Customer in with the Bank. The phone token
  * stays here, for the simulated phone: it is never sent to the Agent. */
@@ -29,6 +29,14 @@ export async function startConversation(login: BankLogin): Promise<string> {
   })
   if (!response.ok) throw new Error('无法连接智能助手')
   return (await response.json()).conversation_id
+}
+
+/** The session's audit trail as the Bank recorded it, for the decision trace panel. */
+export async function fetchAuditTrail(conversationId: string): Promise<AuditEntry[]> {
+  const response = await fetch(`/agent/conversations/${conversationId}/audit-trail`)
+  if (!response.ok) throw new Error('无法读取审计记录')
+  const event = await response.json()
+  return event.data.entries
 }
 
 /** Send a Customer message; `onEvent` gets each event of the turn as it streams in. */

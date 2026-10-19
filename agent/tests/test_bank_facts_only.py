@@ -7,6 +7,7 @@ the new one still fails, the Customer gets the raw Bank result instead.
 
 import json
 import re
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -17,10 +18,15 @@ from fake_model import FakeModel, plan, say, step
 BALANCE_QUESTION = "我卡里还有多少钱？"
 
 
-def answer_text(events: list[dict[str, object]]) -> str:
-    answers = [e for e in events if e["type"] == "answer"]
-    assert len(answers) == 1, events
-    text = answers[0]["text"]
+def only(events: list[dict[str, Any]], type: str) -> dict[str, Any]:
+    """The turn's one event of this type."""
+    matching = [e for e in events if e["type"] == type]
+    assert len(matching) == 1, events
+    return matching[0]
+
+
+def answer_text(events: list[dict[str, Any]]) -> str:
+    text = only(events, "answer")["text"]
     assert isinstance(text, str)
     return text
 
@@ -210,7 +216,7 @@ def test_a_query_the_bank_refuses_fails_with_the_banks_reason(
     events = send(agent, start_conversation(agent, log_in(bank, "liming")), "我老婆卡里有多少钱？")
 
     assert event_types(events) == ["step_failed", "answer"]
-    failed = events[0]
+    failed = only(events, "step_failed")
     assert (failed["step_id"], failed["operation"], failed["reason"]) == (
         "s1", "query_balance", "forbidden_other_customer"
     )
@@ -230,7 +236,7 @@ def test_when_the_bank_refuses_a_query_no_figure_is_guessed(
     events = send(agent, start_conversation(agent, log_in(bank, "liming")), "我老婆卡里有多少钱？")
 
     text = answer_text(events)
-    assert "无法" in text and "couldn't" in text
+    assert "无法" in text
     assert not re.search(r"\d", text)
 
 
@@ -266,9 +272,9 @@ def test_when_the_bank_cant_be_reached_for_a_step_the_answer_says_so_and_guesses
     events = send(agent, conversation, BALANCE_QUESTION)
 
     assert event_types(events) == ["step_started", "step_failed", "answer"]
-    assert events[1]["reason"] == "bank_unavailable"
+    assert only(events, "step_failed")["reason"] == "bank_unavailable"
     text = answer_text(events)
-    assert "无法" in text and "couldn't" in text
+    assert "无法" in text
     assert not re.search(r"\d", text)
 
 
@@ -287,7 +293,20 @@ def test_when_the_bank_cant_be_reached_at_all_the_answer_says_so_and_guesses_not
 
     assert event_types(events) == ["answer"]
     text = answer_text(events)
-    assert "无法" in text and "couldn't" in text
+    assert "无法" in text
+    assert not re.search(r"\d", text)
+
+
+def test_an_english_customer_is_told_in_english_that_the_bank_cant_be_reached(
+    agent: TestClient, bank: TestClient, bank_link: BankLink
+) -> None:
+    conversation = start_conversation(agent, log_in(bank, "liming"))
+    bank_link.cut()
+
+    events = send(agent, conversation, "How much money do I have?")
+
+    text = answer_text(events)
+    assert "couldn't" in text
     assert not re.search(r"\d", text)
 
 
@@ -301,7 +320,7 @@ def test_when_the_bank_refuses_the_session_the_answer_says_so_and_guesses_nothin
 
     assert event_types(events) == ["answer"]
     text = answer_text(events)
-    assert "无法" in text and "couldn't" in text
+    assert "无法" in text
     assert not re.search(r"\d", text)
 
 
