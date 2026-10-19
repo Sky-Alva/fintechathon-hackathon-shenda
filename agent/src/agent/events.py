@@ -63,7 +63,8 @@ class ConfirmationRequested(BaseModel):
 
 
 class StepFailed(BankRefusal):
-    """The Bank refused the step: `reason`, `message` and `detail` are its refusal."""
+    """The step didn't run. `reason`, `message` and `detail` are the Bank's refusal,
+    unchanged, or `bank_unavailable` when the Agent couldn't reach the Bank."""
 
     type: Literal["step_failed"] = "step_failed"
     step_id: str

@@ -4,7 +4,8 @@ The Bank is the authority on tiers (ADR-0001); the reviewer only records what it
 the order the steps will run, so that crossing the ¥1,000 line shows up front.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 from agent.bank import BankRefused, BankSession
 from agent.events import PlanStep, StepRefusal
@@ -14,19 +15,25 @@ from agent.planner import Plan
 @dataclass(frozen=True)
 class ReviewedPlan:
     steps: list[PlanStep]
-    """In the order they will run, each with the Bank's tier (none if it was refused)."""
-    refusals: list[StepRefusal]
-    """Steps the tier preview says can never run, with the Bank's reason."""
+    """In the order they will run, each with the Bank's tier."""
+    refusals: dict[str, dict[str, Any]] = field(default_factory=dict)
+    """The Bank's refusal (`reason`, `message`, `detail`) of each step that can't run, by
+    step ID. Those steps have no tier."""
 
     @property
     def green_only(self) -> bool:
-        """Runs straight away, with no Plan card."""
-        return all(step.tier == "green" for step in self.steps)
+        """Runs straight away, with no Plan card: every step that can run is Green."""
+        return all(step.tier == "green" for step in self.steps if step.id not in self.refusals)
 
     @property
     def yellow_steps(self) -> list[PlanStep]:
         """The steps one tap on the Plan card confirms."""
         return [step for step in self.steps if step.tier == "yellow"]
+
+    @property
+    def card_refusals(self) -> list[StepRefusal]:
+        """The refused steps, as the Plan card lists them."""
+        return [StepRefusal(step_id=id, **refusal) for id, refusal in self.refusals.items()]
 
 
 class ConfirmationRefused(Exception):
@@ -69,14 +76,10 @@ def collect_confirmations(plan: ReviewedPlan, bank: BankSession) -> dict[str, st
 def review(plan: Plan, bank: BankSession) -> ReviewedPlan:
     ordered = plan.in_dependency_order()
     if not ordered:
-        return ReviewedPlan(steps=[], refusals=[])
+        return ReviewedPlan(steps=[])
     preview = bank.tier_preview([{"operation": s.operation, "input": s.input} for s in ordered])
     pairs = list(zip(ordered, preview, strict=True))
     return ReviewedPlan(
         steps=[step.model_copy(update={"tier": tiered.get("tier")}) for step, tiered in pairs],
-        refusals=[
-            StepRefusal(step_id=step.id, **tiered["refusal"])
-            for step, tiered in pairs
-            if "refusal" in tiered
-        ],
+        refusals={step.id: tiered["refusal"] for step, tiered in pairs if tiered.get("refusal")},
     )

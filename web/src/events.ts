@@ -46,6 +46,8 @@ export type ConfirmationRequested = {
   plan_id: string
   step_ids: string[]
 }
+// `reason` is the Bank's refusal reason, or 'bank_unavailable' when the Agent couldn't
+// reach the Bank (#32).
 export type StepFailed = BankRefusal & { type: 'step_failed'; step_id: string; operation: string }
 
 // Reserved: proposed payloads, refined by the ticket that first emits each one.

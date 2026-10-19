@@ -71,6 +71,30 @@ def test_the_plan_card_shows_a_step_the_bank_says_can_never_run_with_its_reason(
     assert requested["step_ids"] == ["s1"]
 
 
+def test_confirming_runs_the_rest_and_the_refused_step_fails_without_being_sent(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    too_much = {"payee_id": "PAY-LM-001", "amount": "5000.00", "note": ""}
+    model.script(
+        plan(step("s1", "transfer", TO_MUM), step("s2", "transfer", too_much)),
+        say("已向王秀英转账 200.00 元；另一笔余额不足，未执行。"),
+    )
+    login = log_in(bank, "liming")
+    conversation = start_conversation(agent, login)
+    plan_id = shown(send(agent, conversation, "给老妈转200，给老婆转5000"))[0]["plan_id"]
+
+    events = shown(act(agent, conversation, "confirm", plan_id=plan_id))
+
+    assert event_types(events) == ["step_started", "step_succeeded", "step_failed", "answer"]
+    assert (events[2]["step_id"], events[2]["reason"]) == ("s2", "insufficient_funds")
+    entries = bank_audit(bank, login)
+    sent = [e for e in entries if e["event"] in ("confirmation_issued", "operation")]
+    assert [(e["event"], e["input"]["amount"]) for e in sent] == [
+        ("confirmation_issued", "200.00"),
+        ("operation", "200.00"),
+    ]
+
+
 # --- Only the Customer's tap gets a Confirmation --------------------------------------
 
 
@@ -249,7 +273,7 @@ def test_a_step_the_bank_refuses_streams_step_failed_with_the_banks_reason_and_t
             step("s2", "add_card_lock", {"card_id": "CARD-LM-001", "scope": "online"}),
             step("s3", "transfer", TO_MUM),
         ),
-        say("已锁定尾号 1234 的卡；网上交易锁未能添加：该卡已锁定。转账未执行。"),
+        say("已锁定该卡的全部交易；网上交易锁未能添加：该卡已锁定。转账未执行。"),
     )
     login = log_in(bank, "liming")
     conversation = start_conversation(agent, login)

@@ -9,7 +9,7 @@ type StepItem = {
   kind: 'step'
   stepId: string
   operation: string
-  status: 'running' | 'done' | 'failed'
+  status: StepStatus
   failure?: string
 }
 
@@ -26,6 +26,14 @@ type Item =
       status: PlanCardStatus
     }
   | { kind: 'error'; text: string }
+
+type StepStatus = 'running' | 'done' | 'failed'
+
+const STEP_LABEL: Record<StepStatus, string> = {
+  running: '正在办理',
+  done: '已完成',
+  failed: '未能完成',
+}
 
 type Props = { customerName: string; conversationId: string; onLogOut: () => void }
 
@@ -51,7 +59,7 @@ function apply(items: Item[], event: ConversationEvent): Item[] {
       return settle(items, event.step_id, { status: 'done' })
     case 'step_failed': {
       const settled = settle(items, event.step_id, { status: 'failed', failure: event.message })
-      // Refused before it started (its Confirmation was refused): show it anyway.
+      // Refused before it started (by the tier preview, or its Confirmation): show it anyway.
       return settled !== items
         ? settled
         : [
@@ -191,7 +199,7 @@ export default function Chat({ customerName, conversationId, onLogOut }: Props) 
             case 'step':
               return (
                 <div key={i} className={`step ${item.status}`}>
-                  {item.status === 'done' ? '已完成' : item.status === 'failed' ? '未完成' : '正在办理'}
+                  {STEP_LABEL[item.status]}
                   ：{item.operation}
                   {item.failure && `（银行：${item.failure}）`}
                 </div>

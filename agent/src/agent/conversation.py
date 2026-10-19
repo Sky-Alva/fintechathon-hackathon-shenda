@@ -14,7 +14,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent import planner, refusals, responder, reviewer
-from agent.bank import BankSession, HttpClient
+from agent.bank import BankRefused, BankSession, BankUnavailable, HttpClient
 from agent.events import (
     Answer,
     ConfirmationRequested,
@@ -49,6 +49,8 @@ class Conversation:
     """The Customer's messages and the Agent's answers, in the model's chat format."""
     pending: PendingPlan | None = None
     plans_proposed: int = 0
+    bank_results: list[StepResult] = field(default_factory=list)
+    """Every Bank result so far: the facts an answer may state."""
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def next_plan_id(self) -> str:
@@ -88,7 +90,7 @@ def plan_data(plan: ReviewedPlan, look_ups: bool = False) -> dict[str, Any]:
     if look_ups:
         data["look_ups"] = True
     if plan.refusals:
-        data["refusals"] = [refusal.model_dump(mode="json") for refusal in plan.refusals]
+        data["refusals"] = [refusal.model_dump(mode="json") for refusal in plan.card_refusals]
     return data
 
 
@@ -135,7 +137,11 @@ class Conversations:
         with conversation.lock:
             conversation.pending = None  # a new request replaces an unanswered Plan card
             conversation.history.append({"role": "user", "content": text})
-            bank, catalogue = conversation.bank, conversation.bank.catalogue()
+            try:
+                bank, catalogue = conversation.bank, conversation.bank.catalogue()
+            except (BankRefused, BankUnavailable):
+                yield self._not_retrieved(conversation)
+                return
             plan = planner.make_plan(self.model, conversation.history, catalogue)
             if isinstance(plan, planner.Declined):
                 yield from self._decline(conversation, plan, catalogue)
@@ -146,7 +152,11 @@ class Conversations:
             looked_up: list[StepResult] = []
             look_ups = plan.look_ups(catalogue)
             if look_ups is not None:
-                reviewed_look_ups = reviewer.review(look_ups, bank)
+                try:
+                    reviewed_look_ups = reviewer.review(look_ups, bank)
+                except (BankRefused, BankUnavailable):
+                    yield self._not_retrieved(conversation)
+                    return
                 yield trace("plan", plan_data(reviewed_look_ups, look_ups=True))
                 if reviewed_look_ups.green_only:  # the Bank agrees they need no approval
                     yield from execute(reviewed_look_ups, bank, looked_up)
@@ -159,7 +169,11 @@ class Conversations:
                     if isinstance(plan, planner.Declined):  # not on offer, but just in case
                         yield from self._decline(conversation, plan, catalogue)
                         return
-            reviewed = reviewer.review(plan, bank)
+            try:
+                reviewed = reviewer.review(plan, bank)
+            except (BankRefused, BankUnavailable):
+                yield self._not_retrieved(conversation)
+                return
             yield trace("plan", plan_data(reviewed))
             if reviewed.green_only:
                 yield from self._run(conversation, reviewed, looked_up)
@@ -170,7 +184,7 @@ class Conversations:
             pending = PendingPlan(conversation.next_plan_id(), reviewed, looked_up)
             conversation.pending = pending
             yield PlanProposed(
-                plan_id=pending.plan_id, steps=reviewed.steps, refusals=reviewed.refusals
+                plan_id=pending.plan_id, steps=reviewed.steps, refusals=reviewed.card_refusals
             )
             yield ConfirmationRequested(
                 plan_id=pending.plan_id, step_ids=[step.id for step in reviewed.yellow_steps]
@@ -218,8 +232,11 @@ class Conversations:
             except reviewer.ConfirmationRefused as refused:
                 step = refused.step
                 yield StepFailed(step_id=step.id, operation=step.operation, **refused.refusal)
-                failed = StepResult(step.id, step.operation, step.input, {}, refused.refusal)
+                failed = StepResult(step.id, step.operation, step.input, None, refused.refusal)
                 yield self._answer(conversation, [*pending.looked_up, failed])
+                return
+            except BankUnavailable:
+                yield self._not_retrieved(conversation)
                 return
             yield from self._run(conversation, pending.plan, pending.looked_up, tokens)
 
@@ -236,6 +253,17 @@ class Conversations:
         yield self._answer(conversation, results)
 
     def _answer(self, conversation: Conversation, results: list[StepResult]) -> Answer:
-        text = responder.answer(self.model, conversation.history, results)
+        """The answer from this Plan's Bank results (and earlier ones in the conversation)."""
+        text = responder.answer(
+            self.model, conversation.history, results, conversation.bank_results
+        )
+        conversation.bank_results.extend(results)
+        conversation.history.append({"role": "assistant", "content": text})
+        return Answer(text=text)
+
+    def _not_retrieved(self, conversation: Conversation) -> Answer:
+        """The answer when the Bank can't be reached, or refuses the session, before
+        anything could run: nothing to plan from and nothing to state."""
+        text = responder.NOT_RETRIEVED[customer_language(conversation.history)]
         conversation.history.append({"role": "assistant", "content": text})
         return Answer(text=text)

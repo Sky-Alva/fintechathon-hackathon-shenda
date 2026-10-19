@@ -64,13 +64,15 @@ The Bank ran the step. `tier` is the tier the Bank ran it at; `output` is the Ba
 
 The Agent's reply to the Customer, written only from the Bank's results this turn and the conversation. Ends a normal turn.
 
+Every amount, date, card and Payee it mentions appears in a Bank result from this turn or earlier in the conversation (#32). A draft that fails that check is regenerated once; if the new one fails too, `text` is the raw Bank result. When the turn's queries all failed, or the Bank couldn't be reached at all, `text` says the information couldn't be retrieved and states no figures.
+
 ```json
 {"type": "answer", "text": "您的活期账户余额为 1,180.00 元。"}
 ```
 
 ### `plan_proposed` (emitted, #31)
 
-The Plan needs a Plan card: at least one step is Yellow or Red, or the Bank's tier preview refused one. A Green-only Plan never gets one; it runs straight away.
+The Plan needs a Plan card: at least one step that can run is Yellow or Red. A Green-only Plan never gets one; it runs straight away (a step the tier preview refused then fails with `step_failed`).
 
 **Exact details first.** When a Yellow or Red step's input waits on a Green look-up ("把余额的一半转给老妈", send Mum half my balance), the look-ups run first in the same turn (`step_started`, `step_succeeded`), the Planner completes the Plan from the Bank's results, and only then is the card proposed. The card's `steps` are the steps still to run, so a step's `depends_on` may name a look-up that already ran. A refused step has `"tier": null` and an entry in `refusals`; it is not on `confirmation_requested`, and if the Customer confirms it fails with `step_failed` when its turn comes.
 
@@ -96,9 +98,15 @@ A Red step needs Strong Verification. The Bank has texted a code to the simulate
 {"type": "verification_requested", "plan_id": "p1", "step_id": "s3", "challenge_id": "…", "sent_to": "138****0001", "expires_at": "2026-10-20T09:05:00+08:00"}
 ```
 
-### `step_failed` (emitted, #31)
+### `step_failed` (emitted, #31, #32)
 
-The Bank refused the step. `reason`, `message` and `detail` are the Bank's refusal, unchanged. The steps after it don't run, and the turn ends with `answer`. It follows the step's `step_started`, except when the Bank refuses the step's Confirmation on `confirm` (things changed since the card was shown, e.g. the Daily Transfer Total grew and the step is now Red): then no token is issued, nothing runs, and `step_failed` comes first. Re-planning and reversal offers after a failure are #42.
+The step didn't run. `reason`, `message` and `detail` are the Bank's refusal, unchanged, or `reason: "bank_unavailable"` when the Agent couldn't reach the Bank. The turn ends with `answer`.
+
+- A step the Bank's tier preview refused is never sent to the Bank, so it gets `step_failed` with no `step_started` before it; the steps after it still run (the Plan card showed it as refused).
+- A step that fails once sent (it follows its `step_started`) stops the Plan: the steps after it don't run.
+- On `confirm`, if the Bank refuses a step's Confirmation (things changed since the card was shown, e.g. the Daily Transfer Total grew and the step is now Red), no token is issued and nothing runs: the turn is that step's `step_failed`, then `answer`.
+
+Re-planning and reversal offers after a failure are #42.
 
 ```json
 {"type": "step_failed", "step_id": "s2", "operation": "transfer", "reason": "insufficient_funds", "message": "…", "detail": {}}
