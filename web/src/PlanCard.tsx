@@ -1,4 +1,4 @@
-import type { BankRefusal, PlanStep, Tier } from './events'
+import type { BankRefusal, PlanStep, PlanWarning, Tier } from './events'
 
 /** proposed → awaiting (confirmation_requested) → confirmed | rejected, or replaced when the
  * Customer sends a new message instead of answering. */
@@ -7,6 +7,8 @@ export type PlanCardStatus = 'proposed' | 'awaiting' | 'confirmed' | 'rejected' 
 type Props = {
   steps: PlanStep[]
   refusals: (BankRefusal & { step_id: string })[]
+  /** Why each Red step needs Strong Verification, e.g. it crosses the ¥1,000 daily line. */
+  warnings: PlanWarning[]
   confirmIds: string[]
   status: PlanCardStatus
   disabled: boolean
@@ -54,10 +56,12 @@ const STATUS_TEXT: Partial<Record<PlanCardStatus, string>> = {
 }
 
 /** One Plan card: every step that will run, with its exact details and the Bank's tier.
- * One tap confirms every Yellow step on it. */
+ * One tap confirms every Yellow step on it; each Red step then asks for its own SMS code
+ * when it is reached. */
 export default function PlanCard({
   steps,
   refusals,
+  warnings,
   confirmIds,
   status,
   disabled,
@@ -71,6 +75,7 @@ export default function PlanCard({
       <ol>
         {steps.map((step) => {
           const refusal = refusalOf(step.id)
+          const warning = warnings.find((w) => w.step_id === step.id)
           return (
             <li key={step.id} className={confirmIds.includes(step.id) ? 'to-confirm' : ''}>
               <div className="plan-step-head">
@@ -85,6 +90,11 @@ export default function PlanCard({
                   </div>
                 ))}
               </dl>
+              {warning && (
+                <div className="plan-warning" role="note">
+                  {warning.text}
+                </div>
+              )}
               {refusal && <div className="plan-refusal">银行提示无法执行：{refusal.message}</div>}
             </li>
           )

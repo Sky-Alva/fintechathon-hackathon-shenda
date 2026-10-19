@@ -35,11 +35,18 @@ export type Refusal = {
 }
 
 // Emitted since #31: the Plan card and each step's outcome.
+// Why a Red step needs Strong Verification, in the Customer's language (#37).
+export type PlanWarning = {
+  step_id: string
+  reason: 'daily_transfer_total' | 'strong_verification'
+  text: string
+}
 export type PlanProposed = {
   type: 'plan_proposed'
   plan_id: string
   steps: PlanStep[]
   refusals: (BankRefusal & { step_id: string })[]
+  warnings: PlanWarning[]
 }
 export type ConfirmationRequested = {
   type: 'confirmation_requested'
@@ -50,7 +57,8 @@ export type ConfirmationRequested = {
 // reach the Bank (#32).
 export type StepFailed = BankRefusal & { type: 'step_failed'; step_id: string; operation: string }
 
-// Reserved: proposed payloads, refined by the ticket that first emits each one.
+// Emitted since #37: a Red step waits for the code typed into the simulated phone, and
+// the Safety Lock notice (ends the turn).
 export type VerificationRequested = {
   type: 'verification_requested'
   plan_id: string
@@ -59,6 +67,14 @@ export type VerificationRequested = {
   sent_to: string
   expires_at: string
 }
+export type SessionLocked = {
+  type: 'session_locked'
+  trigger: 'wrong_codes' | 'reported_attempts' | 'red_operations'
+  locked_until: string
+  text: string
+}
+
+// Reserved: proposed payloads, refined by the ticket that first emits each one.
 export type ReversalOffered = {
   type: 'reversal_offered'
   plan_id: string
@@ -68,12 +84,6 @@ export type ClarificationQuestion = {
   type: 'clarification_question'
   text: string
   options: { label: string; value: string }[]
-}
-export type SessionLocked = {
-  type: 'session_locked'
-  trigger: string
-  locked_until: string
-  text: string
 }
 // Emitted since #46. `human_requested` ends the Customer's turn; the takeover events
 // arrive outside the Customer's turns, from GET /conversations/{id}/updates.
