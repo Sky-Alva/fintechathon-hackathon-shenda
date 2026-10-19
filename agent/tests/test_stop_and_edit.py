@@ -186,7 +186,13 @@ def test_a_verified_red_step_can_be_stopped_before_the_steps_after_it(
         plan(
             step("s1", "transfer", TO_HUSBAND),
             step("s2", "transfer", TO_HUSBAND),
-            step("s3", "lower_card_limit", {"card_id": "CARD-HM-001", "new_limit": "100.00"}),
+            # After the transfers: on its own, the Card Limit would run first (#42).
+            step(
+                "s3",
+                "lower_card_limit",
+                {"card_id": "CARD-HM-001", "new_limit": "100.00"},
+                depends_on=["s2"],
+            ),
         )
     )
     login = log_in(bank, "hanmei")

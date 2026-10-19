@@ -184,6 +184,7 @@ const ACTION_LABELS: Record<string, string> = {
   stop: '停止',
   resume: '继续',
   cancel: '取消剩余',
+  reverse: '撤销已完成步骤：',
 }
 
 function AgentEntry({ entry }: { entry: HistoryEntry }) {
@@ -234,7 +235,19 @@ function AgentEntry({ entry }: { entry: HistoryEntry }) {
           <b>步骤失败</b> <code>{entry.step_id}</code> {entry.operation}{' '}
           <span className="refused">
             {entry.reason}：{entry.message}
-          </span>
+          </span>{' '}
+          {entry.text}
+        </>
+      )
+    case 'reversal_offered':
+      return (
+        <>
+          <b>提议撤销</b> 计划 <code>{entry.plan_id}</code>：
+          {entry.steps.map((step) => `${step.step_id} → ${step.operation}`).join('，')}
+          <details>
+            <summary>内容</summary>
+            <pre>{json(entry.steps)}</pre>
+          </details>
         </>
       )
     case 'refusal':

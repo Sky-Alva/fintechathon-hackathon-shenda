@@ -31,6 +31,7 @@ turns:                             # Chinese prompts, sent in order
 approvals:                         # how the simulated Customer answers, in the order asked
   - confirmation: approve          # approve | reject
   - verification: correct_code     # correct_code | wrong_code | reject
+  - reversal: decline              # accept | decline: an offer to undo a failed Plan's steps
 
 expect:
   operations_run:                  # must each have run at least once (order not checked)
@@ -60,7 +61,7 @@ See [`tasks/reference/reference-001.yaml`](../tasks/reference/reference-001.yaml
 
 ### How the runner reads them
 
-- **Approvals.** A Plan card with Yellow steps is a Confirmation request: `confirmation: approve` taps confirm, `reject` rejects the card. A card with only Red steps asks for no Confirmation: when the next scripted answer is a `verification`, the runner taps the card through to it without using up an answer. `verification: correct_code` reads the code from the simulated phone and types it in; `wrong_code` types a different one (the Agent gets `wrong_code` and asks again, which is the next request); `reject` leaves the code untyped, so the Plan stays paused. An answer of the wrong kind for what the Agent asks is not used: the runner answers `reject` and keeps it for a later request.
+- **Approvals.** A Plan card with Yellow steps is a Confirmation request: `confirmation: approve` taps confirm, `reject` rejects the card. A card with only Red steps asks for no Confirmation: when the next scripted answer is a `verification`, the runner taps the card through to it without using up an answer. `verification: correct_code` reads the code from the simulated phone and types it in; `wrong_code` types a different one (the Agent gets `wrong_code` and asks again, which is the next request); `reject` leaves the code untyped, so the Plan stays paused. When a step fails and the Agent offers to undo the Plan's completed steps (`reversal_offered`, the last prompt of its turn), `reversal: accept` undoes every step offered (a new Plan card, answered by the next approvals as usual) and `decline` leaves them done; unscripted, the runner declines. An answer of the wrong kind for what the Agent asks is not used: the runner answers `reject` and keeps it for a later request.
 - **`operations_run`**: two identical entries need two distinct runs (e.g. two ¥600 transfers).
 - **`refusal`**: the reason must appear in the session's audit trail, as a refused call or as a step the tier preview refused. `null` doesn't check refusals.
 - **`clarifying_question`**: `true` means the Agent must ask (a `clarification_question` event), `false` that it must not.

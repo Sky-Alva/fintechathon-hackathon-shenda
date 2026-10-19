@@ -52,7 +52,10 @@ export async function sendMessage(
 export type CustomerAction =
   // `removed_step_ids`: steps the Customer took off the card; the Bank re-tiers the rest.
   | { action: 'confirm'; plan_id: string; removed_step_ids?: string[] }
+  // `reject` also declines a reversal offer, by the failed Plan's ID (#42).
   | { action: 'reject'; plan_id: string }
+  // Accept a reversal offer for these of its steps: the undo comes back as a new Plan card.
+  | { action: 'reverse'; plan_id: string; step_ids: string[] }
   | { action: 'ask_for_human' }
   // The stop button, sent alongside the running Plan's turn: that turn ends with plan_paused.
   // A Plan waiting for verification is paused at once: the stop's own events say so.

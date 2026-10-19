@@ -178,7 +178,8 @@ def test_every_red_step_gets_its_own_verification_when_it_is_reached(
 def test_without_a_valid_verification_token_the_red_step_does_not_run(
     agent: TestClient, bank: TestClient, model: FakeModel
 ) -> None:
-    model.script(two_600s(), say("第二笔转账未能完成。"))
+    # After the failure the Planner is asked for what's left (#42): nothing, here.
+    model.script(two_600s(), say("第二笔转账未能完成。"), plan())
     login = log_in(bank, "hanmei")
     conversation = start_conversation(agent, login)
     requested = confirmed_up_to_the_red_step(agent, bank, conversation)

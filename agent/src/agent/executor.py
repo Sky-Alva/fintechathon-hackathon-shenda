@@ -5,8 +5,10 @@ from collections.abc import Generator, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from agent import failures
 from agent.bank import BankRefused, BankSession, BankUnavailable
 from agent.events import Event, PlanStep, StepFailed, StepStarted, StepSucceeded
+from agent.language import Language
 from agent.reviewer import ReviewedPlan
 
 
@@ -30,6 +32,9 @@ class StepResult:
     input: dict[str, Any]
     output: dict[str, Any] | None
     refusal: dict[str, Any] | None = None
+    reversal: dict[str, Any] | None = None
+    """The call that would undo the step (`operation`, `input`), as the Bank said when it
+    ran it; None if it can't be undone or changed nothing."""
 
 
 @dataclass(frozen=True)
@@ -37,9 +42,10 @@ class Halt:
     """Where a Plan paused before running all its steps: `step` is the first not yet run."""
 
     step: PlanStep
-    why: Literal["verification", "stop"]
+    why: Literal["verification", "stop", "failed"]
     """`verification`: the step is Red and needs its Strong Verification first. `stop`: the
-    Customer tapped stop."""
+    Customer tapped stop. `failed`: the Bank refused the step (or couldn't be reached) when
+    it ran, so the steps after it won't run."""
 
 
 def execute(
@@ -49,19 +55,20 @@ def execute(
     confirmation_tokens: Mapping[str, str] | None = None,
     verification_tokens: Mapping[str, str] | None = None,
     stop: threading.Event | None = None,
+    language: Language = "zh",
 ) -> Generator[Event, None, Halt | None]:
     """Run the steps in order, appending each Bank result to `results`.
 
     A step the tier preview refused is never sent to the Bank; the steps after it still
     run, as the Plan card showed. A step the Bank refuses (or can't be reached for) when
-    it runs stops the Plan: the steps after it don't run. `confirmation_tokens` holds the
-    Customer's Confirmation for each Yellow step, by step ID, and `verification_tokens`
-    the Strong Verification of each Red step.
+    it runs stops the Plan: the steps after it don't run, and its Halt is returned.
+    `confirmation_tokens` holds the Customer's Confirmation for each Yellow step, by step
+    ID, and `verification_tokens` the Strong Verification of each Red step.
 
     Nothing Red runs without its verification token: the Plan pauses at the first Red
     step that has none. Once `stop` is set (the Customer tapped stop), no further step
     starts; a step already with the Bank finishes. Either way the Plan's Halt is
-    returned. Otherwise returns None.
+    returned. Otherwise (every step ran or was refused by the tier preview) returns None.
     """
     confirmations = confirmation_tokens or {}
     verifications = verification_tokens or {}
@@ -69,7 +76,7 @@ def execute(
         if stop is not None and stop.is_set():
             return Halt(step, "stop")
         if (refusal := plan.refusals.get(step.id)) is not None:
-            yield failed(step, refusal, results)
+            yield failed(step, refusal, results, language)
             continue
         if step.tier == "red" and step.id not in verifications:
             return Halt(step, "verification")
@@ -82,18 +89,26 @@ def execute(
                 verifications.get(step.id),
             )
         except BankRefused as refused:
-            yield failed(step, refused.body(), results)
-            return None
+            yield failed(step, refused.body(), results, language)
+            return Halt(step, "failed")
         except BankUnavailable:
-            yield failed(step, BANK_UNAVAILABLE, results)
-            return None
-        results.append(StepResult(step.id, step.operation, step.input, result["output"]))
+            yield failed(step, BANK_UNAVAILABLE, results, language)
+            return Halt(step, "failed")
+        results.append(
+            StepResult(
+                step.id, step.operation, step.input, result["output"], None, result.get("reversal")
+            )
+        )
         yield StepSucceeded(
             step_id=step.id, operation=step.operation, tier=result["tier"], output=result["output"]
         )
     return None
 
 
-def failed(step: PlanStep, refusal: dict[str, Any], results: list[StepResult]) -> StepFailed:
+def failed(
+    step: PlanStep, refusal: dict[str, Any], results: list[StepResult], language: Language
+) -> StepFailed:
+    """The step didn't run: record the Bank's refusal and explain it by its reason."""
     results.append(StepResult(step.id, step.operation, step.input, None, refusal))
-    return StepFailed(step_id=step.id, operation=step.operation, **refusal)
+    text = failures.explain(refusal["reason"], language)
+    return StepFailed(step_id=step.id, operation=step.operation, text=text, **refusal)
