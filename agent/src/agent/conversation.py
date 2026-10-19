@@ -12,11 +12,28 @@ from typing import Any
 
 from agent import planner, refusals, responder, reviewer
 from agent.bank import BankRefused, BankSession, BankUnavailable, HttpClient
-from agent.events import Answer, CustomerMessageEntry, Event, HistoryEntry, Refusal, Trace
+from agent.events import (
+    Answer,
+    CustomerMessageEntry,
+    Event,
+    HandedBack,
+    HandedOver,
+    HistoryEntry,
+    Refusal,
+    StaffMessage,
+    Trace,
+)
 from agent.executor import StepResult, execute
 from agent.language import customer_language
 from agent.model import ModelClient
 from agent.trace import trace, with_bank_traces
+
+HANDED_BACK_NOTE = (
+    "人工客服 {staff} 接管过这段对话，现在交还给你（Agent）。标有 [Staff Member {staff}] 的消息是"
+    "人工客服写的，不是你写的。\n"
+    "The Staff Member {staff} took this conversation over and has handed it back to you (the"
+    " Agent). Messages marked [Staff Member {staff}] were written by them, not by you."
+)
 
 
 @dataclass
@@ -34,11 +51,29 @@ class Conversation:
     record: list[HistoryEntry] = field(default_factory=list)
     """Everything Staff Members read: each Customer message and every event sent (the
     decision trace included, so the Plan, its tiers and every Bank call), in order."""
+    handed_over_to: str | None = None
+    """The Staff Member who took the conversation over, while they have it: the Agent is
+    paused."""
+    updates: list[Event] = field(default_factory=list)
+    """The events sent outside the Customer's own turns (a Staff Member taking over,
+    replying, handing back), which the Channel polls for."""
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
 class UnknownConversation(Exception):
     pass
+
+
+class NotHandedOver(Exception):
+    """Only a conversation a Staff Member took over gets staff replies or is handed back."""
+
+
+class AlreadyHandedOver(Exception):
+    """Another Staff Member has the conversation."""
+
+    def __init__(self, staff: str):
+        super().__init__(staff)
+        self.staff = staff
 
 
 class Conversations:
@@ -92,10 +127,53 @@ class Conversations:
             conversation.record.append(event)
             yield event
 
+    def take_over(self, conversation: Conversation, staff: str) -> HandedOver:
+        """A Staff Member takes the conversation over. A turn under way finishes first."""
+        with conversation.lock:
+            if conversation.handed_over_to is not None:
+                raise AlreadyHandedOver(conversation.handed_over_to)
+            conversation.handed_over_to = staff
+            return self._push(conversation, HandedOver(staff=staff))
+
+    def staff_reply(self, conversation: Conversation, text: str) -> StaffMessage:
+        """The Staff Member who has the conversation replies to the Customer."""
+        with conversation.lock:
+            staff = conversation.handed_over_to
+            if staff is None:
+                raise NotHandedOver()
+            # In the Agent's context too, marked as the Staff Member's, not the Agent's.
+            conversation.history.append(
+                {"role": "assistant", "content": f"[Staff Member {staff}] {text}"}
+            )
+            return self._push(conversation, StaffMessage(staff=staff, text=text))
+
+    def hand_back(self, conversation: Conversation) -> HandedBack:
+        """The Staff Member hands the conversation back: the Agent resumes, with what was
+        said during the takeover in its context."""
+        with conversation.lock:
+            staff = conversation.handed_over_to
+            if staff is None:
+                raise NotHandedOver()
+            conversation.handed_over_to = None
+            conversation.history.append({"role": "system", "content": HANDED_BACK_NOTE.format(staff=staff)})
+            return self._push(conversation, HandedBack())
+
+    def updates(self, conversation: Conversation, after: int) -> list[Event]:
+        return conversation.updates[after:]
+
+    def _push[E: Event](self, conversation: Conversation, event: E) -> E:
+        """Send the Customer an event outside their own turn."""
+        conversation.updates.append(event)
+        conversation.record.append(event)
+        return event
+
     def _turn(self, conversation: Conversation, text: str) -> Iterator[Event]:
         with conversation.lock:
             conversation.record.append(CustomerMessageEntry(text=text))
             conversation.history.append({"role": "user", "content": text})
+            if conversation.handed_over_to is not None:
+                # The message is the Staff Member's to answer: the Agent stays silent.
+                return
             try:
                 catalogue = conversation.bank.catalogue()
             except (BankRefused, BankUnavailable):

@@ -66,7 +66,39 @@ class Refusal(BaseModel):
     text: str
 
 
-Event = StepStarted | StepSucceeded | StepFailed | Answer | Refusal | Trace
+class HandedOver(BaseModel):
+    """A Staff Member took the conversation over: the Agent sends nothing and starts no
+    step until it is handed back."""
+
+    type: Literal["handed_over"] = "handed_over"
+    staff: str
+
+
+class HandedBack(BaseModel):
+    """The Staff Member handed the conversation back to the Agent."""
+
+    type: Literal["handed_back"] = "handed_back"
+
+
+class StaffMessage(BaseModel):
+    """A reply from the Staff Member who took the conversation over, not from the Agent."""
+
+    type: Literal["staff_message"] = "staff_message"
+    staff: str
+    text: str
+
+
+Event = (
+    StepStarted
+    | StepSucceeded
+    | StepFailed
+    | Answer
+    | Refusal
+    | HandedOver
+    | StaffMessage
+    | HandedBack
+    | Trace
+)
 
 
 # A conversation's history, as Staff Members read it: each Customer message, then every

@@ -20,13 +20,19 @@ from collections.abc import Iterator
 from typing import Annotated, Any
 
 import httpx
-from fastapi import APIRouter, Depends, FastAPI, Header, Request
+from fastapi import APIRouter, Depends, FastAPI, Header, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent.bank import BankRefused, BankUnavailable, HttpClient
-from agent.conversation import Conversation, Conversations, UnknownConversation
-from agent.events import Event, Trace
+from agent.conversation import (
+    AlreadyHandedOver,
+    Conversation,
+    Conversations,
+    NotHandedOver,
+    UnknownConversation,
+)
+from agent.events import Event, HandedBack, HandedOver, StaffMessage, Trace
 from agent.model import ModelClient, model_from_env
 
 
@@ -37,6 +43,17 @@ class StartConversation(BaseModel):
 
 
 class CustomerMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    text: str = Field(min_length=1)
+
+
+class TakeOver(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    staff: str = Field(min_length=1)
+    """The Staff Member taking over, as the Customer will see them named."""
+
+
+class StaffReply(BaseModel):
     model_config = ConfigDict(extra="forbid")
     text: str = Field(min_length=1)
 
@@ -73,6 +90,16 @@ def create_app(bank: HttpClient, model: ModelClient, staff_key: str) -> FastAPI:
         # Outside a turn (starting a conversation, the staff views): say so, guess nothing.
         return JSONResponse(status_code=503, content={"error": "bank_unavailable"})
 
+    @app.exception_handler(NotHandedOver)
+    async def on_not_handed_over(_: Request, error: NotHandedOver) -> JSONResponse:
+        return JSONResponse(status_code=409, content={"error": "not_handed_over"})
+
+    @app.exception_handler(AlreadyHandedOver)
+    async def on_already_handed_over(_: Request, error: AlreadyHandedOver) -> JSONResponse:
+        return JSONResponse(
+            status_code=409, content={"error": "already_handed_over", "staff": error.staff}
+        )
+
     @app.exception_handler(StaffKeyRequired)
     async def on_staff_key_required(_: Request, error: StaffKeyRequired) -> JSONResponse:
         return JSONResponse(status_code=401, content={"error": "staff_key_required"})
@@ -103,6 +130,16 @@ def create_app(bank: HttpClient, model: ModelClient, staff_key: str) -> FastAPI:
             headers={"X-Accel-Buffering": "no"},
         )
 
+    @app.get("/conversations/{conversation_id}/updates")
+    def updates(conversation_id: str, after: Annotated[int, Query(ge=0)] = 0) -> dict[str, Any]:
+        """What the Customer was sent outside their own turns, from the `after`-th on;
+        `next` is the `after` to poll with next time."""
+        sent = conversations.updates(conversations.get(conversation_id), after)
+        return {
+            "events": [event.model_dump(mode="json") for event in sent],
+            "next": after + len(sent),
+        }
+
     @app.get("/conversations/{conversation_id}/audit-trail")
     def audit_trail(conversation_id: str) -> Trace:
         return conversations.audit_trail(conversations.get(conversation_id))
@@ -119,6 +156,18 @@ def create_app(bank: HttpClient, model: ModelClient, staff_key: str) -> FastAPI:
             **staff_summary(conversation),
             "entries": [entry.model_dump(mode="json") for entry in list(conversation.record)],
         }
+
+    @staff.post("/conversations/{conversation_id}/takeover")
+    def take_over(conversation_id: str, body: TakeOver) -> HandedOver:
+        return conversations.take_over(conversations.get(conversation_id), body.staff)
+
+    @staff.post("/conversations/{conversation_id}/messages")
+    def staff_reply(conversation_id: str, body: StaffReply) -> StaffMessage:
+        return conversations.staff_reply(conversations.get(conversation_id), body.text)
+
+    @staff.post("/conversations/{conversation_id}/hand-back")
+    def hand_back(conversation_id: str) -> HandedBack:
+        return conversations.hand_back(conversations.get(conversation_id))
 
     app.include_router(staff)
 
