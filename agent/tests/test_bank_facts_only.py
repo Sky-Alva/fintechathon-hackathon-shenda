@@ -205,35 +205,38 @@ def test_an_invented_date_is_not_sent(
 
 # --- When the Bank refuses or can't be reached, nothing is guessed --------------------
 
-SPOUSE_BALANCE = step("s1", "query_balance", {"account_id": "ACC-HM-001"})
+# 李明 has no savings account: the Bank refuses the query (`not_found`). (Asking for the
+# spouse's balance is refused too, but gets a `secret` refusal: see test_secrets.py.)
+UNKNOWN_ACCOUNT = step("s1", "query_balance", {"account_id": "ACC-LM-002"})
+SAVINGS_QUESTION = "我储蓄账户里有多少钱？"
 
 
 def test_a_query_the_bank_refuses_fails_with_the_banks_reason(
     agent: TestClient, bank: TestClient, model: FakeModel
 ) -> None:
-    model.script(plan(SPOUSE_BALANCE), say("抱歉，我无法查询这个账户的余额。"))
+    model.script(plan(UNKNOWN_ACCOUNT), say("抱歉，我无法查询这个账户的余额。"))
 
-    events = send(agent, start_conversation(agent, log_in(bank, "liming")), "我老婆卡里有多少钱？")
+    events = send(agent, start_conversation(agent, log_in(bank, "liming")), SAVINGS_QUESTION)
 
     assert event_types(events) == ["step_failed", "answer"]
     failed = only(events, "step_failed")
     assert (failed["step_id"], failed["operation"], failed["reason"]) == (
-        "s1", "query_balance", "forbidden_other_customer"
+        "s1", "query_balance", "not_found"
     )
     assert answer_text(events) == "抱歉，我无法查询这个账户的余额。"
-    assert "forbidden_other_customer" in model.requests[1].text()
+    assert "not_found" in model.requests[1].text()
 
 
 def test_when_the_bank_refuses_a_query_no_figure_is_guessed(
     agent: TestClient, bank: TestClient, model: FakeModel
 ) -> None:
     model.script(
-        plan(SPOUSE_BALANCE),
-        say("她的余额大约是 8,650.00 元。"),
-        say("她的余额应该在 ¥8,000 左右。"),
+        plan(UNKNOWN_ACCOUNT),
+        say("您储蓄账户的余额大约是 8,650.00 元。"),
+        say("您储蓄账户的余额应该在 ¥8,000 左右。"),
     )
 
-    events = send(agent, start_conversation(agent, log_in(bank, "liming")), "我老婆卡里有多少钱？")
+    events = send(agent, start_conversation(agent, log_in(bank, "liming")), SAVINGS_QUESTION)
 
     text = answer_text(events)
     assert "无法" in text
@@ -246,14 +249,14 @@ def test_after_a_refusal_figures_from_earlier_in_the_conversation_are_not_restat
     model.script(
         plan(step("s1", "query_balance")),
         say("您的余额为 1180.00 元。"),
-        plan(SPOUSE_BALANCE),
-        say("无法查询她的余额；您的余额为 1180.00 元。"),
-        say("无法查询她的余额；您的余额为 1180.00 元。"),
+        plan(UNKNOWN_ACCOUNT),
+        say("无法查询储蓄账户；您的余额为 1180.00 元。"),
+        say("无法查询储蓄账户；您的余额为 1180.00 元。"),
     )
     conversation = start_conversation(agent, log_in(bank, "liming"))
     send(agent, conversation, BALANCE_QUESTION)
 
-    events = send(agent, conversation, "我老婆卡里有多少钱？")
+    events = send(agent, conversation, SAVINGS_QUESTION)
 
     assert not re.search(r"\d", answer_text(events))
 

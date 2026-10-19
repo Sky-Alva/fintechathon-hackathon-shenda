@@ -110,7 +110,10 @@ class Trace(BaseModel):
 
 
 class Refusal(BaseModel):
-    """The Agent won't do this; `text` explains and lists what it can do. Ends the turn."""
+    """The Agent won't do this; `text` explains and lists what it can do. Ends the turn.
+
+    `secret`: a full card number, a password or a code, or another Customer's
+    information (after the Bank's `forbidden_other_customer` step_failed)."""
 
     type: Literal["refusal"] = "refusal"
     reason: Literal["out_of_scope", "manipulation", "secret"]

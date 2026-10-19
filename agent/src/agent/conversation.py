@@ -13,7 +13,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent import notices, planner, refusals, responder, reviewer
+from agent import notices, planner, refusals, responder, reviewer, secrets_guard
 from agent.bank import BankRefused, BankSession, BankUnavailable, HttpClient
 from agent.events import (
     Answer,
@@ -316,12 +316,26 @@ class Conversations:
 
     def _turn(self, conversation: Conversation, text: str) -> Iterator[Event]:
         with conversation.lock:
+            pending = conversation.pending
+            # A code typed into the chat while a verification is pending is masked before
+            # it goes anywhere: not into the history, the model or the staff history.
+            code_typed = isinstance(pending, PendingVerification) and secrets_guard.has_code(
+                text
+            )
+            if code_typed:
+                text = secrets_guard.mask_codes(text)
             conversation.record.append(CustomerMessageEntry(text=text))
-            conversation.pending = None  # a new request replaces an unanswered Plan card
             conversation.history.append({"role": "user", "content": text})
             if conversation.handed_over_to is not None:
                 # The message is the Staff Member's to answer: the Agent stays silent.
+                conversation.pending = None
                 return
+            if code_typed:
+                assert isinstance(pending, PendingVerification)
+                yield self._code_in_chat(conversation)
+                yield pending.requested  # the challenge stays open for the phone
+                return
+            conversation.pending = None  # a new request replaces an unanswered Plan card
             try:
                 bank, catalogue = conversation.bank, conversation.bank.catalogue()
             except (BankRefused, BankUnavailable):
@@ -347,6 +361,9 @@ class Conversations:
                     yield self._not_retrieved(conversation)
                     return
                 yield trace("plan", plan_data(reviewed_look_ups, look_ups=True))
+                if reviewed_look_ups.other_customers:
+                    yield from self._other_customer(conversation, reviewed_look_ups)
+                    return
                 if reviewed_look_ups.green_only:  # the Bank agrees they need no approval
                     yield from execute(reviewed_look_ups, bank, looked_up)
                     plan = planner.make_plan(
@@ -367,6 +384,9 @@ class Conversations:
                 yield self._not_retrieved(conversation)
                 return
             yield trace("plan", plan_data(reviewed))
+            if reviewed.other_customers:
+                yield from self._other_customer(conversation, reviewed)
+                return
             if (lock := reviewed.locked) is not None:
                 # Under a Safety Lock only Green Operations run: the notice, no Plan card.
                 yield self._locked(conversation, lock)
@@ -428,11 +448,27 @@ class Conversations:
     ) -> Iterator[Event]:
         yield trace("intent", {"intent": "", "declined": declined.model_dump(mode="json")})
         # Nothing runs: the Customer hears what the Agent can do instead.
-        text = refusals.out_of_scope(
-            declined.can_do, catalogue, customer_language(conversation.history)
+        text = refusals.declined(
+            declined.reason, declined.can_do, catalogue, customer_language(conversation.history)
         )
         conversation.history.append({"role": "assistant", "content": text})
         yield Refusal(reason=declined.reason, text=text)
+
+    def _other_customer(self, conversation: Conversation, plan: ReviewedPlan) -> Iterator[Event]:
+        """The Bank refused a step naming another Customer's account, card or the like
+        (the spouse's balance): the Bank's reason, then a polite refusal. Nothing in the
+        Plan runs and the Agent doesn't look for another way to the same information."""
+        for step in plan.other_customers:
+            yield failed(step, plan.refusals[step.id], [])
+        text = refusals.other_customer(customer_language(conversation.history))
+        conversation.history.append({"role": "assistant", "content": text})
+        yield Refusal(reason="secret", text=text)
+
+    def _code_in_chat(self, conversation: Conversation) -> Answer:
+        """The Customer typed a code into the chat: point them to the simulated phone."""
+        text = secrets_guard.CODE_IN_CHAT[customer_language(conversation.history)]
+        conversation.history.append({"role": "assistant", "content": text})
+        return Answer(text=text)
 
     def _ask_for_human(self, conversation: Conversation) -> Iterator[Event]:
         with conversation.lock:
@@ -578,6 +614,9 @@ class Conversations:
         text = responder.answer(
             self.model, conversation.history, results, conversation.bank_results
         )
+        # The outgoing check: nothing that looks like a full card number or a code goes
+        # out, even when a Bank result contained it.
+        text = secrets_guard.mask(text)
         conversation.bank_results.extend(results)
         conversation.history.append({"role": "assistant", "content": text})
         return Answer(text=text)

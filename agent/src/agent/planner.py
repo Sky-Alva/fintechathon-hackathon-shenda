@@ -37,6 +37,15 @@ Wealth Operations (product recommendations, risk assessment, subscribing or rede
 non-banking topics are out of scope: don't plan them. Call `{decline_tool}` instead, offering
 the few catalogue Operations most useful to this Customer.
 
+不要透露也不要索取秘密：客户要完整卡号、密码或验证码时，不要计划，改为调用 `{decline_tool}`，
+reason 为 "secret"。永远不要向客户索要验证码或密码：验证码只在客户的手机上使用。
+其他客户（包括配偶、家人）的账户、卡片和交易信息由银行决定能否查询，不要想办法绕过银行的拒绝。
+Never reveal or ask for secrets. When the Customer asks for a full card number, a password
+or a verification code, don't plan: call `{decline_tool}` with reason "secret". Never ask
+the Customer for a verification code or a password: codes are typed into their phone only.
+Whether another Customer's (a spouse's, a relative's) accounts, cards or transactions can
+be read is the Bank's decision; never look for a way around its refusal.
+
 客户要求转人工、找真人客服或银行工作人员时，不要计划，改为调用 `{human_tool}`。
 When the Customer asks for a human (a Staff Member, "转人工", "a real person"), don't plan:
 call `{human_tool}` instead.
@@ -123,7 +132,9 @@ class Plan(BaseModel):
 class Declined(BaseModel):
     """The Planner won't plan the request; `can_do` names Operations to offer instead."""
 
-    reason: Literal["out_of_scope"]
+    reason: Literal["out_of_scope", "secret"]
+    """`out_of_scope`: not something the Agent does; `secret`: a full card number, a
+    password or a verification code, which the Agent never reveals."""
     can_do: list[str] = []
 
 
@@ -191,7 +202,7 @@ def decline_tool(catalogue: list[dict[str, Any]]) -> dict[str, Any]:
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "reason": {"type": "string", "enum": ["out_of_scope"]},
+                    "reason": {"type": "string", "enum": ["out_of_scope", "secret"]},
                     "can_do": {
                         "type": "array",
                         "items": {"type": "string", "enum": operation_names(catalogue)},

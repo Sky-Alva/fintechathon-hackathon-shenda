@@ -142,7 +142,7 @@ Ask the Customer to confirm every Yellow step of the Plan card with one tap. Fol
 
 ### `verification_requested` (emitted, #37)
 
-A Red step of a confirmed Plan needs Strong Verification. The Bank has texted a code to the simulated phone; the Plan is paused at this step and ends the turn. Each Red step gets its own, asked for only when the executor reaches it, since a step may be Red only because of the steps that ran before it. Nothing Red runs without its verification token. The Customer answers with `verified` (or `wrong_code`); a new message drops the paused Plan.
+A Red step of a confirmed Plan needs Strong Verification. The Bank has texted a code to the simulated phone; the Plan is paused at this step and ends the turn. Each Red step gets its own, asked for only when the executor reaches it, since a step may be Red only because of the steps that ran before it. Nothing Red runs without its verification token. The Customer answers with `verified` (or `wrong_code`); a new message drops the paused Plan, unless it is the code typed into the chat (see [Secrets in the chat](#secrets-in-the-chat-44)).
 
 ```json
 {"type": "verification_requested", "plan_id": "p1", "step_id": "s3", "challenge_id": "…", "sent_to": "138****0001", "expires_at": "2026-10-20T09:05:00+08:00"}
@@ -178,7 +178,7 @@ One short question when the request is genuinely ambiguous (e.g. which 张伟). 
 {"type": "clarification_question", "text": "您要转给哪位张伟？", "options": [{"label": "张伟（同事）", "value": "PAY-LM-003"}]}
 ```
 
-### `refusal` (emitted for `out_of_scope`, #33; reserved for `manipulation` #43, `secret` #44)
+### `refusal` (emitted for `out_of_scope`, #33, and `secret`, #44; reserved for `manipulation` #43)
 
 The Agent won't do this: out of scope, a scam or manipulation attempt, or a request for a secret. `text` explains and lists what the Agent can do. Ends the turn; no Operation runs.
 
@@ -190,6 +190,15 @@ The Agent won't do this: out of scope, a scam or manipulation attempt, or a requ
 `reason`: `out_of_scope` | `manipulation` | `secret`.
 
 - **`out_of_scope`**: Wealth Operations (product recommendations, risk assessment, subscribe / redeem) and non-banking topics. The Planner declines instead of planning, naming up to 5 catalogue Operations to offer; `text` lists them one per line (`- …`) in the Bank's own words (`description_zh` / `description_en` from the Operation catalogue), so the list grows with the catalogue. Names the Bank doesn't know are dropped; if none are left, the catalogue's first 5 are listed.
+- **`secret`** (#44): information that can't be extracted through the chat.
+  - A full card number, a password or a verification code: the Planner declines (`decline_request` with reason `secret`) and nothing runs. `text` says the Agent never reveals them (a card shows its last four digits only), then lists what it can do, as for `out_of_scope`.
+  - Another Customer's information (the spouse's balance, cards, transactions): the Bank's tier preview refuses the step with `forbidden_other_customer`. The turn is that step's `step_failed` (no `step_started`), then the `refusal`; nothing else in the Plan runs, the Agent doesn't ask the model again or look for another way to the same information, and no Plan card is shown. Paying *to* the spouse as a Payee is unaffected.
+
+### Secrets in the chat (#44)
+
+- **A code typed into the chat.** While a Red step waits for its verification, a message with six digits on their own in it (`482913`, `验证码是482913`) is taken for the code. It is masked (`******`) before it goes anywhere: the conversation history, the model (now or in later turns) and the staff history only ever see the masked text, and the model isn't called. The turn is an `answer` pointing the Customer to the simulated phone, then the same `verification_requested` again: the challenge stays open and the code still works on the phone. While a Staff Member has the conversation the message is masked the same way and the turn has no events.
+- **The outgoing check.** Before an `answer` written from Bank results is sent, anything that looks like a full card number (13–19 digits, maybe grouped by spaces or dashes) becomes `**** **** **** 1234` (its last four digits) and anything that looks like a verification code (six digits on their own, not an amount or part of an ID like `TRF-000001`) becomes `******`, even when a Bank result contained it. Raw Bank data in `step_succeeded`, `step_failed` and `trace` is unchanged.
+- **The Agent never asks for a code or a password.** A draft answer that asks for one is rewritten once, then replaced by the raw Bank result, as a draft that fails the fact check is.
 
 ### `session_locked` (emitted, #37)
 

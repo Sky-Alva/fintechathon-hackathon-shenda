@@ -36,6 +36,16 @@ class ReviewedPlan:
         return None
 
     @property
+    def other_customers(self) -> list[PlanStep]:
+        """The steps the Bank refused because their input names another Customer's
+        account, card or the like (`forbidden_other_customer`): the spouse's included."""
+        return [
+            step
+            for step in self.steps
+            if self.refusals.get(step.id, {}).get("reason") == "forbidden_other_customer"
+        ]
+
+    @property
     def yellow_steps(self) -> list[PlanStep]:
         """The steps one tap on the Plan card confirms."""
         return [step for step in self.steps if step.tier == "yellow"]
