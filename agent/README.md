@@ -34,6 +34,10 @@ docker compose up --build # Channel: http://localhost:8080 · Agent: :8001 · Ba
 | `model.py` | The model client interface and the OpenAI-compatible implementation. |
 | `events.py` | The event models. |
 
+## Evaluation runner
+
+`src/evaluation/` (a separate package, not part of the Agent): replays the scripted test tasks under `tasks/` with the configured real model and prints a scoreboard. `.venv/bin/python -m evaluation [scenario-or-task-id ...] [--json results.json]`; see [docs/scripted-test-tasks.md](../docs/scripted-test-tasks.md#running-them).
+
 ## Tests
 
 ```sh
