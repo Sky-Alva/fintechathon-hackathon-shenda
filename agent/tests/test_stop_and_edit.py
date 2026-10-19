@@ -15,6 +15,7 @@ from conftest import (
     send,
     staff,
     start_conversation,
+    take_over,
     traces,
 )
 from fake_model import FakeModel, plan, say, step
@@ -249,6 +250,21 @@ def test_a_stopped_plan_is_resumed_once(
     assert again.status_code == 409
     assert again.json() == {"error": "plan_not_pending"}
     assert transfers_run(bank, login) == ["200.00", "300.00"]
+
+
+def test_a_stopped_plan_is_not_resumed_while_a_staff_member_has_the_conversation(
+    agent: TestClient, bank: TestClient, bank_link: BankLink, model: FakeModel
+) -> None:
+    login, conversation, plan_id = stopped_after_first_transfer(agent, bank, bank_link, model)
+    take_over(agent, conversation)
+
+    response = agent.post(
+        f"/conversations/{conversation}/actions", json={"action": "resume", "plan_id": plan_id}
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"] == "already_handed_over"
+    assert transfers_run(bank, login) == ["200.00"]
 
 
 def test_cancelling_a_stopped_plan_runs_nothing_more(

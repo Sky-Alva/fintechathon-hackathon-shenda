@@ -21,10 +21,14 @@ from agent.events import (
     CustomerActionEntry,
     CustomerMessageEntry,
     Event,
+    HandedBack,
+    HandedOver,
     HistoryEntry,
+    HumanRequested,
     PlanPaused,
     PlanProposed,
     Refusal,
+    StaffMessage,
     StepFailed,
     Trace,
 )
@@ -33,6 +37,13 @@ from agent.language import Language, customer_language
 from agent.model import ModelClient
 from agent.reviewer import ReviewedPlan
 from agent.trace import trace, with_bank_traces
+
+HANDED_BACK_NOTE = (
+    "人工客服 {staff} 接管过这段对话，现在交还给你（Agent）。标有 [Staff Member {staff}] 的消息是"
+    "人工客服写的，不是你写的。\n"
+    "The Staff Member {staff} took this conversation over and has handed it back to you (the"
+    " Agent). Messages marked [Staff Member {staff}] were written by them, not by you."
+)
 
 
 @dataclass
@@ -88,6 +99,14 @@ class Conversation:
     """Everything Staff Members read: each Customer message or action and every event
     sent (the decision trace included, so the Plan, its tiers and every Bank call), in
     order."""
+    handed_over_to: str | None = None
+    """The Staff Member who took the conversation over, while they have it: the Agent is
+    paused."""
+    updates: list[Event] = field(default_factory=list)
+    """The events sent outside the Customer's own turns (a Staff Member taking over,
+    replying, handing back), which the Channel polls for."""
+    human_requested: bool = False
+    """The Customer asked for a human and no Staff Member has taken over since."""
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def next_plan_id(self) -> str:
@@ -137,10 +156,22 @@ class CancelPlan(BaseModel):
     plan_id: str
 
 
+class AskForHuman(BaseModel):
+    """The Customer wants a Staff Member: at any time, whatever else is going on."""
+
+    model_config = ConfigDict(extra="forbid")
+    action: Literal["ask_for_human"]
+
+
 CustomerAction = Annotated[
-    ConfirmPlan | RejectPlan | StopPlan | ResumePlan | CancelPlan,
+    ConfirmPlan | RejectPlan | StopPlan | ResumePlan | CancelPlan | AskForHuman,
     Field(discriminator="action"),
 ]
+
+HUMAN_REQUESTED: dict[Language, str] = {
+    "zh": "已为您呼叫人工客服，请稍候。",
+    "en": "I've asked for a Staff Member to join you. Please wait a moment.",
+}
 
 REJECTED: dict[Language, str] = {
     "zh": "好的，已取消这个计划，没有执行任何操作。",
@@ -220,6 +251,19 @@ def interruption(paused: PausedPlan | None) -> dict[str, Any] | None:
     }
 
 
+class NotHandedOver(Exception):
+    """Only a conversation a Staff Member took over gets staff replies or is handed back."""
+
+
+class AlreadyHandedOver(Exception):
+    """A Staff Member has the conversation: no one else takes it over, and the Agent
+    acts on nothing the Customer sends."""
+
+    def __init__(self, staff: str):
+        super().__init__(staff)
+        self.staff = staff
+
+
 class Conversations:
     def __init__(self, bank: HttpClient, model: ModelClient):
         self.bank = bank
@@ -277,15 +321,61 @@ class Conversations:
             conversation.record.append(event)
             yield event
 
+    def take_over(self, conversation: Conversation, staff: str) -> HandedOver:
+        """A Staff Member takes the conversation over. A turn under way finishes first."""
+        with conversation.lock:
+            if conversation.handed_over_to is not None:
+                raise AlreadyHandedOver(conversation.handed_over_to)
+            conversation.handed_over_to = staff
+            conversation.human_requested = False
+            return self._push(conversation, HandedOver(staff=staff))
+
+    def staff_reply(self, conversation: Conversation, text: str) -> StaffMessage:
+        """The Staff Member who has the conversation replies to the Customer."""
+        with conversation.lock:
+            staff = conversation.handed_over_to
+            if staff is None:
+                raise NotHandedOver()
+            # In the Agent's context too, marked as the Staff Member's, not the Agent's.
+            conversation.history.append(
+                {"role": "assistant", "content": f"[Staff Member {staff}] {text}"}
+            )
+            return self._push(conversation, StaffMessage(staff=staff, text=text))
+
+    def hand_back(self, conversation: Conversation) -> HandedBack:
+        """The Staff Member hands the conversation back: the Agent resumes, with what was
+        said during the takeover in its context."""
+        with conversation.lock:
+            staff = conversation.handed_over_to
+            if staff is None:
+                raise NotHandedOver()
+            conversation.handed_over_to = None
+            note = HANDED_BACK_NOTE.format(staff=staff)
+            conversation.history.append({"role": "system", "content": note})
+            return self._push(conversation, HandedBack())
+
+    def updates(self, conversation: Conversation, after: int) -> list[Event]:
+        return conversation.updates[after:]
+
+    def _push[E: Event](self, conversation: Conversation, event: E) -> E:
+        """Send the Customer an event outside their own turn."""
+        conversation.updates.append(event)
+        conversation.record.append(event)
+        return event
+
     def _turn(self, conversation: Conversation, text: str) -> Iterator[Event]:
         with conversation.lock:
             conversation.record.append(CustomerMessageEntry(text=text))
             conversation.pending = None  # a new request replaces an unanswered Plan card
-            # ...and changes a stopped Plan: the Planner re-plans knowing where it stopped,
-            # and whatever it plans needs a new Plan card. The old Confirmations are dropped.
+            conversation.history.append({"role": "user", "content": text})
+            if conversation.handed_over_to is not None:
+                # The message is the Staff Member's to answer: the Agent stays silent.
+                return
+            # A new request also changes a stopped Plan: the Planner re-plans knowing where
+            # it stopped, and whatever it plans needs a new Plan card. The old
+            # Confirmations are dropped.
             interrupted = interruption(conversation.paused)
             conversation.paused = None
-            conversation.history.append({"role": "user", "content": text})
             try:
                 bank, catalogue = conversation.bank, conversation.bank.catalogue()
             except (BankRefused, BankUnavailable):
@@ -296,6 +386,10 @@ class Conversations:
             )
             if isinstance(plan, planner.Declined):
                 yield from self._decline(conversation, plan, catalogue)
+                return
+            if isinstance(plan, planner.HumanAsked):
+                yield trace("intent", {"intent": "", "ask_for_human": True})
+                yield self._human_requested(conversation)
                 return
             yield trace("intent", {"intent": plan.intent})
             # Exact details first: run the Green look-ups a later step's input waits on,
@@ -320,6 +414,9 @@ class Conversations:
                     )
                     if isinstance(plan, planner.Declined):  # not on offer, but just in case
                         yield from self._decline(conversation, plan, catalogue)
+                        return
+                    if isinstance(plan, planner.HumanAsked):  # nor is this
+                        yield self._human_requested(conversation)
                         return
             try:
                 reviewed = reviewer.review(plan, bank)
@@ -346,8 +443,11 @@ class Conversations:
         """One turn: the Customer's answer to a prompt (a Plan card) in, the events out.
 
         Raises PlanNotPending straight away, before any event, if the Plan card isn't
-        waiting for an answer.
+        waiting for an answer, and AlreadyHandedOver while a Staff Member has the
+        conversation: the Agent starts no step then.
         """
+        if isinstance(action, AskForHuman):
+            return self._recorded(conversation, self._ask_for_human(conversation))
         if isinstance(action, StopPlan):
             # Not under the conversation's lock: the running Plan's turn holds it.
             self.stop(conversation, action.plan_id)
@@ -355,6 +455,8 @@ class Conversations:
         if isinstance(action, ResumePlan | CancelPlan):
             return self._answer_stopped(conversation, action)
         with conversation.lock:
+            if conversation.handed_over_to is not None:
+                raise AlreadyHandedOver(conversation.handed_over_to)
             pending = conversation.pending
             if pending is None or pending.plan_id != action.plan_id:
                 raise PlanNotPending(action.plan_id)
@@ -381,6 +483,8 @@ class Conversations:
         """Resume a stopped Plan, on the Confirmations the Customer gave it (the Plan
         hasn't changed), or cancel the rest of it. A change is a new message instead."""
         with conversation.lock:
+            if conversation.handed_over_to is not None:
+                raise AlreadyHandedOver(conversation.handed_over_to)
             paused = conversation.paused
             if paused is None or paused.plan_id != action.plan_id:
                 raise PlanNotPending(action.plan_id)
@@ -399,6 +503,10 @@ class Conversations:
 
         def resumed() -> Iterator[Event]:
             with conversation.lock:
+                if conversation.handed_over_to is not None:
+                    # Taken over since the Customer tapped resume: the Agent starts nothing.
+                    conversation.running = None
+                    return
                 yield from self._run_confirmed(
                     conversation,
                     paused.plan_id,
@@ -414,7 +522,11 @@ class Conversations:
 
     def stop(self, conversation: Conversation, plan_id: str) -> None:
         """The stop button: no further step of the running Plan starts; its turn ends with
-        `plan_paused`. Raises PlanNotRunning if that Plan isn't running."""
+        `plan_paused`. Raises PlanNotRunning if that Plan isn't running, and
+        AlreadyHandedOver while a Staff Member has the conversation (a takeover waits for a
+        running Plan's turn to end, so none runs then)."""
+        if conversation.handed_over_to is not None:
+            raise AlreadyHandedOver(conversation.handed_over_to)
         running = conversation.running
         if running is None or running.plan_id != plan_id:
             raise PlanNotRunning(plan_id)
@@ -435,6 +547,19 @@ class Conversations:
         conversation.history.append({"role": "assistant", "content": text})
         yield Refusal(reason=declined.reason, text=text)
 
+    def _ask_for_human(self, conversation: Conversation) -> Iterator[Event]:
+        with conversation.lock:
+            conversation.record.append(CustomerActionEntry(action="ask_for_human", plan_id=None))
+            if conversation.handed_over_to is not None:
+                return  # a Staff Member is already here
+            yield self._human_requested(conversation)
+
+    def _human_requested(self, conversation: Conversation) -> HumanRequested:
+        conversation.human_requested = True
+        text = HUMAN_REQUESTED[customer_language(conversation.history)]
+        conversation.history.append({"role": "assistant", "content": text})
+        return HumanRequested(text=text)
+
     def _rejected(self, conversation: Conversation) -> Iterator[Event]:
         with conversation.lock:
             text = REJECTED[customer_language(conversation.history)]
@@ -446,6 +571,10 @@ class Conversations:
     ) -> Iterator[Event]:
         """The Customer tapped confirm, with `removed` steps taken off the card first."""
         with conversation.lock:
+            if conversation.handed_over_to is not None:
+                # Taken over since the Customer confirmed: the Agent starts nothing.
+                conversation.running = None
+                return
             plan = pending.plan
             if removed:
                 # Tiers depend on order (an earlier transfer counts toward the Daily Transfer

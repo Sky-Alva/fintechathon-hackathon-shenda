@@ -17,6 +17,7 @@ from agent.model import ModelClient
 
 PLAN_TOOL = "propose_plan"
 DECLINE_TOOL = "decline_request"
+HUMAN_TOOL = "ask_for_human"
 MAX_OFFERED = 5
 """At most this many Operations are offered when a request is declined."""
 
@@ -35,6 +36,10 @@ The Bank decides each Operation's Permission Tier and whether it may run.
 Wealth Operations (product recommendations, risk assessment, subscribing or redeeming) and
 non-banking topics are out of scope: don't plan them. Call `{decline_tool}` instead, offering
 the few catalogue Operations most useful to this Customer.
+
+客户要求转人工、找真人客服或银行工作人员时，不要计划，改为调用 `{human_tool}`。
+When the Customer asks for a human (a Staff Member, "转人工", "a real person"), don't plan:
+call `{human_tool}` instead.
 
 如果某一步的输入要等另一步的查询结果才能确定（例如“把余额的一半转给老妈”），
 把它依赖的步骤写进 depends_on，未知的输入先空着；查询会先执行，然后再请你补全计划。
@@ -135,6 +140,10 @@ class Declined(BaseModel):
     can_do: list[str] = []
 
 
+class HumanAsked(BaseModel):
+    """The Customer asked for a human: nothing to plan."""
+
+
 class PlannerFailed(Exception):
     pass
 
@@ -209,6 +218,17 @@ def decline_tool(catalogue: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def human_tool() -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": HUMAN_TOOL,
+            "description": "The Customer asks for a human: call a Staff Member to the chat.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+
+
 def describe(catalogue: list[dict[str, Any]]) -> str:
     entries = [
         {
@@ -229,8 +249,9 @@ def make_plan(
     catalogue: list[dict[str, Any]],
     looked_up: list[dict[str, Any]] | None = None,
     interrupted: dict[str, Any] | None = None,
-) -> Plan | Declined:
-    """The Plan for the Customer's latest request, or why the Planner declines it.
+) -> Plan | Declined | HumanAsked:
+    """The Plan for the Customer's latest request, why the Planner declines it, or that
+    the Customer asked for a human.
 
     With `looked_up` (the Bank's results for the Plan's look-ups, which already ran), the
     rest of the Plan, with exact inputs; declining is no longer on offer then. With
@@ -238,7 +259,10 @@ def make_plan(
     previous Plan there, and the Planner re-plans from it.
     """
     system = SYSTEM_PROMPT.format(
-        plan_tool=PLAN_TOOL, decline_tool=DECLINE_TOOL, catalogue=describe(catalogue)
+        plan_tool=PLAN_TOOL,
+        decline_tool=DECLINE_TOOL,
+        human_tool=HUMAN_TOOL,
+        catalogue=describe(catalogue),
     )
     messages = [{"role": "system", "content": system}, *history]
     if interrupted:
@@ -246,7 +270,7 @@ def make_plan(
         messages.append(
             {"role": "system", "content": INTERRUPTED_PROMPT.format(interrupted=stopped)}
         )
-    tools = [plan_tool(catalogue), decline_tool(catalogue)]
+    tools = [plan_tool(catalogue), decline_tool(catalogue), human_tool()]
     if looked_up:
         results = json.dumps(looked_up, ensure_ascii=False)
         prompt = COMPLETE_PROMPT.format(plan_tool=PLAN_TOOL, results=results)
@@ -262,4 +286,6 @@ def make_plan(
             )
         if call.name == DECLINE_TOOL:
             return Declined.model_validate(call.arguments)
+        if call.name == HUMAN_TOOL:
+            return HumanAsked()
     raise PlannerFailed(f"the model did not propose a Plan: {reply.content!r}")

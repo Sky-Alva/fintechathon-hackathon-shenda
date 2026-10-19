@@ -52,6 +52,7 @@ export async function sendMessage(
 export type CustomerAction =
   | { action: 'confirm'; plan_id: string }
   | { action: 'reject'; plan_id: string }
+  | { action: 'ask_for_human' }
 
 /** Send a Customer action; `onEvent` gets each event of the turn as it streams in. */
 export async function sendAction(
@@ -60,6 +61,17 @@ export async function sendAction(
   onEvent: (event: ConversationEvent) => void,
 ): Promise<void> {
   await streamTurn(`/agent/conversations/${conversationId}/actions`, action, onEvent)
+}
+
+/** What the Customer was sent outside their own turns (a Staff Member taking over,
+ * replying, handing back), from the `after`-th on; poll again with `next`. */
+export async function fetchUpdates(
+  conversationId: string,
+  after: number,
+): Promise<{ events: ConversationEvent[]; next: number }> {
+  const response = await fetch(`/agent/conversations/${conversationId}/updates?after=${after}`)
+  if (!response.ok) throw new Error('无法读取新消息')
+  return response.json()
 }
 
 async function streamTurn(

@@ -75,7 +75,11 @@ export type SessionLocked = {
   locked_until: string
   text: string
 }
+// Emitted since #46. `human_requested` ends the Customer's turn; the takeover events
+// arrive outside the Customer's turns, from GET /conversations/{id}/updates.
+export type HumanRequested = { type: 'human_requested'; text: string }
 export type HandedOver = { type: 'handed_over'; staff: string }
+export type StaffMessage = { type: 'staff_message'; staff: string; text: string }
 export type HandedBack = { type: 'handed_back' }
 // Emitted since #34. Never carries a token, password or verification code.
 export type AuditEntry = {
@@ -113,12 +117,19 @@ export type ConversationEvent =
   | ClarificationQuestion
   | Refusal
   | SessionLocked
+  | HumanRequested
   | HandedOver
+  | StaffMessage
   | HandedBack
   | Trace
 
 // A conversation's history, as Staff Members read it (GET /staff/conversations/{id}):
 // each Customer message or action, then every event sent, the decision trace included.
 export type CustomerMessageEntry = { type: 'customer_message'; text: string }
-export type CustomerActionEntry = { type: 'customer_action'; action: string; plan_id: string }
+// `plan_id` is null for an action that answers no Plan card (`ask_for_human`).
+export type CustomerActionEntry = {
+  type: 'customer_action'
+  action: string
+  plan_id: string | null
+}
 export type HistoryEntry = CustomerMessageEntry | CustomerActionEntry | ConversationEvent
