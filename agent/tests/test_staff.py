@@ -36,11 +36,15 @@ def test_a_staff_member_sees_each_active_session_and_its_customer(
             "conversation_id": liming_conversation,
             "session_id": liming.session_id,
             "customer": {"customer_id": "CUST-LM", "name": "李明"},
+            "human_requested": False,
+            "handed_over_to": None,
         },
         {
             "conversation_id": hanmei_conversation,
             "session_id": hanmei.session_id,
             "customer": {"customer_id": "CUST-HM", "name": "韩梅梅"},
+            "human_requested": False,
+            "handed_over_to": None,
         },
     ]
 

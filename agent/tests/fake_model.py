@@ -70,3 +70,8 @@ def decline(reason: str, *can_do: str) -> ModelReply:
             )
         ]
     )
+
+
+def ask_for_human() -> ModelReply:
+    """The model reads the Customer's message as asking for a human."""
+    return ModelReply(tool_calls=[ToolCall(id="call-human", name="ask_for_human", arguments={})])
