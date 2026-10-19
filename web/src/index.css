@@ -207,6 +207,10 @@ input {
   color: #2e8b57;
 }
 
+.step.failed {
+  color: var(--brand);
+}
+
 .composer {
   display: flex;
   gap: 8px;

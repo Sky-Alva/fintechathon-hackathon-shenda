@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from agent import planner, responder, reviewer
-from agent.bank import BankSession, HttpClient
+from agent.bank import BankRefused, BankSession, BankUnavailable, HttpClient
 from agent.events import Answer, Event
 from agent.executor import StepResult, execute
 from agent.model import ModelClient
@@ -57,10 +57,18 @@ class Conversations:
         """One turn: the Customer's message in, the turn's events out."""
         with conversation.lock:
             conversation.history.append({"role": "user", "content": text})
-            plan = planner.make_plan(
-                self.model, conversation.history, conversation.bank.catalogue()
-            )
-            reviewed = reviewer.review(plan, conversation.bank)
+            try:
+                plan = planner.make_plan(
+                    self.model, conversation.history, conversation.bank.catalogue()
+                )
+                reviewed = reviewer.review(plan, conversation.bank)
+            except (BankRefused, BankUnavailable):
+                # Without the Bank there is nothing to plan from and nothing to state.
+                conversation.history.append(
+                    {"role": "assistant", "content": responder.NOT_RETRIEVED}
+                )
+                yield Answer(text=responder.NOT_RETRIEVED)
+                return
             if not reviewed.green_only:
                 # Yellow and Red steps need a Plan card first (#31).
                 raise NotImplementedError("Plans with Yellow or Red steps need a Plan card")

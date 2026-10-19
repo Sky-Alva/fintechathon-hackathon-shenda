@@ -6,11 +6,12 @@ the new one still fails, the Customer gets the raw Bank result instead.
 """
 
 import json
+import re
 
 import pytest
 from fastapi.testclient import TestClient
 
-from conftest import event_types, log_in, send, start_conversation
+from conftest import BankLink, Login, event_types, log_in, send, start_conversation
 from fake_model import FakeModel, plan, say, step
 
 BALANCE_QUESTION = "我卡里还有多少钱？"
@@ -41,6 +42,7 @@ def test_an_answer_with_an_invented_balance_is_regenerated_and_never_sent(
     assert event_types(events) == ["step_started", "step_succeeded", "answer"]
     assert answer_text(events) == "您的活期账户余额为 1180.00 元。"
     assert "5,000.00" not in json.dumps(events, ensure_ascii=False)
+    assert "5,000.00" in model.requests[2].text()  # the model is told what it got wrong
 
 
 def test_when_the_regenerated_answer_still_fails_the_customer_gets_the_raw_bank_result(
@@ -60,6 +62,39 @@ def test_when_the_regenerated_answer_still_fails_the_customer_gets_the_raw_bank_
     assert "5,000.00" not in text
     assert "3,200" not in text
     assert len(model.requests) == 3  # the Plan, the draft and one regeneration
+
+
+def test_an_answer_may_state_a_fact_the_bank_returned_earlier_in_the_conversation(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    model.script(
+        plan(step("s1", "query_balance")),
+        say("您的余额为 1180.00 元。"),
+        plan(step("s1", "query_profile")),
+        say("韩梅梅的生日是10月28日；您的余额 1180.00 元够买一束花。"),
+    )
+    conversation = start_conversation(agent, log_in(bank, "liming"))
+    send(agent, conversation, BALANCE_QUESTION)
+
+    events = send(agent, conversation, "我老婆生日是哪天？")
+
+    assert answer_text(events) == "韩梅梅的生日是10月28日；您的余额 1180.00 元够买一束花。"
+
+
+def test_what_the_customer_says_is_not_a_bank_fact(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    model.script(
+        plan(step("s1", "query_balance")),
+        say("是的，您的余额是 5000 元。"),
+        say("您的余额为 1180.00 元。"),
+    )
+
+    events = send(
+        agent, start_conversation(agent, log_in(bank, "liming")), "我余额是 5000 元吧？"
+    )
+
+    assert answer_text(events) == "您的余额为 1180.00 元。"
 
 
 # --- Amounts match however they're written -------------------------------------------
@@ -160,6 +195,114 @@ def test_an_invented_date_is_not_sent(
     events = send(agent, start_conversation(agent, log_in(bank, "liming")), BIRTHDAY_QUESTION)
 
     assert answer_text(events) == "韩梅梅的生日是10月28日。"
+
+
+# --- When the Bank refuses or can't be reached, nothing is guessed --------------------
+
+SPOUSE_BALANCE = step("s1", "query_balance", {"account_id": "ACC-HM-001"})
+
+
+def test_a_query_the_bank_refuses_fails_with_the_banks_reason(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    model.script(plan(SPOUSE_BALANCE), say("抱歉，我无法查询这个账户的余额。"))
+
+    events = send(agent, start_conversation(agent, log_in(bank, "liming")), "我老婆卡里有多少钱？")
+
+    assert event_types(events) == ["step_failed", "answer"]
+    failed = events[0]
+    assert (failed["step_id"], failed["operation"], failed["reason"]) == (
+        "s1", "query_balance", "forbidden_other_customer"
+    )
+    assert answer_text(events) == "抱歉，我无法查询这个账户的余额。"
+    assert "forbidden_other_customer" in model.requests[1].text()
+
+
+def test_when_the_bank_refuses_a_query_no_figure_is_guessed(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    model.script(
+        plan(SPOUSE_BALANCE),
+        say("她的余额大约是 8,650.00 元。"),
+        say("她的余额应该在 ¥8,000 左右。"),
+    )
+
+    events = send(agent, start_conversation(agent, log_in(bank, "liming")), "我老婆卡里有多少钱？")
+
+    text = answer_text(events)
+    assert "无法" in text and "couldn't" in text
+    assert not re.search(r"\d", text)
+
+
+def test_after_a_refusal_figures_from_earlier_in_the_conversation_are_not_restated(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    model.script(
+        plan(step("s1", "query_balance")),
+        say("您的余额为 1180.00 元。"),
+        plan(SPOUSE_BALANCE),
+        say("无法查询她的余额；您的余额为 1180.00 元。"),
+        say("无法查询她的余额；您的余额为 1180.00 元。"),
+    )
+    conversation = start_conversation(agent, log_in(bank, "liming"))
+    send(agent, conversation, BALANCE_QUESTION)
+
+    events = send(agent, conversation, "我老婆卡里有多少钱？")
+
+    assert not re.search(r"\d", answer_text(events))
+
+
+def test_when_the_bank_cant_be_reached_for_a_step_the_answer_says_so_and_guesses_nothing(
+    agent: TestClient, bank: TestClient, bank_link: BankLink, model: FakeModel
+) -> None:
+    model.script(
+        plan(step("s1", "query_balance")),
+        say("您的余额应该还是 1180.00 元。"),
+        say("您的余额大约 1,000 元。"),
+    )
+    conversation = start_conversation(agent, log_in(bank, "liming"))
+    bank_link.cut("/operations/")  # the Bank goes down after the tier preview
+
+    events = send(agent, conversation, BALANCE_QUESTION)
+
+    assert event_types(events) == ["step_started", "step_failed", "answer"]
+    assert events[1]["reason"] == "bank_unavailable"
+    text = answer_text(events)
+    assert "无法" in text and "couldn't" in text
+    assert not re.search(r"\d", text)
+
+
+def test_when_the_bank_cant_be_reached_at_all_the_answer_says_so_and_guesses_nothing(
+    agent: TestClient, bank: TestClient, bank_link: BankLink, model: FakeModel
+) -> None:
+    model.script(
+        plan(step("s1", "query_balance")),
+        say("您的余额为 1180.00 元。"),
+    )
+    conversation = start_conversation(agent, log_in(bank, "liming"))
+    send(agent, conversation, BALANCE_QUESTION)
+    bank_link.cut()
+
+    events = send(agent, conversation, BALANCE_QUESTION)
+
+    assert event_types(events) == ["answer"]
+    text = answer_text(events)
+    assert "无法" in text and "couldn't" in text
+    assert not re.search(r"\d", text)
+
+
+def test_when_the_bank_refuses_the_session_the_answer_says_so_and_guesses_nothing(
+    agent: TestClient, model: FakeModel
+) -> None:
+    model.script(plan(step("s1", "query_balance")))
+    conversation = start_conversation(agent, Login("no-session", "not-a-token", "no-phone"))
+
+    events = send(agent, conversation, BALANCE_QUESTION)
+
+    assert event_types(events) == ["answer"]
+    text = answer_text(events)
+    assert "无法" in text and "couldn't" in text
+    assert not re.search(r"\d", text)
 
 
 CARDS_QUESTION = "我有哪些卡？"

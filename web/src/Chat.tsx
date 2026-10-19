@@ -5,8 +5,16 @@ import type { ConversationEvent } from './events'
 type Item =
   | { kind: 'customer'; text: string }
   | { kind: 'agent'; text: string }
-  | { kind: 'step'; stepId: string; operation: string; done: boolean }
+  | { kind: 'step'; stepId: string; operation: string; status: StepStatus }
   | { kind: 'error'; text: string }
+
+type StepStatus = 'running' | 'done' | 'failed'
+
+const STEP_LABEL: Record<StepStatus, string> = {
+  running: '正在办理',
+  done: '已完成',
+  failed: '未能完成',
+}
 
 type Props = { customerName: string; conversationId: string; onLogOut: () => void }
 
@@ -17,19 +25,40 @@ function apply(items: Item[], event: ConversationEvent): Item[] {
     case 'step_started':
       return [
         ...items,
-        { kind: 'step', stepId: event.step.id, operation: event.step.operation, done: false },
+        {
+          kind: 'step',
+          stepId: event.step.id,
+          operation: event.step.operation,
+          status: 'running',
+        },
       ]
     case 'step_succeeded':
-      return items.map((item) =>
-        item.kind === 'step' && item.stepId === event.step_id && !item.done
-          ? { ...item, done: true }
-          : item,
+      return finish(items, event.step_id, 'done')
+    case 'step_failed': {
+      // A step the Bank's tier preview refused never started.
+      const started = items.some(
+        (item) => item.kind === 'step' && item.stepId === event.step_id && item.status === 'running',
       )
+      return started
+        ? finish(items, event.step_id, 'failed')
+        : [
+            ...items,
+            { kind: 'step', stepId: event.step_id, operation: event.operation, status: 'failed' },
+          ]
+    }
     case 'answer':
       return [...items, { kind: 'agent', text: event.text }]
     default:
       return items
   }
+}
+
+function finish(items: Item[], stepId: string, status: StepStatus): Item[] {
+  return items.map((item) =>
+    item.kind === 'step' && item.stepId === stepId && item.status === 'running'
+      ? { ...item, status }
+      : item,
+  )
 }
 
 export default function Chat({ customerName, conversationId, onLogOut }: Props) {
@@ -69,8 +98,8 @@ export default function Chat({ customerName, conversationId, onLogOut }: Props) 
       <main>
         {items.map((item, i) =>
           item.kind === 'step' ? (
-            <div key={i} className={`step ${item.done ? 'done' : ''}`}>
-              {item.done ? '已完成' : '正在办理'}：{item.operation}
+            <div key={i} className={`step ${item.status}`}>
+              {STEP_LABEL[item.status]}：{item.operation}
             </div>
           ) : (
             <div key={i} className={`bubble ${item.kind}`}>
