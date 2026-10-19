@@ -27,7 +27,10 @@ from agent.events import (
     HumanRequested,
     PlanPaused,
     PlanProposed,
+    PlanStep,
     Refusal,
+    ReversalOffered,
+    ReversalStep,
     SessionLocked,
     StaffMessage,
     Trace,
@@ -99,6 +102,17 @@ class PausedPlan:
 
 
 @dataclass
+class ReversalOffer:
+    """A failed Plan's completed reversible steps, offered for undoing, waiting for the
+    Customer's answer."""
+
+    plan_id: str
+    """The Plan that failed."""
+    steps: list[ReversalStep]
+    """In the order they would be undone: the reverse of the order they ran."""
+
+
+@dataclass
 class Conversation:
     conversation_id: str
     bank: BankSession
@@ -111,6 +125,10 @@ class Conversation:
     pending: PendingPlan | PendingVerification | PausedPlan | None = None
     """The prompt waiting for the Customer's answer: a Plan card, a Red step's
     verification, or a stopped Plan."""
+    reversal: ReversalOffer | None = None
+    """The offer to undo a failed Plan's completed steps, until the Customer answers it or
+    sends a new message. Apart from `pending`: a new Plan card for what's left of the goal
+    can wait at the same time."""
     running: RunningPlan | None = None
     """The confirmed Plan whose steps are running, from the Customer's tap until its turn
     ends."""
@@ -184,6 +202,16 @@ class WrongCode(BaseModel):
     failed_attempts: int = Field(ge=1)
 
 
+class ReverseSteps(BaseModel):
+    """Accept the reversal offer, for these of its steps: the undo becomes a new Plan
+    card."""
+
+    model_config = ConfigDict(extra="forbid")
+    action: Literal["reverse"]
+    plan_id: str
+    step_ids: list[str] = Field(min_length=1)
+
+
 class StopPlan(BaseModel):
     """The stop button: no further step of the Plan starts."""
 
@@ -214,6 +242,7 @@ CustomerAction = Annotated[
     | AskForHuman
     | VerifiedStep
     | WrongCode
+    | ReverseSteps
     | StopPlan
     | ResumePlan
     | CancelPlan,
@@ -237,6 +266,32 @@ CANCELLED: dict[Language, str] = {
     " already ran stay done.",
 }
 """The Agent's acknowledgement of a cancelled stopped Plan: the pause already said what ran."""
+
+NOT_REVERSED: dict[Language, str] = {
+    "zh": "好的，不撤销，已完成的步骤保持不变。",
+    "en": "OK, I won't undo anything: the steps that ran stay as they are.",
+}
+"""The Agent's acknowledgement of a declined reversal offer."""
+
+NO_CLEAN_UP = {"session_locked", "not_authenticated", "forbidden_other_customer"}
+"""Refusals after which nothing more is offered: under a Safety Lock only Green Operations
+run (the lock notice says so), a session the Bank no longer knows runs nothing, and another
+Customer's information is never looked for another way (#44)."""
+
+
+def reversal_text(numbers: list[str], language: Language) -> str:
+    """The offer to undo the card's steps with these numbers, in the order they'd be
+    undone."""
+    if language == "en":
+        steps = f"step{'s' if len(numbers) > 1 else ''} {', '.join(numbers)}"
+        return (
+            f"I can undo what already ran: {steps}, in that order. Shall I? Undoing is a new"
+            " Plan: you'll see its Plan card and approve it first. Otherwise they stay done."
+        )
+    return (
+        f"已完成的步骤可以撤销：按第 {'、'.join(numbers)} 步的顺序。需要撤销吗？"
+        "撤销是一个新的计划，会先给您看计划卡片并请您确认；不撤销则保持不变。"
+    )
 
 
 def plan_data(plan: ReviewedPlan, look_ups: bool = False) -> dict[str, Any]:
@@ -463,11 +518,12 @@ class Conversations:
             # whatever it plans needs a new Plan card, and the old Confirmations are dropped.
             interrupted = interruption(conversation.pending)
             conversation.pending = None
+            conversation.reversal = None  # declined by moving on: the steps stay done
             if conversation.handed_over_to is not None:
                 # The message is the Staff Member's to answer: the Agent stays silent.
                 return
             try:
-                bank, catalogue = conversation.bank, conversation.bank.catalogue()
+                catalogue = conversation.bank.catalogue()
             except (BankRefused, BankUnavailable):
                 yield self._not_retrieved(conversation)
                 return
@@ -475,75 +531,116 @@ class Conversations:
                 # A known scam is never planned: no model can be talked into it.
                 yield from self._manipulation(conversation, suspicion)
                 return
+            yield from self._plan(conversation, catalogue, interrupted=interrupted)
+
+    def _plan(
+        self,
+        conversation: Conversation,
+        catalogue: list[dict[str, Any]],
+        interrupted: dict[str, Any] | None = None,
+        failed: StepResult | None = None,
+        failed_context: dict[str, Any] | None = None,
+    ) -> Iterator[Event]:
+        """Ask the Planner for the Plan, then run its look-ups and propose it. With `failed`
+        (a step of the previous Plan that the Bank refused) and its `failed_context`, the
+        Planner re-plans what's left of the goal: the failed call itself is never planned
+        again as it was, and an empty Plan means there is nothing more to propose."""
+        bank = conversation.bank
+        language = customer_language(conversation.history)
+
+        def ask(
+            looked_up: list[StepResult] | None = None,
+        ) -> planner.Plan | planner.Declined | planner.HumanAsked:
             plan = planner.make_plan(
-                self.model, conversation.history, catalogue, interrupted=interrupted
+                self.model,
+                conversation.history,
+                catalogue,
+                [asdict(result) for result in looked_up] if looked_up else None,
+                interrupted=interrupted,
+                failed=failed_context,
             )
-            if isinstance(plan, planner.Declined):
-                yield from self._decline(conversation, plan, catalogue)
-                return
-            if isinstance(plan, planner.HumanAsked):
-                yield trace("intent", {"intent": "", "ask_for_human": True})
-                yield self._human_requested(conversation)
-                return
-            yield trace("intent", {"intent": plan.intent})
-            # Exact details first: run the Green look-ups a later step's input waits on,
-            # then have the Planner complete the Plan from what the Bank returned.
-            looked_up: list[StepResult] = []
-            look_ups = plan.look_ups(catalogue)
-            if look_ups is not None:
-                try:
-                    reviewed_look_ups = reviewer.review(look_ups, bank)
-                except (BankRefused, BankUnavailable):
-                    yield self._not_retrieved(conversation)
-                    return
-                yield trace("plan", plan_data(reviewed_look_ups, look_ups=True))
-                if reviewed_look_ups.other_customers:
-                    yield from self._other_customer(conversation, reviewed_look_ups)
-                    return
-                if reviewed_look_ups.green_only:  # the Bank agrees they need no approval
-                    yield from execute(reviewed_look_ups, bank, looked_up)
-                    plan = planner.make_plan(
-                        self.model,
-                        conversation.history,
-                        catalogue,
-                        [asdict(result) for result in looked_up],
-                        interrupted=interrupted,
-                    )
-                    if isinstance(plan, planner.Declined):  # not on offer, but just in case
-                        yield from self._decline(conversation, plan, catalogue)
-                        return
-                    if isinstance(plan, planner.HumanAsked):  # nor is this
-                        yield self._human_requested(conversation)
-                        return
+            if failed is None or not isinstance(plan, planner.Plan):
+                return plan
+            retried = (failed.operation, failed.input)
+            return plan.model_copy(
+                update={"steps": [s for s in plan.steps if (s.operation, s.input) != retried]}
+            )
+
+        plan = ask()
+        if isinstance(plan, planner.Declined):
+            yield from self._decline(conversation, plan, catalogue)
+            return
+        if isinstance(plan, planner.HumanAsked):
+            yield trace("intent", {"intent": "", "ask_for_human": True})
+            yield self._human_requested(conversation)
+            return
+        if failed is not None and not plan.steps:
+            return  # nothing else reaches the goal: the answer already said what happened
+        yield trace("intent", {"intent": plan.intent})
+        # Exact details first: run the Green look-ups a later step's input waits on,
+        # then have the Planner complete the Plan from what the Bank returned.
+        looked_up: list[StepResult] = []
+        look_ups = plan.look_ups(catalogue)
+        if look_ups is not None:
             try:
-                reviewed = reviewer.review(plan, bank)
+                reviewed_look_ups = reviewer.review(look_ups, bank, catalogue)
             except (BankRefused, BankUnavailable):
                 yield self._not_retrieved(conversation)
                 return
-            yield trace("plan", plan_data(reviewed))
-            if reviewed.other_customers:
-                yield from self._other_customer(conversation, reviewed)
+            yield trace("plan", plan_data(reviewed_look_ups, look_ups=True))
+            if reviewed_look_ups.other_customers:
+                yield from self._other_customer(conversation, reviewed_look_ups)
                 return
-            if (lock := reviewed.locked) is not None:
-                # Under a Safety Lock only Green Operations run: the notice, no Plan card.
-                yield self._locked(conversation, lock)
-                return
-            if reviewed.green_only:
-                yield from self._run(conversation, reviewed, looked_up)
-                return
-            pending = PendingPlan(conversation.next_plan_id(), reviewed, looked_up)
-            conversation.pending = pending
-            yield PlanProposed(
-                plan_id=pending.plan_id,
-                steps=reviewed.steps,
-                refusals=reviewed.card_refusals,
-                warnings=notices.red_warnings(
-                    reviewed.steps, catalogue, customer_language(conversation.history)
-                ),
-            )
-            yield ConfirmationRequested(
-                plan_id=pending.plan_id, step_ids=[step.id for step in reviewed.yellow_steps]
-            )
+            if reviewed_look_ups.green_only:  # the Bank agrees they need no approval
+                yield from execute(reviewed_look_ups, bank, looked_up, language=language)
+                plan = ask(looked_up)
+                if isinstance(plan, planner.Declined):  # not on offer, but just in case
+                    yield from self._decline(conversation, plan, catalogue)
+                    return
+                if isinstance(plan, planner.HumanAsked):  # nor is this
+                    yield self._human_requested(conversation)
+                    return
+                if failed is not None and not plan.steps:
+                    return
+        try:
+            reviewed = reviewer.review(plan, bank, catalogue)
+        except (BankRefused, BankUnavailable):
+            yield self._not_retrieved(conversation)
+            return
+        yield from self._propose(conversation, reviewed, looked_up, catalogue)
+
+    def _propose(
+        self,
+        conversation: Conversation,
+        reviewed: ReviewedPlan,
+        looked_up: list[StepResult],
+        catalogue: list[dict[str, Any]],
+    ) -> Iterator[Event]:
+        """The reviewed Plan's Plan card, or, if it needs none, its run."""
+        yield trace("plan", plan_data(reviewed))
+        if reviewed.other_customers:
+            yield from self._other_customer(conversation, reviewed)
+            return
+        if (lock := reviewed.locked) is not None:
+            # Under a Safety Lock only Green Operations run: the notice, no Plan card.
+            yield self._locked(conversation, lock)
+            return
+        if reviewed.green_only:
+            yield from self._run(conversation, reviewed, looked_up)
+            return
+        pending = PendingPlan(conversation.next_plan_id(), reviewed, looked_up)
+        conversation.pending = pending
+        yield PlanProposed(
+            plan_id=pending.plan_id,
+            steps=reviewed.steps,
+            refusals=reviewed.card_refusals,
+            warnings=notices.red_warnings(
+                reviewed.steps, catalogue, customer_language(conversation.history)
+            ),
+        )
+        yield ConfirmationRequested(
+            plan_id=pending.plan_id, step_ids=[step.id for step in reviewed.yellow_steps]
+        )
 
     def act(self, conversation: Conversation, action: CustomerAction) -> Iterator[Event]:
         """One turn: the Customer's answer to a prompt (a Plan card) in, the events out.
@@ -559,6 +656,13 @@ class Conversations:
         with conversation.lock:
             if conversation.handed_over_to is not None:
                 raise AlreadyHandedOver(conversation.handed_over_to)
+            offer = conversation.reversal
+            if isinstance(action, ReverseSteps) or (
+                isinstance(action, RejectPlan)
+                and offer is not None
+                and offer.plan_id == action.plan_id
+            ):
+                return self._answer_reversal(conversation, action)
             pending = conversation.pending
             if not answers(action, pending):
                 raise PlanNotPending(action.plan_id)
@@ -595,6 +699,63 @@ class Conversations:
             assert isinstance(pending, PendingPlan)
             turn = self._confirmed(conversation, pending, removed)
         return self._recorded(conversation, with_bank_traces(conversation.bank, turn))
+
+    def _answer_reversal(
+        self, conversation: Conversation, action: ReverseSteps | RejectPlan
+    ) -> Iterator[Event]:
+        """The Customer's answer to the reversal offer: undo these of its steps, as a new
+        Plan card, or (`reject`) nothing. Called under the conversation's lock."""
+        offer = conversation.reversal
+        if offer is None or offer.plan_id != action.plan_id:
+            raise PlanNotPending(action.plan_id)
+        chosen: list[ReversalStep] = []
+        if isinstance(action, ReverseSteps):
+            offered = {step.step_id for step in offer.steps}
+            if not set(action.step_ids) <= offered:
+                raise UnknownStep(sorted(set(action.step_ids) - offered))
+            chosen = [step for step in offer.steps if step.step_id in action.step_ids]
+        conversation.reversal = None  # an offer is answered once
+        conversation.record.append(
+            CustomerActionEntry(action=action.action, plan_id=action.plan_id)
+        )
+        if not chosen:
+            return self._recorded(conversation, self._not_reversed(conversation))
+        turn = self._reverse(conversation, chosen)
+        return self._recorded(conversation, with_bank_traces(conversation.bank, turn))
+
+    def _not_reversed(self, conversation: Conversation) -> Iterator[Event]:
+        with conversation.lock:
+            text = NOT_REVERSED[customer_language(conversation.history)]
+            conversation.history.append({"role": "assistant", "content": text})
+            yield Answer(text=text)
+
+    def _reverse(self, conversation: Conversation, chosen: list[ReversalStep]) -> Iterator[Event]:
+        """The accepted undo, as a new Plan: the Bank tiers it and it gets its own Plan card,
+        like any other. Nothing runs before the Customer approves it there."""
+        with conversation.lock:
+            if conversation.handed_over_to is not None:
+                return  # taken over since the Customer accepted: the Agent starts nothing
+            undo = planner.Plan(
+                intent="undo",
+                steps=[
+                    PlanStep(
+                        id=f"undo_{step.step_id}",
+                        operation=step.operation,
+                        input=step.input,
+                        depends_on=[],
+                    )
+                    for step in chosen
+                ],
+            )
+            try:
+                catalogue = conversation.bank.catalogue()
+                reviewed = reviewer.review(undo, conversation.bank, catalogue)
+            except (BankRefused, BankUnavailable):
+                yield self._not_retrieved(conversation)
+                return
+            conversation.pending = None  # the undo replaces an unanswered Plan card
+            yield trace("intent", {"intent": undo.intent})
+            yield from self._propose(conversation, reviewed, [], catalogue)
 
     def stop(self, conversation: Conversation, plan_id: str) -> Iterator[Event]:
         """The stop button. A running Plan starts no further step, and its own turn ends
@@ -657,8 +818,9 @@ class Conversations:
         """The Bank refused a step naming another Customer's account, card or the like
         (the spouse's balance): the Bank's reason, then a polite refusal. Nothing in the
         Plan runs and the Agent doesn't look for another way to the same information."""
+        language = customer_language(conversation.history)
         for step in plan.other_customers:
-            yield failed(step, plan.refusals[step.id], [])
+            yield failed(step, plan.refusals[step.id], [], language)
         text = refusals.other_customer(customer_language(conversation.history))
         conversation.history.append({"role": "assistant", "content": text})
         yield Refusal(reason="secret", text=text)
@@ -749,7 +911,8 @@ class Conversations:
             except reviewer.ConfirmationRefused as refused:
                 conversation.running = None  # nothing runs
                 results = list(pending.looked_up)
-                yield failed(refused.step, refused.refusal, results)
+                language = customer_language(conversation.history)
+                yield failed(refused.step, refused.refusal, results, language)
                 yield from self._finish(conversation, results)
                 return
             except BankUnavailable:
@@ -814,7 +977,8 @@ class Conversations:
             except (BankRefused, BankUnavailable):
                 preview = {}
             if (refusal := preview.get("refusal")) is not None:
-                yield failed(step, refusal, pending.results)
+                language = customer_language(conversation.history)
+                yield failed(step, refusal, pending.results, language)
                 yield from self._finish(conversation, pending.results)
                 return
             text = notices.wrong_code(failed_attempts, customer_language(conversation.history))
@@ -840,15 +1004,20 @@ class Conversations:
         tokens = confirmation_tokens or {}
         running = conversation.running
         stop = running.stop if running is not None and running.plan_id == plan_id else None
+        language = customer_language(conversation.history)
         halt = yield from execute(
-            plan, conversation.bank, results, tokens, verification_tokens, stop
+            plan, conversation.bank, results, tokens, verification_tokens, stop, language
         )
         conversation.running = None
-        if halt is None:
+        if halt is None or (halt.why == "failed" and (plan_id is None or card is None)):
             yield from self._finish(conversation, results)
             return
         assert plan_id is not None and card is not None, "only a confirmed Plan card halts"
         paused = halt.step
+        if halt.why == "failed":
+            not_run = plan.from_step(paused.id).steps[1:]
+            yield from self._failed(conversation, results, not_run, plan_id, card)
+            return
         if halt.why == "stop":
             remaining = plan.from_step(paused.id)
             unused = {step.id for step in remaining.steps}
@@ -860,12 +1029,14 @@ class Conversations:
         try:
             challenge = conversation.bank.request_verification(paused.operation, paused.input)
         except BankRefused as refused:
-            yield failed(paused, refused.body(), results)
-            yield from self._finish(conversation, results)
+            yield failed(paused, refused.body(), results, language)
+            not_run = plan.from_step(paused.id).steps[1:]
+            yield from self._failed(conversation, results, not_run, plan_id, card)
             return
         except BankUnavailable:
-            yield failed(paused, BANK_UNAVAILABLE, results)
-            yield from self._finish(conversation, results)
+            yield failed(paused, BANK_UNAVAILABLE, results, language)
+            not_run = plan.from_step(paused.id).steps[1:]
+            yield from self._failed(conversation, results, not_run, plan_id, card)
             return
         requested = VerificationRequested(
             plan_id=plan_id,
@@ -878,6 +1049,51 @@ class Conversations:
             plan_id, plan.from_step(paused.id), results, tokens, requested, card
         )
         yield requested
+
+    def _failed(
+        self,
+        conversation: Conversation,
+        results: list[StepResult],
+        not_run: list[PlanStep],
+        plan_id: str,
+        card: list[str],
+    ) -> Iterator[Event]:
+        """A step of a confirmed Plan failed (its `step_failed` is the last result): the
+        answer, the offer to undo the Plan's completed reversible steps, then a new Plan for
+        what's left of the goal (`not_run`: the steps after the failed one)."""
+        yield from self._finish(conversation, results)
+        failed_step = results[-1]
+        refusal = failed_step.refusal
+        assert refusal is not None, "the failed step is the last result"
+        if refusal["reason"] in NO_CLEAN_UP:
+            return
+        # The card's completed steps that can be undone, the last to run first.
+        done = [
+            (result.step_id, result.reversal)
+            for result in reversed(results)
+            if result.output is not None and result.reversal is not None and result.step_id in card
+        ]
+        if done:
+            offer = ReversalOffer(
+                plan_id, [ReversalStep(step_id=id, **reversal) for id, reversal in done]
+            )
+            conversation.reversal = offer
+            numbers = [str(card.index(id) + 1) for id, _ in done]
+            text = reversal_text(numbers, customer_language(conversation.history))
+            conversation.history.append({"role": "assistant", "content": text})
+            yield ReversalOffered(plan_id=plan_id, steps=offer.steps, text=text)
+        if refusal["reason"] == "bank_unavailable":
+            return  # nothing to re-plan around: the Bank can't be reached
+        try:
+            catalogue = conversation.bank.catalogue()
+        except (BankRefused, BankUnavailable):
+            return
+        context = {
+            "ran": [asdict(result) for result in results[:-1] if result.output is not None],
+            "failed": asdict(failed_step),
+            "not_run": [step.model_dump(mode="json", exclude={"tier"}) for step in not_run],
+        }
+        yield from self._plan(conversation, catalogue, failed=failed_step, failed_context=context)
 
     def _pause(self, conversation: Conversation, paused: PausedPlan) -> PlanPaused:
         """The Plan is stopped: tell the Customer which steps ran and which didn't, and

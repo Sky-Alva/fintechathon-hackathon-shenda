@@ -88,11 +88,36 @@ class VerificationRequested(BaseModel):
 
 class StepFailed(BankRefusal):
     """The step didn't run. `reason`, `message` and `detail` are the Bank's refusal,
-    unchanged, or `bank_unavailable` when the Agent couldn't reach the Bank."""
+    unchanged, or `bank_unavailable` when the Agent couldn't reach the Bank. `text` says
+    why in plain words, in the Customer's language, from `reason` alone."""
 
     type: Literal["step_failed"] = "step_failed"
     step_id: str
     operation: str
+    text: str
+
+
+class ReversalStep(BaseModel):
+    """How one completed step would be undone: the Operation that reverses it, with its
+    input, as the Bank said when the step ran."""
+
+    step_id: str
+    """The completed step it would undo."""
+    operation: str
+    input: dict[str, Any]
+
+
+class ReversalOffered(BaseModel):
+    """A step of the Plan failed: the Agent offers to undo its completed reversible steps,
+    in reverse order. Nothing is undone unless the Customer answers with `reverse`; an
+    accepted undo is a new Plan, with its own Plan card and Permission Tiers. `reject`
+    declines it: the steps stay done."""
+
+    type: Literal["reversal_offered"] = "reversal_offered"
+    plan_id: str
+    """The Plan that failed."""
+    steps: list[ReversalStep]
+    text: str
 
 
 class PlanPaused(BaseModel):
@@ -182,6 +207,7 @@ Event = (
     | PlanProposed
     | ConfirmationRequested
     | PlanPaused
+    | ReversalOffered
     | VerificationRequested
     | SessionLocked
     | HumanRequested

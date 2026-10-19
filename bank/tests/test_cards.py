@@ -465,6 +465,37 @@ def test_catalogue_declares_tiers_and_reversibility_of_the_card_operations(
     }
 
 
+def test_a_reversible_operations_result_says_which_call_undoes_it(client: TestClient) -> None:
+    headers = login(client, "liming")
+
+    locked = confirmed_call(
+        client, headers, "add_card_lock", {"card_id": LM_DEBIT, "scope": "online"}
+    )
+    lowered = confirmed_call(
+        client, headers, "lower_card_limit", {"card_id": LM_DEBIT, "new_limit": "2000"}
+    )
+
+    assert locked.json()["reversal"] == {
+        "operation": "lift_card_lock",
+        "input": {"card_id": LM_DEBIT, "scope": "online"},
+    }
+    assert lowered.json()["reversal"] == {
+        "operation": "raise_card_limit",
+        "input": {"card_id": LM_DEBIT, "new_limit": "5000.00"},
+    }
+
+
+def test_an_irreversible_or_read_only_operations_result_has_no_reversal(
+    client: TestClient,
+) -> None:
+    headers = login(client, "liming")
+
+    applied = confirmed_call(client, headers, "apply_virtual_card", {})
+
+    assert applied.json()["reversal"] is None
+    assert call(client, headers, "list_cards").json()["reversal"] is None
+
+
 # --- Audit and reset ----------------------------------------------------------------
 
 

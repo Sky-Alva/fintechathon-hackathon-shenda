@@ -88,7 +88,7 @@ Authorization: Bearer <session_token>
 | Yellow | `confirmation_token`, or a `verification_token` for the same call (e.g. one obtained while it was Red) |
 | Red | `verification_token`; a `confirmation_token` alone is refused with `needs_verification` |
 
-Success: `200 {"operation", "tier", "output"}`. Refusal: `{"refusal": {"reason", "message", "detail"}}`.
+Success: `200 {"operation", "tier", "output", "reversal"}`. `reversal` is the call that would undo it, `{"operation", "input"}`, built by the Operation's `ReversedBy` from this call's input and output (e.g. `add_card_lock` → `{"operation": "lift_card_lock", "input": {"card_id", "scope"}}`), or `null` for an irreversible or read-only Operation (#42). The Agent only offers it to the Customer; undoing is a new call, approved like any other. Refusal: `{"refusal": {"reason", "message", "detail"}}`.
 
 ### Tier preview
 

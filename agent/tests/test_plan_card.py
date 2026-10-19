@@ -274,6 +274,7 @@ def test_a_step_the_bank_refuses_streams_step_failed_with_the_banks_reason_and_t
             step("s3", "transfer", TO_MUM),
         ),
         say("已锁定该卡的全部交易；网上交易锁未能添加：该卡已锁定。转账未执行。"),
+        plan(),  # nothing else to propose for what's left (#42)
     )
     login = log_in(bank, "liming")
     conversation = start_conversation(agent, login)
@@ -283,7 +284,8 @@ def test_a_step_the_bank_refuses_streams_step_failed_with_the_banks_reason_and_t
     events = shown(act(agent, conversation, "confirm", plan_id=plan_id))
 
     assert event_types(events) == [
-        "step_started", "step_succeeded", "step_started", "step_failed", "answer"
+        "step_started", "step_succeeded", "step_started", "step_failed", "answer",
+        "reversal_offered",  # the first Card Lock ran and can be lifted (#42)
     ]
     failed = events[3]
     assert failed["step_id"] == "s2"
@@ -292,7 +294,7 @@ def test_a_step_the_bank_refuses_streams_step_failed_with_the_banks_reason_and_t
     assert failed["detail"]["locks"] == ["all"]
     ran = [e["operation"] for e in bank_audit(bank, login) if e["event"] == "operation"]
     assert ran == ["add_card_lock", "add_card_lock"]  # the second refused; no transfer
-    answering = model.requests[-1].text()
+    answering = model.requests[1].text()  # after the Plan; before the re-plan
     assert "invalid_input" in answering
 
 

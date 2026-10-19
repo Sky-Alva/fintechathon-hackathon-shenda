@@ -9,7 +9,7 @@ from typing import Any
 
 from agent.bank import BankRefused, BankSession
 from agent.events import PlanStep, StepRefusal
-from agent.planner import Plan
+from agent.planner import Plan, irreversible
 
 
 @dataclass(frozen=True)
@@ -99,8 +99,13 @@ def collect_confirmations(plan: ReviewedPlan, bank: BankSession) -> dict[str, st
     }
 
 
-def review(plan: Plan, bank: BankSession) -> ReviewedPlan:
-    ordered = plan.in_dependency_order()
+def review(
+    plan: Plan, bank: BankSession, catalogue: list[dict[str, Any]] | None = None
+) -> ReviewedPlan:
+    """The Plan in the order it will run, each step with the Bank's tier or refusal. With
+    the `catalogue`, irreversible Operations go as late as the dependencies allow; without
+    it the Plan keeps its order (a Plan reviewed before, with some steps removed)."""
+    ordered = plan.in_dependency_order(irreversible(catalogue or []))
     if not ordered:
         return ReviewedPlan(steps=[])
     preview = bank.tier_preview([{"operation": s.operation, "input": s.input} for s in ordered])

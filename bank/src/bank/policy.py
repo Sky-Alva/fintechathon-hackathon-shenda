@@ -26,6 +26,7 @@ from bank.registry import (
     Refusal,
     RefusalReason,
     Registry,
+    ReversedBy,
     Secret,
     Tier,
     markers,
@@ -52,10 +53,21 @@ class OperationRequest(BaseModel):
     verification_token: str | None = None
 
 
+class Reversal(BaseModel):
+    """The call that would undo an Operation that ran: the Operation its catalogue entry
+    names as `reversed_by`, with the input built from this call's input and output."""
+
+    operation: str
+    input: dict[str, Any]
+
+
 class OperationResult(BaseModel):
     operation: str
     tier: Tier
     output: dict[str, Any]
+    reversal: Reversal | None = None
+    """How to undo it, for a reversible Operation; None for an irreversible or read-only
+    one. The Agent only offers it: undoing is a new call, approved like any other."""
 
 
 class PlannedOperation(BaseModel):
@@ -203,7 +215,13 @@ def run(
     _audit(conn, session, now, Event.OPERATION, call, None, detail)
     _trip_safety_lock(conn, session, now)
     output_json = output.model_dump(mode="json")
-    return OperationResult(operation=name, tier=resolved.tier, output=output_json)
+    reversal = None
+    if isinstance(reversibility := resolved.operation.reversibility, ReversedBy):
+        undo = reversibility.build_input(resolved.validated, output)
+        reversal = Reversal(operation=reversibility.operation, input=undo.model_dump(mode="json"))
+    return OperationResult(
+        operation=name, tier=resolved.tier, output=output_json, reversal=reversal
+    )
 
 
 def preview_tiers(
