@@ -50,9 +50,15 @@ export async function sendMessage(
 
 /** The Customer's answer to a prompt, e.g. a tap on a Plan card. */
 export type CustomerAction =
-  | { action: 'confirm'; plan_id: string }
+  // `removed_step_ids`: steps the Customer took off the card; the Bank re-tiers the rest.
+  | { action: 'confirm'; plan_id: string; removed_step_ids?: string[] }
   | { action: 'reject'; plan_id: string }
   | { action: 'ask_for_human' }
+  // The stop button, sent alongside the running Plan's turn: that turn ends with plan_paused.
+  // A Plan waiting for verification is paused at once: the stop's own events say so.
+  | { action: 'stop'; plan_id: string }
+  | { action: 'resume'; plan_id: string }
+  | { action: 'cancel'; plan_id: string }
   // The phone got this token from the Bank for the right code (#37); never the code.
   | { action: 'verified'; plan_id: string; step_id: string; verification_token: string }
   // The Bank refused the code typed into the phone; the Agent checks the lock itself.

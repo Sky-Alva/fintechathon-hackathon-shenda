@@ -72,6 +72,20 @@ def decline(reason: str, *can_do: str) -> ModelReply:
     )
 
 
+def suspect(kind: str) -> ModelReply:
+    """The model declines the request as a suspected manipulation attempt of this kind
+    (`impersonation` or `injection`)."""
+    return ModelReply(
+        tool_calls=[
+            ToolCall(
+                id="call-decline",
+                name="decline_request",
+                arguments={"reason": "manipulation", "kind": kind, "can_do": []},
+            )
+        ]
+    )
+
+
 def ask_for_human() -> ModelReply:
     """The model reads the Customer's message as asking for a human."""
     return ModelReply(tool_calls=[ToolCall(id="call-human", name="ask_for_human", arguments={})])

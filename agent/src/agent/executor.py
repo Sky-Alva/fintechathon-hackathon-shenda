@@ -1,8 +1,9 @@
 """The Executor: runs a reviewed Plan's steps against the Bank, in order, as events."""
 
+import threading
 from collections.abc import Generator, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from agent.bank import BankRefused, BankSession, BankUnavailable
 from agent.events import Event, PlanStep, StepFailed, StepStarted, StepSucceeded
@@ -31,13 +32,24 @@ class StepResult:
     refusal: dict[str, Any] | None = None
 
 
+@dataclass(frozen=True)
+class Halt:
+    """Where a Plan paused before running all its steps: `step` is the first not yet run."""
+
+    step: PlanStep
+    why: Literal["verification", "stop"]
+    """`verification`: the step is Red and needs its Strong Verification first. `stop`: the
+    Customer tapped stop."""
+
+
 def execute(
     plan: ReviewedPlan,
     bank: BankSession,
     results: list[StepResult],
     confirmation_tokens: Mapping[str, str] | None = None,
     verification_tokens: Mapping[str, str] | None = None,
-) -> Generator[Event, None, PlanStep | None]:
+    stop: threading.Event | None = None,
+) -> Generator[Event, None, Halt | None]:
     """Run the steps in order, appending each Bank result to `results`.
 
     A step the tier preview refused is never sent to the Bank; the steps after it still
@@ -47,16 +59,20 @@ def execute(
     the Strong Verification of each Red step.
 
     Nothing Red runs without its verification token: the Plan pauses at the first Red
-    step that has none, and that step is returned, not yet run. Otherwise returns None.
+    step that has none. Once `stop` is set (the Customer tapped stop), no further step
+    starts; a step already with the Bank finishes. Either way the Plan's Halt is
+    returned. Otherwise returns None.
     """
     confirmations = confirmation_tokens or {}
     verifications = verification_tokens or {}
     for step in plan.steps:
+        if stop is not None and stop.is_set():
+            return Halt(step, "stop")
         if (refusal := plan.refusals.get(step.id)) is not None:
             yield failed(step, refusal, results)
             continue
         if step.tier == "red" and step.id not in verifications:
-            return step
+            return Halt(step, "verification")
         yield StepStarted(step=step)
         try:
             result = bank.call(

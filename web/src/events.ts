@@ -27,7 +27,7 @@ export type StepSucceeded = {
   output: Record<string, unknown>
 }
 export type Answer = { type: 'answer'; text: string }
-// Emitted for 'out_of_scope' since #33; 'manipulation' (#43) and 'secret' (#44) reserved.
+// Emitted for 'out_of_scope' since #33 and 'manipulation' since #43; 'secret' (#44) reserved.
 export type Refusal = {
   type: 'refusal'
   reason: 'out_of_scope' | 'manipulation' | 'secret'
@@ -52,6 +52,15 @@ export type ConfirmationRequested = {
   type: 'confirmation_requested'
   plan_id: string
   step_ids: string[]
+}
+// Emitted since #38: the Customer tapped stop. `ran` / `not_run` are card step IDs; `text`
+// names them by their number on the card. Answered with resume or cancel, or a new message.
+export type PlanPaused = {
+  type: 'plan_paused'
+  plan_id: string
+  ran: string[]
+  not_run: string[]
+  text: string
 }
 // `reason` is the Bank's refusal reason, or 'bank_unavailable' when the Agent couldn't
 // reach the Bank (#32).
@@ -103,11 +112,15 @@ export type AuditEntry = {
   reason: string | null
   detail: Record<string, unknown>
 }
+export type Declined =
+  | { reason: 'out_of_scope' | 'secret'; can_do: string[] }
+  | { reason: 'manipulation'; kind: 'impersonation' | 'injection'; evidence: string }
 export type Trace = { type: 'trace' } & (
   | {
       stage: 'intent'
-      // `declined`: the Planner declined the request instead of planning it.
-      data: { intent: string; declined?: { reason: Refusal['reason']; can_do: string[] } }
+      // `declined`: the Planner (or the manipulation guard) declined the request instead
+      // of planning it: what it offered instead, or the suspected attempt it reported.
+      data: { intent: string; declined?: Declined }
     }
   | { stage: 'plan'; data: { steps: PlanStep[] } }
   | { stage: 'bank_request'; data: { method: string; path: string; body: unknown } }
@@ -121,6 +134,7 @@ export type ConversationEvent =
   | Answer
   | PlanProposed
   | ConfirmationRequested
+  | PlanPaused
   | VerificationRequested
   | StepFailed
   | ReversalOffered
