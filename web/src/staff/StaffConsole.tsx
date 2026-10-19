@@ -3,6 +3,7 @@
 // conversation over from the Agent, replying and handing it back. It only displays what the
 // Agent and the Bank return, so it is checked by hand.
 import { type FormEvent, useCallback, useEffect, useState } from 'react'
+import { describeDeclined } from '../declined'
 import type { HistoryEntry, Trace } from '../events'
 import {
   type AuditEntry,
@@ -116,8 +117,7 @@ function TraceEntry({ entry }: { entry: Trace }) {
     case 'intent':
       return entry.data.declined ? (
         <>
-          <b>理解意图</b> 拒绝（{entry.data.declined.reason}），可办理：
-          {entry.data.declined.can_do.join('、')}
+          <b>理解意图</b> {describeDeclined(entry.data.declined)}
         </>
       ) : (
         <>

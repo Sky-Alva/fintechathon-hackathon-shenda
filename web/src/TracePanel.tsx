@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { fetchAuditTrail } from './api'
+import { describeDeclined } from './declined'
 import type { AuditEntry, PlanStep, Trace } from './events'
 
 /** One Customer turn and the `trace` events it streamed, in order. */
@@ -74,7 +75,7 @@ function TraceItem({ trace }: { trace: Trace }) {
           <span className="trace-label">意图 Intent</span>
           <span>
             {trace.data.declined
-              ? `已拒绝（${trace.data.declined.reason}），可改为：${trace.data.declined.can_do.join('、')}`
+              ? describeDeclined(trace.data.declined)
               : trace.data.intent || '（未说明）'}
           </span>
         </div>
