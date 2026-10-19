@@ -242,6 +242,72 @@ def test_three_scripted_wrong_codes_lock_the_session_and_the_red_step_never_runs
     assert result.log[2:] == ["Agent: verification of s2 -> wrong_code"] * 3
 
 
+LOCK_ALL = {"card_id": "CARD-LM-001", "scope": "all"}
+
+
+def two_locks_task(directory: Path, approvals: list[dict[str, str]], **expect: Any) -> Path:
+    """Lock a card for everything, then for online payments: the Bank refuses the second
+    (already locked), and the Agent offers to lift the first."""
+    return write_task(
+        directory,
+        turns=["把工商卡全部锁了，网上交易也锁上"],
+        approvals=approvals,
+        expect={"operations_run": [{"name": "add_card_lock", "input": LOCK_ALL}], **expect},
+    )
+
+
+def two_locks() -> Any:
+    return plan(
+        step("s1", "add_card_lock", LOCK_ALL),
+        step("s2", "add_card_lock", {"card_id": "CARD-LM-001", "scope": "online"}),
+    )
+
+
+def test_a_scripted_reversal_is_accepted_and_goes_through_its_own_plan_card(
+    agent: TestClient, bank: TestClient, model: FakeModel, tmp_path: Path
+) -> None:
+    model.script(two_locks(), say("已锁定全部交易；网上交易锁未添加。"), plan(), say("已解除锁定。"))
+    approvals = [
+        {"confirmation": "approve"},
+        {"reversal": "accept"},
+        {"verification": "correct_code"},
+    ]
+    task = two_locks_task(
+        tmp_path,
+        approvals,
+        operations_run=[
+            {"name": "add_card_lock", "input": LOCK_ALL},
+            {"name": "lift_card_lock", "input": LOCK_ALL},
+        ],
+    )
+
+    result = run(task, agent, bank)
+
+    assert result.failures == []
+    assert result.log[1:] == [
+        "Agent: confirmation of ['s1', 's2'] -> approve",
+        "Agent: reversal of ['s1'] -> accept",
+        "Agent: Plan card with no Yellow step -> confirm",
+        "Agent: verification of undo_s1 -> correct_code",
+    ]
+
+
+def test_a_reversal_offer_the_script_does_not_answer_is_declined(
+    agent: TestClient, bank: TestClient, model: FakeModel, tmp_path: Path
+) -> None:
+    model.script(two_locks(), say("已锁定全部交易；网上交易锁未添加。"), plan())
+    task = two_locks_task(
+        tmp_path,
+        [{"confirmation": "approve"}],
+        operations_not_run=[{"name": "lift_card_lock"}],
+    )
+
+    result = run(task, agent, bank)
+
+    assert result.failures == []
+    assert result.log[2:] == ["Agent: reversal of ['s1'] -> decline (unscripted)"]
+
+
 def test_two_identical_expected_runs_need_two_runs(
     agent: TestClient, bank: TestClient, model: FakeModel, tmp_path: Path
 ) -> None:

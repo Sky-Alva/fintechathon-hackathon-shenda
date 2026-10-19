@@ -146,6 +146,8 @@ class _Run:
                 events = self.answer_card(prompt)
             elif prompt["type"] == "verification_requested":
                 events = self.answer_verification(prompt)
+            elif prompt["type"] == "reversal_offered":
+                events = self.answer_reversal(prompt)
             else:
                 return
         raise RunError(f"the Agent asked more than {MAX_PROMPTS_PER_TURN} times in one turn")
@@ -168,6 +170,15 @@ class _Run:
             f"Agent: confirmation of {prompt['step_ids']} -> {answer or 'reject (unscripted)'}"
         )
         return self.act("confirm" if answer == "approve" else "reject", plan_id=plan_id)
+
+    def answer_reversal(self, prompt: dict[str, Any]) -> list[dict[str, Any]]:
+        """Accept the offer to undo every step it lists, or decline it."""
+        answer = self.take("reversal")
+        step_ids = [step["step_id"] for step in prompt["steps"]]
+        self.log(f"Agent: reversal of {step_ids} -> {answer or 'decline (unscripted)'}")
+        if answer == "accept":
+            return self.act("reverse", plan_id=prompt["plan_id"], step_ids=step_ids)
+        return self.act("reject", plan_id=prompt["plan_id"])
 
     def answer_verification(self, prompt: dict[str, Any]) -> list[dict[str, Any]]:
         answer = self.take("verification")

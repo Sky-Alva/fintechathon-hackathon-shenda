@@ -63,8 +63,13 @@ export type PlanPaused = {
   text: string
 }
 // `reason` is the Bank's refusal reason, or 'bank_unavailable' when the Agent couldn't
-// reach the Bank (#32).
-export type StepFailed = BankRefusal & { type: 'step_failed'; step_id: string; operation: string }
+// reach the Bank (#32); `text` explains it in plain words, from `reason` alone (#42).
+export type StepFailed = BankRefusal & {
+  type: 'step_failed'
+  step_id: string
+  operation: string
+  text: string
+}
 
 // Emitted since #37: a Red step waits for the code typed into the simulated phone, and
 // the Safety Lock notice (ends the turn).
@@ -83,12 +88,16 @@ export type SessionLocked = {
   text: string
 }
 
-// Reserved: proposed payloads, refined by the ticket that first emits each one.
+// Emitted since #42: a step of the Plan failed; undo its completed steps (last-run first)?
+// Answered with reverse (a new Plan card) or reject, or dropped by a new message.
 export type ReversalOffered = {
   type: 'reversal_offered'
   plan_id: string
   steps: { step_id: string; operation: string; input: Record<string, unknown> }[]
+  text: string
 }
+
+// Reserved: proposed payloads, refined by the ticket that first emits each one.
 export type ClarificationQuestion = {
   type: 'clarification_question'
   text: string

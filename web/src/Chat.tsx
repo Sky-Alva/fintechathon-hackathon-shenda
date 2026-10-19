@@ -39,6 +39,7 @@ type Item =
       status: PlanCardStatus
     }
   | { kind: 'paused'; planId: string; text: string; status: PausedStatus }
+  | { kind: 'reversal'; planId: string; text: string; stepIds: string[]; status: ReversalStatus }
   | { kind: 'error'; text: string }
 
 /** A stopped Plan: waiting → resumed | cancelled, or changed by the Customer's next message. */
@@ -48,6 +49,16 @@ const PAUSED_STATUS_TEXT: Record<Exclude<PausedStatus, 'waiting'>, string> = {
   resumed: '已继续',
   cancelled: '已取消剩余步骤',
   changed: '已修改，需重新确认',
+}
+
+/** An offer to undo a failed Plan's completed steps: offered → accepted | declined, or
+ * dropped by the Customer's next message (the steps stay done). */
+type ReversalStatus = 'offered' | 'accepted' | 'declined' | 'dropped'
+
+const REVERSAL_STATUS_TEXT: Record<Exclude<ReversalStatus, 'offered'>, string> = {
+  accepted: '已选择撤销，请查看新的计划',
+  declined: '不撤销，保持不变',
+  dropped: '未撤销',
 }
 
 type StepStatus = 'running' | 'done' | 'failed'
@@ -95,7 +106,9 @@ function apply(items: Item[], event: ConversationEvent): Item[] {
     case 'step_succeeded':
       return settle(items, event.step_id, { status: 'done' })
     case 'step_failed': {
-      const settled = settle(items, event.step_id, { status: 'failed', failure: event.message })
+      // The Agent's plain words for the Bank's reason (#42), else the Bank's own message.
+      const failure = event.text ?? event.message
+      const settled = settle(items, event.step_id, { status: 'failed', failure })
       // Refused before it started (by the tier preview, or its Confirmation): show it anyway.
       return settled !== items
         ? settled
@@ -106,7 +119,7 @@ function apply(items: Item[], event: ConversationEvent): Item[] {
               stepId: event.step_id,
               operation: event.operation,
               status: 'failed',
-              failure: event.message,
+              failure,
             },
           ]
     }
@@ -133,6 +146,17 @@ function apply(items: Item[], event: ConversationEvent): Item[] {
       return [
         ...items,
         { kind: 'paused', planId: event.plan_id, text: event.text, status: 'waiting' },
+      ]
+    case 'reversal_offered':
+      return [
+        ...items,
+        {
+          kind: 'reversal',
+          planId: event.plan_id,
+          text: event.text,
+          stepIds: event.steps.map((step) => step.step_id),
+          status: 'offered',
+        },
       ]
     case 'answer':
     case 'refusal':
@@ -162,6 +186,7 @@ function replaceWaitingPlans(items: Item[]): Item[] {
   return items.map((item) => {
     if (item.kind === 'plan' && item.status === 'awaiting') return { ...item, status: 'replaced' }
     if (item.kind === 'paused' && item.status === 'waiting') return { ...item, status: 'changed' }
+    if (item.kind === 'reversal' && item.status === 'offered') return { ...item, status: 'dropped' }
     return item
   })
 }
@@ -317,6 +342,23 @@ export default function Chat({
       )
   }
 
+  /** Undo a failed Plan's completed steps (a new Plan card comes back), or leave them. */
+  async function answerReversal(planId: string, stepIds: string[], accept: boolean) {
+    if (busy) return
+    const status: ReversalStatus = accept ? 'accepted' : 'declined'
+    setItems((current) =>
+      current.map((item) =>
+        item.kind === 'reversal' && item.planId === planId ? { ...item, status } : item,
+      ),
+    )
+    const action: CustomerAction = accept
+      ? { action: 'reverse', plan_id: planId, step_ids: stepIds }
+      : { action: 'reject', plan_id: planId }
+    await runTurn(accept ? '（撤销已完成的步骤）' : '（不撤销）', (onEvent) =>
+      sendAction(conversationId, action, onEvent),
+    )
+  }
+
   /** The simulated phone got a verification token from the Bank for the right code: the
    * Plan runs on from its Red step, and can be stopped. */
   async function verified(waiting: VerificationRequested, token: string) {
@@ -447,6 +489,34 @@ export default function Chat({
                     </div>
                   ) : (
                     <div className="plan-status">{PAUSED_STATUS_TEXT[item.status]}</div>
+                  )}
+                </div>
+              )
+            case 'reversal':
+              return (
+                <div key={i} className="paused-card">
+                  <div>{item.text}</div>
+                  {item.status === 'offered' ? (
+                    <div className="plan-actions">
+                      <button
+                        type="button"
+                        className="secondary"
+                        disabled={busy || staffMember !== null}
+                        onClick={() => answerReversal(item.planId, item.stepIds, false)}
+                      >
+                        不撤销
+                      </button>
+                      <button
+                        type="button"
+                        className="primary"
+                        disabled={busy || staffMember !== null}
+                        onClick={() => answerReversal(item.planId, item.stepIds, true)}
+                      >
+                        撤销
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="plan-status">{REVERSAL_STATUS_TEXT[item.status]}</div>
                   )}
                 </div>
               )
