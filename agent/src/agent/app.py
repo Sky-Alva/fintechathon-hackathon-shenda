@@ -2,6 +2,7 @@
 
     POST /conversations {session_token}            -> {conversation_id}
     POST /conversations/{id}/messages {text}       -> the turn's events, as NDJSON
+    POST /conversations/{id}/actions {action, ...} -> the turn's events, as NDJSON
     GET  /conversations/{id}/audit-trail           -> a `trace` event: the session's audit trail
 
 For Staff Members, with the Agent's own staff key (X-Staff-Key):
@@ -29,7 +30,9 @@ from agent.conversation import (
     AlreadyHandedOver,
     Conversation,
     Conversations,
+    CustomerAction,
     NotHandedOver,
+    PlanNotPending,
     UnknownConversation,
 )
 from agent.events import Event, HandedBack, HandedOver, StaffMessage, Trace
@@ -85,6 +88,10 @@ def create_app(bank: HttpClient, model: ModelClient, staff_key: str) -> FastAPI:
     async def on_unknown(_: Request, error: UnknownConversation) -> JSONResponse:
         return JSONResponse(status_code=404, content={"error": "unknown_conversation"})
 
+    @app.exception_handler(PlanNotPending)
+    async def on_not_pending(_: Request, error: PlanNotPending) -> JSONResponse:
+        return JSONResponse(status_code=409, content={"error": "plan_not_pending"})
+
     @app.exception_handler(BankUnavailable)
     async def on_bank_unavailable(_: Request, error: BankUnavailable) -> JSONResponse:
         # Outside a turn (starting a conversation, the staff views): say so, guess nothing.
@@ -126,6 +133,15 @@ def create_app(bank: HttpClient, model: ModelClient, staff_key: str) -> FastAPI:
         conversation = conversations.get(conversation_id)
         return StreamingResponse(
             ndjson(conversations.send(conversation, body.text)),
+            media_type="application/x-ndjson",
+            headers={"X-Accel-Buffering": "no"},
+        )
+
+    @app.post("/conversations/{conversation_id}/actions")
+    def send_action(conversation_id: str, body: CustomerAction) -> StreamingResponse:
+        conversation = conversations.get(conversation_id)
+        return StreamingResponse(
+            ndjson(conversations.act(conversation, body)),
             media_type="application/x-ndjson",
             headers={"X-Accel-Buffering": "no"},
         )

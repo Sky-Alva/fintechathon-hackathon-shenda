@@ -175,6 +175,13 @@ function AgentEntry({ entry }: { entry: HistoryEntry }) {
           <b>客户</b> {entry.text}
         </>
       )
+    case 'customer_action':
+      return (
+        <>
+          <b>客户操作</b> {entry.action === 'confirm' ? '确认' : entry.action === 'reject' ? '拒绝' : entry.action}计划{' '}
+          <code>{entry.plan_id}</code>
+        </>
+      )
     case 'answer':
       return (
         <>

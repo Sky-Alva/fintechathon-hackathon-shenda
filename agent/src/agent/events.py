@@ -32,16 +32,43 @@ class StepSucceeded(BaseModel):
     output: dict[str, Any]
 
 
-class StepFailed(BaseModel):
+class BankRefusal(BaseModel):
+    """A refusal from the Bank, unchanged: one of its refusal reasons, with its detail."""
+
+    reason: str
+    message: str
+    detail: dict[str, Any]
+
+
+class StepRefusal(BankRefusal):
+    step_id: str
+
+
+class PlanProposed(BaseModel):
+    """A Plan card: the Plan has a Yellow or Red step. `steps` are in the order they will
+    run, each with the Bank's tier; `refusals` are steps the tier preview says can't run."""
+
+    type: Literal["plan_proposed"] = "plan_proposed"
+    plan_id: str
+    steps: list[PlanStep]
+    refusals: list[StepRefusal]
+
+
+class ConfirmationRequested(BaseModel):
+    """Ask the Customer to confirm every Yellow step of the Plan card with one tap."""
+
+    type: Literal["confirmation_requested"] = "confirmation_requested"
+    plan_id: str
+    step_ids: list[str]
+
+
+class StepFailed(BankRefusal):
     """The step didn't run. `reason`, `message` and `detail` are the Bank's refusal,
     unchanged, or `bank_unavailable` when the Agent couldn't reach the Bank."""
 
     type: Literal["step_failed"] = "step_failed"
     step_id: str
     operation: str
-    reason: str
-    message: str
-    detail: dict[str, Any]
 
 
 class Answer(BaseModel):
@@ -94,6 +121,8 @@ Event = (
     | StepFailed
     | Answer
     | Refusal
+    | PlanProposed
+    | ConfirmationRequested
     | HandedOver
     | StaffMessage
     | HandedBack
@@ -101,8 +130,8 @@ Event = (
 )
 
 
-# A conversation's history, as Staff Members read it: each Customer message, then every
-# event the Customer was sent (the decision trace included), in order.
+# A conversation's history, as Staff Members read it: each Customer message or action,
+# then every event the Customer was sent (the decision trace included), in order.
 
 
 class CustomerMessageEntry(BaseModel):
@@ -110,4 +139,13 @@ class CustomerMessageEntry(BaseModel):
     text: str
 
 
-HistoryEntry = CustomerMessageEntry | Event
+class CustomerActionEntry(BaseModel):
+    """The Customer's answer to a prompt: which action, on which Plan card. Never the
+    action's other fields, so no token reaches the history."""
+
+    type: Literal["customer_action"] = "customer_action"
+    action: str
+    plan_id: str
+
+
+HistoryEntry = CustomerMessageEntry | CustomerActionEntry | Event

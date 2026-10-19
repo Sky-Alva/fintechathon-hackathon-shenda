@@ -8,6 +8,7 @@ from conftest import (
     ADMIN_KEY,
     BankLink,
     STAFF_KEY,
+    act,
     admin,
     event_types,
     log_in,
@@ -183,6 +184,49 @@ def test_a_declined_request_shows_the_refusal_and_no_plan(
     assert entries == [{"type": "customer_message", "text": "帮我买点基金"}, *events]
     assert event_types(events) == ["refusal"]
     assert traces(entries, "plan") == []
+
+
+TO_MUM = {"payee_id": "PAY-LM-002", "amount": "200.00", "note": ""}
+
+
+def test_a_confirmed_plan_card_shows_the_customers_action_then_everything_it_sent(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    model.script(plan(step("s1", "transfer", TO_MUM)), say("已向王秀英转账 200.00 元。"))
+    conversation = start_conversation(agent, log_in(bank, "liming"))
+    card = send(agent, conversation, "给老妈转200")
+    plan_id = card[-1]["plan_id"]
+    confirmed = act(agent, conversation, "confirm", plan_id=plan_id)
+
+    entries = staff(agent, f"/staff/conversations/{conversation}")["entries"]
+
+    assert entries == [
+        {"type": "customer_message", "text": "给老妈转200"},
+        *card,
+        {"type": "customer_action", "action": "confirm", "plan_id": plan_id},
+        *confirmed,
+    ]
+    assert [(r["method"], r["path"]) for r in traces(confirmed, "bank_request")] == [
+        ("POST", "/confirmations"),
+        ("POST", "/operations/transfer"),
+    ]
+
+
+def test_a_rejected_plan_card_shows_the_customers_action_and_the_acknowledgement(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    model.script(plan(step("s1", "transfer", TO_MUM)))
+    conversation = start_conversation(agent, log_in(bank, "liming"))
+    plan_id = send(agent, conversation, "给老妈转200")[-1]["plan_id"]
+    rejected = act(agent, conversation, "reject", plan_id=plan_id)
+
+    entries = staff(agent, f"/staff/conversations/{conversation}")["entries"]
+
+    assert entries[-2:] == [
+        {"type": "customer_action", "action": "reject", "plan_id": plan_id},
+        *rejected,
+    ]
+    assert event_types(rejected) == ["answer"]
 
 
 def test_a_conversation_whose_session_ended_can_still_be_read(

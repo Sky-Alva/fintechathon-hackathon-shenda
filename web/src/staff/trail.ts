@@ -12,14 +12,16 @@ export type TrailItem =
   | { source: 'agent'; entry: HistoryEntry }
   | { source: 'bank'; entry: AuditEntry }
 
-type BankEvent = { event: string; operation?: string }
+// `batch`: the call leaves one entry per Operation it covers, all in a row (one
+// `/confirmations` request confirms every Yellow step of a Plan card).
+type BankEvent = { event: string; operation?: string; batch?: boolean }
 
 /** The Bank audit entry an Agent call to the Bank leaves, or null if it leaves none. A
  * ticket that adds a new kind of Bank call adds it here. */
 function bankEventFor({ method, path }: { method: string; path: string }): BankEvent | null {
   if (method !== 'POST') return null
   if (path === '/tier-preview') return { event: 'tier_preview' }
-  if (path === '/confirmations') return { event: 'confirmation_issued' }
+  if (path === '/confirmations') return { event: 'confirmation_issued', batch: true }
   if (path === '/verifications') return { event: 'verification_challenge' }
   const operation = /^\/operations\/([^/]+)$/.exec(path)?.[1]
   if (operation) return { event: 'operation', operation }
@@ -50,6 +52,10 @@ export function mergeTrail(agentEntries: HistoryEntry[], bankEntries: AuditEntry
     merged.splice(merged.length - 1, 0, ...before)
     merged.push({ source: 'bank', entry: bankEntries[caused] })
     next = caused + 1
+    while (expected.batch && bankEntries[next]?.event === expected.event) {
+      merged.push({ source: 'bank', entry: bankEntries[next] })
+      next += 1
+    }
   }
   for (const after of bankEntries.slice(next)) merged.push({ source: 'bank', entry: after })
   return merged

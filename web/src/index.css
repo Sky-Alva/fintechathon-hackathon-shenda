@@ -227,6 +227,113 @@ input {
   color: var(--brand);
 }
 
+button.secondary {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 10px 18px;
+}
+
+/* --- Plan card --- */
+
+.plan-card {
+  align-self: stretch;
+  background: var(--surface);
+  border-radius: 14px;
+  padding: 14px;
+  border: 1px solid var(--border);
+}
+
+.plan-title {
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.plan-card ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.plan-card li {
+  padding: 10px;
+  border-radius: 10px;
+  background: var(--bg);
+}
+
+.plan-step-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-weight: 600;
+}
+
+.tier {
+  font-size: 12px;
+  font-weight: 400;
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+
+.tier.green {
+  background: #e3f4ea;
+  color: #2e8b57;
+}
+
+.tier.yellow {
+  background: #fdf3d7;
+  color: #a46b00;
+}
+
+.tier.red {
+  background: #fde2e4;
+  color: var(--brand);
+}
+
+.plan-card dl {
+  margin: 6px 0 0;
+  font-size: 13px;
+}
+
+.plan-card dl div {
+  display: flex;
+  gap: 8px;
+}
+
+.plan-card dt {
+  color: var(--muted);
+  min-width: 48px;
+}
+
+.plan-card dd {
+  margin: 0;
+  word-break: break-all;
+}
+
+.plan-refusal {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--brand);
+}
+
+.plan-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.plan-status {
+  margin-top: 10px;
+  font-size: 13px;
+  color: var(--muted);
+  text-align: right;
+}
+
 .composer {
   display: flex;
   gap: 8px;

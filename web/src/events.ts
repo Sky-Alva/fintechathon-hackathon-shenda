@@ -34,11 +34,7 @@ export type Refusal = {
   text: string
 }
 
-// Emitted since #32. `reason` is the Bank's refusal reason, or 'bank_unavailable' when
-// the Agent couldn't reach the Bank.
-export type StepFailed = BankRefusal & { type: 'step_failed'; step_id: string; operation: string }
-
-// Reserved: proposed payloads, refined by the ticket that first emits each one.
+// Emitted since #31: the Plan card and each step's outcome.
 export type PlanProposed = {
   type: 'plan_proposed'
   plan_id: string
@@ -50,6 +46,11 @@ export type ConfirmationRequested = {
   plan_id: string
   step_ids: string[]
 }
+// `reason` is the Bank's refusal reason, or 'bank_unavailable' when the Agent couldn't
+// reach the Bank (#32).
+export type StepFailed = BankRefusal & { type: 'step_failed'; step_id: string; operation: string }
+
+// Reserved: proposed payloads, refined by the ticket that first emits each one.
 export type VerificationRequested = {
   type: 'verification_requested'
   plan_id: string
@@ -117,6 +118,7 @@ export type ConversationEvent =
   | Trace
 
 // A conversation's history, as Staff Members read it (GET /staff/conversations/{id}):
-// each Customer message, then every event sent, the decision trace included.
+// each Customer message or action, then every event sent, the decision trace included.
 export type CustomerMessageEntry = { type: 'customer_message'; text: string }
-export type HistoryEntry = CustomerMessageEntry | ConversationEvent
+export type CustomerActionEntry = { type: 'customer_action'; action: string; plan_id: string }
+export type HistoryEntry = CustomerMessageEntry | CustomerActionEntry | ConversationEvent
