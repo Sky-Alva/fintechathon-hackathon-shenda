@@ -24,6 +24,7 @@ from agent.events import (
     HandedBack,
     HandedOver,
     HistoryEntry,
+    HumanRequested,
     PlanProposed,
     Refusal,
     StaffMessage,
@@ -78,6 +79,8 @@ class Conversation:
     updates: list[Event] = field(default_factory=list)
     """The events sent outside the Customer's own turns (a Staff Member taking over,
     replying, handing back), which the Channel polls for."""
+    human_requested: bool = False
+    """The Customer asked for a human and no Staff Member has taken over since."""
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def next_plan_id(self) -> str:
@@ -101,7 +104,21 @@ class RejectPlan(BaseModel):
     plan_id: str
 
 
-CustomerAction = Annotated[ConfirmPlan | RejectPlan, Field(discriminator="action")]
+class AskForHuman(BaseModel):
+    """The Customer wants a Staff Member: at any time, whatever else is going on."""
+
+    model_config = ConfigDict(extra="forbid")
+    action: Literal["ask_for_human"]
+
+
+CustomerAction = Annotated[
+    ConfirmPlan | RejectPlan | AskForHuman, Field(discriminator="action")
+]
+
+HUMAN_REQUESTED: dict[Language, str] = {
+    "zh": "已为您呼叫人工客服，请稍候。",
+    "en": "I've asked for a Staff Member to join you. Please wait a moment.",
+}
 
 REJECTED: dict[Language, str] = {
     "zh": "好的，已取消这个计划，没有执行任何操作。",
@@ -135,7 +152,8 @@ class NotHandedOver(Exception):
 
 
 class AlreadyHandedOver(Exception):
-    """Another Staff Member has the conversation."""
+    """A Staff Member has the conversation: no one else takes it over, and the Agent
+    acts on nothing the Customer sends."""
 
     def __init__(self, staff: str):
         super().__init__(staff)
@@ -205,6 +223,7 @@ class Conversations:
             if conversation.handed_over_to is not None:
                 raise AlreadyHandedOver(conversation.handed_over_to)
             conversation.handed_over_to = staff
+            conversation.human_requested = False
             return self._push(conversation, HandedOver(staff=staff))
 
     def staff_reply(self, conversation: Conversation, text: str) -> StaffMessage:
@@ -227,7 +246,8 @@ class Conversations:
             if staff is None:
                 raise NotHandedOver()
             conversation.handed_over_to = None
-            conversation.history.append({"role": "system", "content": HANDED_BACK_NOTE.format(staff=staff)})
+            note = HANDED_BACK_NOTE.format(staff=staff)
+            conversation.history.append({"role": "system", "content": note})
             return self._push(conversation, HandedBack())
 
     def updates(self, conversation: Conversation, after: int) -> list[Event]:
@@ -256,6 +276,10 @@ class Conversations:
             if isinstance(plan, planner.Declined):
                 yield from self._decline(conversation, plan, catalogue)
                 return
+            if isinstance(plan, planner.HumanAsked):
+                yield trace("intent", {"intent": "", "ask_for_human": True})
+                yield self._human_requested(conversation)
+                return
             yield trace("intent", {"intent": plan.intent})
             # Exact details first: run the Green look-ups a later step's input waits on,
             # then have the Planner complete the Plan from what the Bank returned.
@@ -278,6 +302,9 @@ class Conversations:
                     )
                     if isinstance(plan, planner.Declined):  # not on offer, but just in case
                         yield from self._decline(conversation, plan, catalogue)
+                        return
+                    if isinstance(plan, planner.HumanAsked):  # nor is this
+                        yield self._human_requested(conversation)
                         return
             try:
                 reviewed = reviewer.review(plan, bank)
@@ -304,9 +331,14 @@ class Conversations:
         """One turn: the Customer's answer to a prompt (a Plan card) in, the events out.
 
         Raises PlanNotPending straight away, before any event, if the Plan card isn't
-        waiting for an answer.
+        waiting for an answer, and AlreadyHandedOver while a Staff Member has the
+        conversation: the Agent starts no step then.
         """
+        if isinstance(action, AskForHuman):
+            return self._recorded(conversation, self._ask_for_human(conversation))
         with conversation.lock:
+            if conversation.handed_over_to is not None:
+                raise AlreadyHandedOver(conversation.handed_over_to)
             pending = conversation.pending
             if pending is None or pending.plan_id != action.plan_id:
                 raise PlanNotPending(action.plan_id)
@@ -335,6 +367,19 @@ class Conversations:
         conversation.history.append({"role": "assistant", "content": text})
         yield Refusal(reason=declined.reason, text=text)
 
+    def _ask_for_human(self, conversation: Conversation) -> Iterator[Event]:
+        with conversation.lock:
+            conversation.record.append(CustomerActionEntry(action="ask_for_human", plan_id=None))
+            if conversation.handed_over_to is not None:
+                return  # a Staff Member is already here
+            yield self._human_requested(conversation)
+
+    def _human_requested(self, conversation: Conversation) -> HumanRequested:
+        conversation.human_requested = True
+        text = HUMAN_REQUESTED[customer_language(conversation.history)]
+        conversation.history.append({"role": "assistant", "content": text})
+        return HumanRequested(text=text)
+
     def _rejected(self, conversation: Conversation) -> Iterator[Event]:
         with conversation.lock:
             text = REJECTED[customer_language(conversation.history)]
@@ -343,6 +388,8 @@ class Conversations:
 
     def _confirmed(self, conversation: Conversation, pending: PendingPlan) -> Iterator[Event]:
         with conversation.lock:
+            if conversation.handed_over_to is not None:
+                return  # taken over since the Customer confirmed: the Agent starts nothing
             try:
                 tokens = reviewer.collect_confirmations(pending.plan, conversation.bank)
             except reviewer.ConfirmationRefused as refused:

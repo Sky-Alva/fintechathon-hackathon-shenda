@@ -3,12 +3,16 @@
     POST /conversations {session_token}            -> {conversation_id}
     POST /conversations/{id}/messages {text}       -> the turn's events, as NDJSON
     POST /conversations/{id}/actions {action, ...} -> the turn's events, as NDJSON
+    GET  /conversations/{id}/updates?after=N       -> {events, next}: what a Staff Member sent
     GET  /conversations/{id}/audit-trail           -> a `trace` event: the session's audit trail
 
 For Staff Members, with the Agent's own staff key (X-Staff-Key):
 
     GET /staff/conversations                       -> the active sessions' conversations
     GET /staff/conversations/{id}                  -> one conversation's history
+    POST /staff/conversations/{id}/takeover {staff} -> `handed_over`: the Agent is paused
+    POST /staff/conversations/{id}/messages {text} -> `staff_message`, to the Customer
+    POST /staff/conversations/{id}/hand-back       -> `handed_back`: the Agent resumes
 
 Events are documented in docs/conversation-events.md. The Agent is configured with the
 Bank's URL, a model and its staff key, never the Bank's admin key: the staff console
@@ -75,6 +79,8 @@ def staff_summary(conversation: Conversation) -> dict[str, Any]:
         "conversation_id": conversation.conversation_id,
         "session_id": conversation.session_id,
         "customer": conversation.customer,
+        "human_requested": conversation.human_requested,
+        "handed_over_to": conversation.handed_over_to,
     }
 
 

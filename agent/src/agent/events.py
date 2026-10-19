@@ -93,6 +93,14 @@ class Refusal(BaseModel):
     text: str
 
 
+class HumanRequested(BaseModel):
+    """The Customer asked for a human: the staff console flags the session until a Staff
+    Member takes it over. `text` tells the Customer so."""
+
+    type: Literal["human_requested"] = "human_requested"
+    text: str
+
+
 class HandedOver(BaseModel):
     """A Staff Member took the conversation over: the Agent sends nothing and starts no
     step until it is handed back."""
@@ -123,6 +131,7 @@ Event = (
     | Refusal
     | PlanProposed
     | ConfirmationRequested
+    | HumanRequested
     | HandedOver
     | StaffMessage
     | HandedBack
@@ -145,7 +154,8 @@ class CustomerActionEntry(BaseModel):
 
     type: Literal["customer_action"] = "customer_action"
     action: str
-    plan_id: str
+    plan_id: str | None
+    """The Plan card it answers; None for an action that answers none (`ask_for_human`)."""
 
 
 HistoryEntry = CustomerMessageEntry | CustomerActionEntry | Event

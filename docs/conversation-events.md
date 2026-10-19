@@ -9,6 +9,7 @@ The contract between the Agent's conversation service and everything that talks 
 | `POST /conversations` | `{session_token}` | `{conversation_id}` |
 | `POST /conversations/{conversation_id}/messages` | `{text}` | the turn's events |
 | `POST /conversations/{conversation_id}/actions` | `{action, ...}` | the turn's events (see below) |
+| `GET /conversations/{conversation_id}/updates?after=N` | none | `{events, next}`: the events the Customer was sent outside their own turns (see [Human takeover](#human-takeover)), from the `N`-th on; poll again with `after=next` |
 | `GET /conversations/{conversation_id}/audit-trail` | none | one `trace` event (`stage: "audit_trail"`): the session's audit trail, for the decision trace panel |
 
 - **Login stays with the Channel.** The Channel logs the Customer in with the Bank (`POST /sessions`), keeps the `phone_token` for its simulated phone and hands the Agent the `session_token` only. `POST /conversations` refuses any other field (422), so the Agent never sees a password or the phone token. The Agent acts only through that session and holds no Bank admin key ([ADR-0001](adr/0001-bank-enforces-permission-tiers.md)).
@@ -19,9 +20,23 @@ The contract between the Agent's conversation service and everything that talks 
 - **The Bank can't be reached** outside a turn (starting a conversation, the staff views): `503 {"error": "bank_unavailable"}`.
 - **A turn with a Plan card** ends after `confirmation_requested`: nothing on the card runs until the Customer answers it with `confirm` or `reject`. A Plan card is answered once. An action for a Plan card that isn't waiting for an answer (already answered, or replaced because the Customer sent a new message first) is `409 {"error": "plan_not_pending"}`, before any event.
 
+### Human takeover
+
+The Customer can ask for a human at any time, with the `ask_for_human` action (the Channel's button) or in words ("转人工", "a human, please"), which the Planner recognises instead of planning. Either way, the turn is one `human_requested` event, nothing runs, and the staff console flags the session (`human_requested: true`) until a Staff Member takes it over.
+
+While a Staff Member has the conversation (`handed_over` until `handed_back`), the Agent is paused:
+
+- **A Customer message** goes to the Staff Member: it is in the staff history, and the turn has no events at all (the Agent doesn't call the model or the Bank).
+- **A Customer action** that would start a step (`confirm`, `reject`) is `409 {"error": "already_handed_over", "staff": "…"}`, before any event. `ask_for_human` is answered with no events: a human is already there.
+- **The Staff Member's replies** reach the Customer as `staff_message` events, marked with the Staff Member's name.
+
+`handed_over`, `staff_message` and `handed_back` happen outside the Customer's turns, so the Channel polls `GET /conversations/{id}/updates?after=N` for them (`{"events": [...], "next": N'}`). They are in the staff history too, in order.
+
+Handing back resumes the Agent on the Customer's next message, with the whole conversation in its context: the Customer's messages during the takeover, the Staff Member's replies (marked `[Staff Member name]`, so the Agent knows they aren't its own) and a note that the conversation was handed back.
+
 ### Customer actions
 
-The Customer answers a Plan card and the other prompts with `POST /conversations/{id}/actions`. `confirm` and `reject` are built (#31); the rest are proposed, and the ticket that builds one may refine it and must update this table. An action the Agent doesn't know yet is `422`.
+The Customer answers a Plan card and the other prompts with `POST /conversations/{id}/actions`. `confirm` and `reject` (#31) and `ask_for_human` (#46) are built; the rest are proposed, and the ticket that builds one may refine it and must update this table. An action the Agent doesn't know yet is `422`.
 
 | `action` | Fields | Answers |
 |----------|--------|---------|
@@ -31,7 +46,7 @@ The Customer answers a Plan card and the other prompts with `POST /conversations
 | `choose` | `value` | `clarification_question` |
 | `reverse` | `plan_id`, `step_ids` | `reversal_offered`. Nothing is reversed without this. |
 | `stop` | none | any running Plan: pause it |
-| `ask_for_human` | none | any time |
+| `ask_for_human` (built, #46) | none | any time: the turn is one `human_requested` event (none while a Staff Member has the conversation) |
 
 ## The staff interface
 
@@ -39,8 +54,13 @@ For the staff console. Every call needs `X-Staff-Key`: the Agent's own staff key
 
 | Call | Returns |
 |------|---------|
-| `GET /staff/conversations` | `{conversations: [{conversation_id, session_id, customer: {customer_id, name}}]}`: the conversations whose Bank session is still active (a Safety Lock doesn't end a session), in the order they started |
-| `GET /staff/conversations/{conversation_id}` | `{conversation_id, session_id, customer, entries}`: the conversation's history, readable after the session ended too |
+| `GET /staff/conversations` | `{conversations: [{conversation_id, session_id, customer: {customer_id, name}, human_requested, handed_over_to}]}`: the conversations whose Bank session is still active (a Safety Lock doesn't end a session), in the order they started. `human_requested` is true from the Customer asking for a human until a Staff Member takes over; `handed_over_to` is the Staff Member who has the conversation, or null |
+| `GET /staff/conversations/{conversation_id}` | `{conversation_id, session_id, customer, human_requested, handed_over_to, entries}`: the conversation's history, readable after the session ended too |
+| `POST /staff/conversations/{conversation_id}/takeover` `{staff}` | the `handed_over` event: `staff` names the Staff Member, as the Customer will see them. `409 {"error": "already_handed_over", "staff"}` if someone has it already. A turn under way finishes first |
+| `POST /staff/conversations/{conversation_id}/messages` `{text}` | the `staff_message` event sent to the Customer |
+| `POST /staff/conversations/{conversation_id}/hand-back` | the `handed_back` event |
+
+Replying or handing back a conversation no Staff Member has is `409 {"error": "not_handed_over"}`.
 
 `entries` is everything in order: each Customer message or action, then every event the Customer was sent, exactly as sent, `trace` events included (so the Plan with its tiers is the `plan` trace, and every Bank call of the turn is a `bank_request` + `bank_response` pair).
 
@@ -51,7 +71,7 @@ For the staff console. Every call needs `X-Staff-Key`: the Agent's own staff key
 // ...then that action's turn: the /confirmations pair, step_started, ..., answer
 ```
 
-A `customer_action` entry names the action and its `plan_id` only, never the action's other fields, so a token the Customer sends with an action never reaches the history.
+A `customer_action` entry names the action and its `plan_id` only (null for `ask_for_human`), never the action's other fields, so a token the Customer sends with an action never reaches the history.
 
 The Bank's side of the trail (tier previews, Confirmations, verification attempts, Safety Lock and lift, Operation results) and lifting a Safety Lock are the Bank's admin calls (`GET /admin/sessions/{session_id}/audit`, `GET`/`DELETE /admin/sessions/{session_id}/safety-lock`), which the console makes with the Bank's admin key, never through the Agent. The Bank clock can stand still, so the console merges the two trails by cause, not time: the Agent's entries keep their order, and each Bank audit entry is placed right after the Agent's `bank_request` trace that caused it (`/tier-preview` → `tier_preview`, `/operations/{name}` → that Operation's `operation`, `/confirmations` → its `confirmation_issued` entries, one per step it confirms, `/verifications` → `verification_challenge`). Bank entries no Agent call caused (code attempts from the simulated phone, Safety Locks, lifts) stay where the Bank put them. A ticket that adds a new kind of Bank call adds its pair to `bankEventFor` in `web/src/staff/trail.ts`.
 
@@ -173,12 +193,23 @@ The Bank has put the session under a Safety Lock: only Green Operations run unti
 {"type": "session_locked", "trigger": "wrong_codes", "locked_until": "2026-10-20T09:30:00+08:00", "text": "…"}
 ```
 
-### `handed_over` / `handed_back` (reserved, #46)
+### `human_requested` (emitted, #46)
 
-A Staff Member took over the conversation (the Agent stays silent) / handed it back to the Agent.
+The Customer asked for a human, with the button or in words. Nothing runs; the staff console flags the session until a Staff Member takes over. `text` tells the Customer, in their language.
 
 ```json
-{"type": "handed_over", "staff": "staff-1"}
+{"type": "human_requested", "text": "已为您呼叫人工客服，请稍候。"}
+```
+
+A request in words has an `intent` trace first: `{"intent": "", "ask_for_human": true}`.
+
+### `handed_over` / `staff_message` / `handed_back` (emitted, #46)
+
+A Staff Member took over the conversation (the Agent is paused: it sends nothing and starts no step) / replied to the Customer / handed the conversation back to the Agent. Sent outside the Customer's turns: the Channel polls `GET /conversations/{id}/updates` for them.
+
+```json
+{"type": "handed_over", "staff": "王经理"}
+{"type": "staff_message", "staff": "王经理", "text": "您好，我是人工客服王经理，我先帮您看看。"}
 {"type": "handed_back"}
 ```
 
@@ -189,6 +220,7 @@ Decision-trace data for the Channel's toggleable panel, hidden by default: what 
 ```jsonc
 {"type": "trace", "stage": "intent", "data": {"intent": "查询账户余额"}}  // the Planner's reading of the request
 {"type": "trace", "stage": "intent", "data": {"intent": "", "declined": {"reason": "out_of_scope", "can_do": ["query_balance"]}}}  // or why it declined
+{"type": "trace", "stage": "intent", "data": {"intent": "", "ask_for_human": true}}  // or that the Customer asked for a human
 {"type": "trace", "stage": "plan", "data": {"steps": [/* PlanStep, in run order, each with the Bank's tier */]}}
 {"type": "trace", "stage": "bank_request", "data": {"method": "POST", "path": "/operations/query_balance", "body": {"input": {}}}}
 {"type": "trace", "stage": "bank_response", "data": {"method": "POST", "path": "/operations/query_balance", "status": 200,
