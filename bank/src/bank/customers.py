@@ -31,6 +31,20 @@ CREATE TABLE accounts (
     name TEXT NOT NULL,
     balance_cents INTEGER NOT NULL
 );
+-- Money set aside in an account for a stated purpose (operations: reserved_funds.py).
+-- It stays in the balance but is not available to spend, except through its purpose.
+CREATE TABLE reserved_funds (
+    reservation_id TEXT PRIMARY KEY,
+    customer_id TEXT NOT NULL REFERENCES customers (customer_id),
+    account_id TEXT NOT NULL REFERENCES accounts (account_id),
+    amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
+    spent_cents INTEGER NOT NULL DEFAULT 0 CHECK (spent_cents BETWEEN 0 AND amount_cents),
+    purpose TEXT NOT NULL,
+    merchant_categories TEXT,
+    status TEXT NOT NULL CHECK (status IN ('active', 'used', 'released')),
+    created_at TEXT NOT NULL,
+    closed_at TEXT
+);
 """
 
 DEMO_PASSWORD = "demo1234"
@@ -80,6 +94,16 @@ def current_account(conn: sqlite3.Connection, customer_id: str) -> sqlite3.Row:
     return row
 
 
+def reserved_cents(conn: sqlite3.Connection, account_id: str) -> int:
+    """What is still set aside in the account: reserved and not yet spent or released."""
+    total: int = conn.execute(
+        "SELECT COALESCE(SUM(amount_cents - spent_cents), 0) FROM reserved_funds"
+        " WHERE account_id = ? AND status = 'active'",
+        (account_id,),
+    ).fetchone()[0]
+    return total
+
+
 def credit(conn: sqlite3.Connection, account_id: str, cents: int) -> None:
     """Pay money in. An account outside the Bank is simply not found and nothing happens."""
     conn.execute(
@@ -107,7 +131,10 @@ class AccountBalance(BaseModel):
     kind: Literal["current", "savings"]
     name: str
     currency: Literal["CNY"] = "CNY"
-    balance: Decimal
+    balance: Decimal = Field(description="Everything in the account, Reserved Funds included.")
+    available_balance: Decimal = Field(
+        description="What can be spent now: the balance minus Reserved Funds."
+    )
 
 
 class QueryBalanceOutput(BaseModel):
@@ -127,6 +154,9 @@ def query_balance(ctx: OperationContext, input: QueryBalanceInput) -> QueryBalan
                 kind=row["kind"],
                 name=row["name"],
                 balance=from_cents(row["balance_cents"]),
+                available_balance=from_cents(
+                    row["balance_cents"] - reserved_cents(ctx.conn, row["account_id"])
+                ),
             )
             for row in rows
         ]

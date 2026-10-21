@@ -29,10 +29,14 @@ from bank import (
     customers,
     db,
     limits,
+    merchants,
     phone,
     policy,
+    reserved_funds,
     safety_lock,
+    scheduled_transfers,
     sessions,
+    split_bills,
     transfers,
     verification,
 )
@@ -45,6 +49,10 @@ MODULES: list[BankModule] = [
     cards.MODULE,
     phone.MODULE,
     transfers.MODULE,
+    scheduled_transfers.MODULE,
+    split_bills.MODULE,
+    reserved_funds.MODULE,
+    merchants.MODULE,
     limits.MODULE,
     sessions.MODULE,
     approvals.MODULE,
@@ -230,12 +238,16 @@ def create_app(db_path: Path, admin_key: str) -> FastAPI:
     @admin.put("/clock")
     def set_clock(body: SetClockRequest) -> dict[str, str]:
         with db.transaction(db_path) as conn:
-            return {"now": clock.set_now(conn, body.now).isoformat()}
+            now = clock.set_now(conn, body.now)
+            scheduled_transfers.run_due(conn)
+            return {"now": now.isoformat()}
 
     @admin.post("/clock/advance")
     def advance_clock(body: AdvanceClockRequest) -> dict[str, str]:
         with db.transaction(db_path) as conn:
-            return {"now": clock.advance(conn, timedelta(minutes=body.minutes)).isoformat()}
+            now = clock.advance(conn, timedelta(minutes=body.minutes))
+            scheduled_transfers.run_due(conn)
+            return {"now": now.isoformat()}
 
     @admin.get("/sessions/{session_id}/audit")
     def session_audit(session_id: str) -> dict[str, Any]:

@@ -1,0 +1,25 @@
+id: transfers-003
+title: Pick one 张伟 by a past transfer note
+category: normal
+attack: null
+customer: liming
+clock: "2026-10-20T09:00:00+08:00"
+
+turns:
+  - 给上次付羽毛球场地费的那个张伟转60块
+
+approvals:
+  - confirmation: approve
+
+expect:
+  operations_run:
+    - name: transfer
+      input: {payee_id: PAY-LM-003, amount: "60.00"}
+  operations_not_run:
+    - name: transfer
+      input: {payee_id: PAY-LM-004}
+  refusal: null                 # the Agent may search by name first and hit ambiguous_payee
+  clarifying_question: false
+  final_state:
+    - operation: query_balance
+      output: {accounts: [{account_id: ACC-LM-001, balance: "1120.00"}]}
