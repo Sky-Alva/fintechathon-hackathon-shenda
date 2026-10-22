@@ -12,6 +12,7 @@ BADMINTON_ZHANG = "PAY-LM-003"  # 张伟, paid for 羽毛球场地费
 CLASSMATE_ZHANG = "PAY-LM-004"  # 张伟, paid for 同学聚会AA
 NEVER_PAID = "PAY-LM-005"  # 陈静
 HOSTILE_NOTE = "PAY-LM-006"  # 刘洋, whose past transfer note tries to give orders
+LANDLORD = "PAY-LM-007"  # 赵建国, known only by the rent notes on past transfers
 
 
 def refusal(response: httpx.Response) -> Any:
@@ -85,6 +86,16 @@ def test_a_payee_is_found_by_a_past_transfer_note(client: TestClient) -> None:
 
     assert (payee["payee_id"], payee["matched_by"]) == (BADMINTON_ZHANG, "note")
     assert payee["matched_note"] == "羽毛球场地费"
+
+
+def test_the_landlord_is_found_by_the_rent_note_with_the_last_rent_paid(
+    client: TestClient,
+) -> None:
+    payee = found(client, login(client, "liming"), "房租")
+
+    assert (payee["payee_id"], payee["matched_by"]) == (LANDLORD, "note")
+    assert payee["matched_note"] == "10月房租"  # the newest note that matched
+    assert payee["last_transfer_amount"] == "800.00"
 
 
 def test_a_phone_number_picks_one_of_two_payees_with_the_same_name(client: TestClient) -> None:

@@ -40,7 +40,7 @@ CREATE TABLE reserved_funds (
     amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
     spent_cents INTEGER NOT NULL DEFAULT 0 CHECK (spent_cents BETWEEN 0 AND amount_cents),
     purpose TEXT NOT NULL,
-    merchant_categories TEXT,
+    merchant_categories TEXT NOT NULL,
     status TEXT NOT NULL CHECK (status IN ('active', 'used', 'released')),
     created_at TEXT NOT NULL,
     closed_at TEXT
@@ -94,14 +94,16 @@ def current_account(conn: sqlite3.Connection, customer_id: str) -> sqlite3.Row:
     return row
 
 
-def reserved_cents(conn: sqlite3.Connection, account_id: str) -> int:
-    """What is still set aside in the account: reserved and not yet spent or released."""
-    total: int = conn.execute(
+def available_cents(conn: sqlite3.Connection, account: sqlite3.Row) -> int:
+    """What the account can spend now: its balance minus what is still set aside in
+    Reserved Funds (reserved and not yet spent or released)."""
+    reserved: int = conn.execute(
         "SELECT COALESCE(SUM(amount_cents - spent_cents), 0) FROM reserved_funds"
         " WHERE account_id = ? AND status = 'active'",
-        (account_id,),
+        (account["account_id"],),
     ).fetchone()[0]
-    return total
+    balance: int = account["balance_cents"]
+    return balance - reserved
 
 
 def credit(conn: sqlite3.Connection, account_id: str, cents: int) -> None:
@@ -154,9 +156,7 @@ def query_balance(ctx: OperationContext, input: QueryBalanceInput) -> QueryBalan
                 kind=row["kind"],
                 name=row["name"],
                 balance=from_cents(row["balance_cents"]),
-                available_balance=from_cents(
-                    row["balance_cents"] - reserved_cents(ctx.conn, row["account_id"])
-                ),
+                available_balance=from_cents(available_cents(ctx.conn, row)),
             )
             for row in rows
         ]

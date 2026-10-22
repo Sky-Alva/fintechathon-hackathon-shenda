@@ -25,6 +25,7 @@ FLOWER_SHOP, CAKE_SHOP = "MER-FLOWER-001", "MER-CAKE-001"
 ROSES, SUNFLOWERS = "PRD-FLOWER-001", "PRD-FLOWER-002"  # ¥299, ¥199
 CAKE_6, CAKE_8 = "PRD-CAKE-001", "PRD-CAKE-002"  # ¥268, ¥388
 BIRTHDAY = "2026-10-26"
+GIFT = ["flowers", "cake"]  # the Merchant kinds a birthday gift needs
 
 
 def refusal(response: httpx.Response) -> Any:
@@ -53,12 +54,10 @@ def reserve(
     client: TestClient,
     headers: dict[str, str],
     amount: str,
-    categories: list[str] | None = None,
+    categories: list[str] = GIFT,
     purpose: str = "给韩梅梅的生日礼物",
 ) -> str:
-    input: dict[str, Any] = {"amount": amount, "purpose": purpose}
-    if categories is not None:
-        input["merchant_categories"] = categories
+    input = {"amount": amount, "purpose": purpose, "merchant_categories": categories}
     response = confirmed_call(client, headers, "reserve_funds", input)
     assert response.status_code == 200, response.text
     reservation_id: str = response.json()["output"]["reservation"]["reservation_id"]
@@ -115,7 +114,7 @@ def tier_of(
 
 def test_reserving_is_yellow_and_needs_confirmation(client: TestClient) -> None:
     headers = login(client, "liming")
-    input = {"amount": "1000.00", "purpose": "给韩梅梅的生日礼物"}
+    input = {"amount": "1000.00", "purpose": "给韩梅梅的生日礼物", "merchant_categories": GIFT}
 
     bare = call(client, headers, "reserve_funds", input)
     response = confirmed_call(client, headers, "reserve_funds", input)
@@ -162,7 +161,7 @@ def test_only_available_money_can_be_reserved(client: TestClient) -> None:
     headers = login(client, "liming")
     reserve(client, headers, "1000.00")
 
-    too_much = {"amount": "200.00", "purpose": "again"}  # only ¥180 is left to reserve
+    too_much = {"amount": "200.00", "purpose": "again", "merchant_categories": GIFT}  # ¥180 left
     response = call(client, headers, "reserve_funds", too_much)
     confirmation = request_confirmations(client, headers, ("reserve_funds", too_much))
 
@@ -174,25 +173,30 @@ def test_only_available_money_can_be_reserved(client: TestClient) -> None:
 
 def test_a_confirmation_covers_only_the_exact_reservation(client: TestClient) -> None:
     headers = login(client, "liming")
-    token = confirm(client, headers, "reserve_funds", {"amount": "1000.00", "purpose": "礼物"})
+    gift = {"amount": "1000.00", "purpose": "礼物", "merchant_categories": GIFT}
+    token = confirm(client, headers, "reserve_funds", gift)
 
-    response = call(client, headers, "reserve_funds", {"amount": "1100.00", "purpose": "礼物"}, token)
+    response = call(client, headers, "reserve_funds", {**gift, "amount": "1100.00"}, token)
 
     assert reasons(response) == "token_invalid"
     assert reservations(client, headers) == {}
 
 
-def test_a_reservation_needs_a_positive_amount_a_purpose_and_a_known_kind_of_merchant(
+def test_a_reservation_needs_a_positive_amount_a_purpose_and_known_kinds_of_merchant(
     client: TestClient,
 ) -> None:
     headers = login(client, "liming")
-    bad_inputs = [
-        {"amount": "0.00", "purpose": "礼物"},
-        {"amount": "-10.00", "purpose": "礼物"},
-        {"amount": "10.005", "purpose": "礼物"},
-        {"amount": "100.00", "purpose": ""},
-        {"amount": "100.00", "purpose": "礼物", "merchant_categories": ["casino"]},
-        {"amount": "100.00", "purpose": "礼物", "customer_id": "CUST-HM"},
+    gift: dict[str, Any] = {"amount": "100.00", "purpose": "礼物", "merchant_categories": GIFT}
+    no_merchants = {"amount": "100.00", "purpose": "礼物"}  # could otherwise pay for anything
+    bad_inputs: list[dict[str, Any]] = [
+        {**gift, "amount": "0.00"},
+        {**gift, "amount": "-10.00"},
+        {**gift, "amount": "10.005"},
+        {**gift, "purpose": ""},
+        {**gift, "merchant_categories": ["casino"]},
+        {**gift, "merchant_categories": []},
+        no_merchants,
+        {**gift, "customer_id": "CUST-HM"},
     ]
 
     for input in bad_inputs:
@@ -204,7 +208,7 @@ def test_a_reservation_needs_a_positive_amount_a_purpose_and_a_known_kind_of_mer
 def test_reserved_funds_can_be_listed_with_their_purpose_and_status(client: TestClient) -> None:
     headers = login(client, "liming")
     first = reserve(client, headers, "400.00", ["flowers"], purpose="鲜花")
-    second = reserve(client, headers, "300.00", None, purpose="其他")
+    second = reserve(client, headers, "300.00", ["cake"], purpose="蛋糕")
     confirmed_call(client, headers, "release_reserved_funds", {"reservation_id": second})
 
     everything = reservations(client, headers)
@@ -326,20 +330,13 @@ def test_released_funds_can_be_spent_again(client: TestClient) -> None:
 def test_reserved_funds_can_only_pay_a_kind_of_merchant_they_allow(client: TestClient) -> None:
     headers = login(client, "hanmei")
     cake_only = reserve(client, headers, "1000.00", ["cake"], purpose="蛋糕")
-    nothing = reserve(client, headers, "1000.00", [], purpose="房租")
-    anything = reserve(client, headers, "1000.00", None, purpose="随便")
 
-    for reservation_id, product, merchant, amount, expected in [
-        (cake_only, ROSES, FLOWER_SHOP, "299.00", "invalid_input"),
-        (nothing, CAKE_6, CAKE_SHOP, "268.00", "invalid_input"),
-    ]:
-        wrong = order_input(reservation_id, product, amount, merchant)
-        response = attempt(client, headers, wrong)
-        assert reasons(response) == expected, reservation_id
-        assert "allowed_merchant_categories" in refusal(response)["detail"], reservation_id
+    wrong = attempt(client, headers, order_input(cake_only, ROSES, "299.00", FLOWER_SHOP))
     right = order(client, headers, order_input(cake_only, CAKE_6, "268.00", CAKE_SHOP))
-    anywhere = order(client, headers, order_input(anything))
-    assert (right.status_code, anywhere.status_code) == (200, 200)
+
+    assert reasons(wrong) == "invalid_input"
+    assert refusal(wrong)["detail"]["allowed_merchant_categories"] == ["cake"]
+    assert right.status_code == 200, right.text
 
 
 # --- Merchants ------------------------------------------------------------------------

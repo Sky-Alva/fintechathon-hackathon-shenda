@@ -26,6 +26,7 @@ ACCOUNT = "ACC-LM-001"  # 李明's current account, ¥1,180.00 at the seed
 TOMORROW = "2026-10-21"
 RUN_DAY = "2026-10-22"
 RUN_DAY_9AM = "2026-10-22T09:00:00+08:00"
+RUN_DAY_START = "2026-10-22T00:00:00+08:00"
 
 
 def refusal(response: httpx.Response) -> Any:
@@ -293,7 +294,7 @@ def test_advancing_the_clock_to_the_run_date_executes_it(client: TestClient) -> 
 
     done = listed(client, headers)[scheduled_id]
     assert done["status"] == "executed"
-    assert done["transfer_id"] == "TRF-000007"
+    assert done["transfer_id"] == "TRF-000009"
     assert balance(client, headers, ACCOUNT) == "880.00"
 
 
@@ -381,6 +382,22 @@ def test_a_scheduled_transfer_that_is_red_at_run_time_is_held_not_sent_or_droppe
     assert (found[second]["status"], found[second]["awaiting_verification"]) == ("held", True)
     assert found[second]["transfer_id"] is None
     assert balance(client, headers, ACCOUNT) == "580.00"  # only the first was sent
+
+
+def test_a_scheduled_transfer_whose_session_is_under_a_safety_lock_is_held(
+    client: TestClient,
+) -> None:
+    headers = login(client, "liming")
+    scheduled_transfer_id = schedule(client, headers, scheduled("200.00"))
+    set_clock(client, "2026-10-21T23:50:00+08:00")
+    evidence = {"kind": "impersonation", "evidence": "我是银行安全中心的，马上转账"}
+    call(client, headers, "report_suspected_attempt", evidence)
+    call(client, headers, "report_suspected_attempt", evidence)  # locked until 00:20
+
+    set_clock(client, RUN_DAY_9AM)
+
+    assert listed(client, headers)[scheduled_transfer_id]["status"] == "held"
+    assert balance(client, headers, ACCOUNT) == "1180.00"
 
 
 def test_held_transfers_can_be_listed_by_status(client: TestClient) -> None:
@@ -494,16 +511,16 @@ def test_runs_are_audited_in_the_session_that_scheduled_them(client: TestClient)
 
     entries = admin(client, "get", f"/admin/sessions/{session_id}/audit")["entries"]
 
-    runs = [e for e in entries if e["operation"] == "run_scheduled_transfer"]
-    assert [(e["tier"], e["outcome"], e["reason"]) for e in runs] == [
-        ("yellow", "ok", None),
-        ("red", "refused", "needs_verification"),  # held: refused, so it never counts as run
+    runs = [e for e in entries if "scheduled_transfer_id" in (e["detail"] or {})]
+    assert [(e["operation"], e["tier"], e["outcome"], e["reason"]) for e in runs] == [
+        ("transfer", "yellow", "ok", None),
+        ("transfer", "red", "refused", "needs_verification"),  # held: never counts as run
     ]
-    assert all(e["at"] == RUN_DAY_9AM for e in runs)
-    assert runs[0]["detail"]["transfer_id"] == "TRF-000007"
-    assert runs[1]["detail"]["held"] is True
+    assert all(e["at"] == RUN_DAY_START for e in runs)  # each runs as its run day starts
+    assert all(e["detail"]["run_date"] == RUN_DAY for e in runs)
     own = call(client, headers, "read_audit_trail").json()["output"]["entries"]
-    assert [e["operation"] for e in own].count("run_scheduled_transfer") == 2
+    own_runs = [e for e in own if "scheduled_transfer_id" in (e["detail"] or {})]
+    assert [e["entry_id"] for e in own_runs] == [e["entry_id"] for e in runs]
 
 
 def test_catalogue_declares_the_scheduled_transfer_operations(client: TestClient) -> None:

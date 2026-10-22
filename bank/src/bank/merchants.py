@@ -205,25 +205,7 @@ def _validate(
             {"amount": str(input.amount), "price_total": str(from_cents(price_cents))},
         )
     reservation = reserved_funds.active_reservation(ctx, input.reservation_id)
-    allowed = reserved_funds.categories_of(reservation)
-    if allowed is not None and merchant["category"] not in allowed:
-        raise Refusal(
-            RefusalReason.INVALID_INPUT,
-            "These Reserved Funds cannot be spent at this kind of Merchant",
-            {
-                "reservation_id": input.reservation_id,
-                "purpose": reservation["purpose"],
-                "allowed_merchant_categories": allowed,
-                "merchant_category": merchant["category"],
-            },
-        )
-    remaining = reservation["amount_cents"] - reservation["spent_cents"]
-    if remaining < price_cents:
-        raise Refusal(
-            RefusalReason.INSUFFICIENT_FUNDS,
-            "Not enough left in these Reserved Funds",
-            {"reservation_id": input.reservation_id, "remaining": str(from_cents(remaining))},
-        )
+    reserved_funds.check_can_pay(reservation, merchant["category"], price_cents)
     return merchant, product, reservation
 
 
@@ -238,7 +220,7 @@ def order_from_merchant(
     merchant, product, reservation = _validate(ctx, input)
     cents = to_cents(input.amount)
     customers.debit(ctx.conn, reservation["account_id"], cents)
-    reserved_funds.spend(ctx.conn, reservation, cents, ctx.now)
+    reserved_funds.spend(ctx, reservation, cents)
     count = ctx.conn.execute("SELECT COUNT(*) FROM merchant_orders").fetchone()[0]
     order_id = f"ORD-{count + 1:06d}"  # Bank-wide, like transfer IDs
     ctx.conn.execute(
@@ -257,12 +239,13 @@ def order_from_merchant(
         ),
     )
     balance = ctx.conn.execute(
-        "SELECT balance_cents FROM accounts WHERE account_id = ?", (reservation["account_id"],)
+        "SELECT balance_cents FROM accounts WHERE account_id = ? AND customer_id = ?",
+        (reservation["account_id"], ctx.customer_id),
     ).fetchone()[0]
     return OrderFromMerchantOutput(
         order=_order_view(ctx.conn, order_id),
         reservation=reserved_funds.view(
-            reserved_funds.reservation_row(ctx.conn, input.reservation_id)
+            reserved_funds.reservation(ctx, input.reservation_id)
         ),
         balance_after=from_cents(balance),
         daily_transfer_total=ctx.daily_transfer_total + input.amount,

@@ -239,14 +239,14 @@ def create_app(db_path: Path, admin_key: str) -> FastAPI:
     def set_clock(body: SetClockRequest) -> dict[str, str]:
         with db.transaction(db_path) as conn:
             now = clock.set_now(conn, body.now)
-            scheduled_transfers.run_due(conn)
+            scheduled_transfers.run_due(conn, registry)
             return {"now": now.isoformat()}
 
     @admin.post("/clock/advance")
     def advance_clock(body: AdvanceClockRequest) -> dict[str, str]:
         with db.transaction(db_path) as conn:
             now = clock.advance(conn, timedelta(minutes=body.minutes))
-            scheduled_transfers.run_due(conn)
+            scheduled_transfers.run_due(conn, registry)
             return {"now": now.isoformat()}
 
     @admin.get("/sessions/{session_id}/audit")

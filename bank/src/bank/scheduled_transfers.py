@@ -6,8 +6,10 @@ already sent that day plus this amount), and re-checked when it runs: the Bank r
 due Scheduled Transfer whenever the Bank clock is set or advanced (`run_due`, called by the
 admin clock endpoints).
 
-At run time a transfer that has become Red (it was Yellow when scheduled) is *held*: neither
-sent nor dropped. It shows as awaiting verification until the Customer passes Strong
+A run goes through the policy gate as a `transfer` the Customer approved when scheduling it,
+in the trail of the session that scheduled it. A transfer that has become Red (it was Yellow
+when scheduled), or whose session is under a Safety Lock, is *held*: neither sent nor
+dropped. It shows as awaiting verification until the Customer passes Strong
 Verification for `send_held_transfer`, or cancels it. A transfer that can't be paid (not
 enough money) is marked failed, never silently dropped.
 
@@ -23,8 +25,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from bank import audit, clock, limits, transfers
-from bank.audit import Event
+from bank import clock, limits, policy, sessions, transfers
 from bank.money import Amount, from_cents, to_cents
 from bank.registry import (
     BankModule,
@@ -35,6 +36,7 @@ from bank.registry import (
     ReadOnly,
     Refusal,
     RefusalReason,
+    Registry,
     ReversedBy,
     Tier,
     TierRule,
@@ -62,7 +64,9 @@ CREATE TABLE scheduled_transfers (
 """
 
 MAX_DAYS_AHEAD = 365
-RUN_OPERATION = "run_scheduled_transfer"  # how a run shows in the audit trail
+# A run refused for one of these is held for the Customer: it has become Red since it was
+# scheduled, or the scheduling session is under a Safety Lock. Anything else fails it.
+WAITS_FOR_CUSTOMER = (RefusalReason.NEEDS_VERIFICATION, RefusalReason.SESSION_LOCKED)
 
 Status = Literal["scheduled", "held", "executed", "cancelled", "failed"]
 OPEN_STATUSES = ("scheduled", "held")  # not yet sent, and can still be cancelled
@@ -226,8 +230,8 @@ def cancel_scheduled_transfer(
     _open_row(ctx, input.scheduled_transfer_id)
     ctx.conn.execute(
         "UPDATE scheduled_transfers SET status = 'cancelled', cancelled_at = ?"
-        " WHERE scheduled_transfer_id = ?",
-        (ctx.now.isoformat(), input.scheduled_transfer_id),
+        " WHERE scheduled_transfer_id = ? AND customer_id = ?",
+        (ctx.now.isoformat(), input.scheduled_transfer_id, ctx.customer_id),
     )
     return CancelScheduledTransferOutput(
         scheduled_transfer=_view(ctx.conn, _row(ctx, input.scheduled_transfer_id))
@@ -312,8 +316,8 @@ def send_held_transfer(
     )
     ctx.conn.execute(
         "UPDATE scheduled_transfers SET status = 'executed', executed_at = ?, transfer_id = ?"
-        " WHERE scheduled_transfer_id = ?",
-        (ctx.now.isoformat(), sent.transfer_id, input.scheduled_transfer_id),
+        " WHERE scheduled_transfer_id = ? AND customer_id = ?",
+        (ctx.now.isoformat(), sent.transfer_id, input.scheduled_transfer_id, ctx.customer_id),
     )
     return SendHeldTransferOutput(
         scheduled_transfer=_view(ctx.conn, _row(ctx, input.scheduled_transfer_id)),
@@ -324,11 +328,13 @@ def send_held_transfer(
 # --- Running due transfers, when the Bank clock reaches their date ------------------
 
 
-def run_due(conn: sqlite3.Connection) -> None:
+def run_due(conn: sqlite3.Connection, registry: Registry) -> None:
     """Run every Scheduled Transfer whose run date the Bank clock has reached, oldest first.
 
-    Each one counts toward the Daily Transfer Total of its run day and is tiered again
-    there. Called inside the transaction that sets or advances the Bank clock.
+    Each one runs through the policy gate as a `transfer` approved when it was scheduled,
+    at the start of its run day, so it counts toward that day's Daily Transfer Total and
+    is tiered again there. Called inside the transaction that sets or advances the Bank
+    clock.
     """
     now = clock.now(conn)
     due = conn.execute(
@@ -337,83 +343,47 @@ def run_due(conn: sqlite3.Connection) -> None:
         (now.date().isoformat(),),
     ).fetchall()
     for row in due:
-        _run(conn, row, now)
+        _run(conn, registry, row, now)
 
 
-def _run(conn: sqlite3.Connection, row: sqlite3.Row, now: datetime) -> None:
+def _run(conn: sqlite3.Connection, registry: Registry, row: sqlite3.Row, now: datetime) -> None:
     scheduled_transfer_id = row["scheduled_transfer_id"]
-    day = date.fromisoformat(row["run_date"])
-    run_at = datetime.combine(day, time(0, 0), tzinfo=clock.BANK_TZ)
-    amount = from_cents(row["amount_cents"])
-    ctx = OperationContext(
-        conn=conn,
-        customer_id=row["customer_id"],
-        session_id=row["created_session_id"],
-        now=run_at,
-        daily_transfer_total=limits.daily_transfer_total(conn, row["customer_id"], day),
-    )
-    tier = limits.tier_for_outgoing(amount, ctx)
-    detail = {"scheduled_transfer_id": scheduled_transfer_id, "run_date": row["run_date"]}
-
-    if tier is Tier.RED and row["created_tier"] == "yellow":
-        # It has become Red since it was scheduled: hold it, neither send nor drop it.
-        conn.execute(
-            "UPDATE scheduled_transfers SET status = 'held', held_at = ?"
-            " WHERE scheduled_transfer_id = ?",
-            (now.isoformat(), scheduled_transfer_id),
-        )
-        _audit_run(conn, row, now, tier, RefusalReason.NEEDS_VERIFICATION, {**detail, "held": True})
-        return
-
-    conn.execute("SAVEPOINT scheduled_run")
+    run_at = datetime.combine(date.fromisoformat(row["run_date"]), time(0, 0), clock.BANK_TZ)
+    transfer = {
+        "payee_id": row["payee_id"],
+        "amount": str(from_cents(row["amount_cents"])),
+        "note": row["note"],
+    }
     try:
-        sent = transfers.transfer(
-            ctx,
-            transfers.TransferInput(
-                payee_id=row["payee_id"], amount=amount, note=row["note"]
-            ),
+        sent = policy.run_approved(
+            conn,
+            registry,
+            sessions.by_id(conn, row["created_session_id"]),
+            "transfer",
+            transfer,
+            approved=Tier(row["created_tier"]),
+            at=run_at,
+            detail={"scheduled_transfer_id": scheduled_transfer_id, "run_date": row["run_date"]},
         )
     except Refusal as refusal:
-        conn.execute("ROLLBACK TO scheduled_run")
-        conn.execute("RELEASE scheduled_run")
-        conn.execute(
-            "UPDATE scheduled_transfers SET status = 'failed', failure_reason = ?"
-            " WHERE scheduled_transfer_id = ?",
-            (refusal.reason.value, scheduled_transfer_id),
-        )
-        _audit_run(conn, row, now, tier, refusal.reason, {**detail, **refusal.detail})
+        if refusal.reason in WAITS_FOR_CUSTOMER:
+            # Neither sent nor dropped: it waits for the Customer to verify or cancel it.
+            conn.execute(
+                "UPDATE scheduled_transfers SET status = 'held', held_at = ?"
+                " WHERE scheduled_transfer_id = ?",
+                (now.isoformat(), scheduled_transfer_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE scheduled_transfers SET status = 'failed', failure_reason = ?"
+                " WHERE scheduled_transfer_id = ?",
+                (refusal.reason.value, scheduled_transfer_id),
+            )
         return
-    conn.execute("RELEASE scheduled_run")
-    limits.record(conn, row["customer_id"], "scheduled_transfer", amount, run_at)
     conn.execute(
         "UPDATE scheduled_transfers SET status = 'executed', executed_at = ?, transfer_id = ?"
         " WHERE scheduled_transfer_id = ?",
-        (now.isoformat(), sent.transfer_id, scheduled_transfer_id),
-    )
-    _audit_run(conn, row, now, tier, None, {**detail, "transfer_id": sent.transfer_id})
-
-
-def _audit_run(
-    conn: sqlite3.Connection,
-    row: sqlite3.Row,
-    now: datetime,
-    tier: Tier,
-    reason: RefusalReason | None,
-    detail: dict[str, object],
-) -> None:
-    """Record a run in the trail of the session that scheduled it. A transfer that was
-    held or failed shows as a refusal, so it never counts as having run."""
-    audit.record(
-        conn,
-        session_id=row["created_session_id"],
-        at=now,
-        event=Event.OPERATION,
-        operation=RUN_OPERATION,
-        input={"scheduled_transfer_id": row["scheduled_transfer_id"]},
-        tier=tier,
-        reason=reason,
-        detail=detail,
-        refusal_detail=detail if reason else None,
+        (now.isoformat(), sent.output["transfer_id"], scheduled_transfer_id),
     )
 
 
