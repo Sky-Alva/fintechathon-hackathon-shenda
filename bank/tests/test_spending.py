@@ -173,6 +173,14 @@ def test_recurring_charges_are_detected_and_one_off_charges_are_not(client: Test
     assert all(c["occurrence_count"] >= 3 for c in charges)
 
 
+def test_frequent_purchases_at_irregular_intervals_are_not_recurring_charges(
+    client: TestClient,
+) -> None:
+    charges = output(call(client, login(client, "liming"), "detect_recurring_charges"))["charges"]
+
+    assert not {c["merchant"] for c in charges} & {"Meituan", "Ele.me"}
+
+
 def test_subscriptions_show_their_next_renewal_date(client: TestClient) -> None:
     found = subscriptions(client, login(client, "liming"))
 
