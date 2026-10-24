@@ -621,7 +621,11 @@ def list_subscriptions(ctx: OperationContext, _: ListSubscriptionsInput) -> List
             next_renewal_date=next_renewal,
             reasons_it_may_not_be_needed=reasons[str(row["merchant"]).casefold()],
         ))
-    subscriptions.sort(key=lambda item: (item.next_renewal_date, item.merchant.casefold()))
+    # Cancelled Subscriptions have no renewal date; list them after the active ones.
+    subscriptions.sort(key=lambda item: (
+        item.next_renewal_date is None, item.next_renewal_date or date.max,
+        item.merchant.casefold(),
+    ))
     return ListSubscriptionsOutput(subscriptions=subscriptions)
 
 
