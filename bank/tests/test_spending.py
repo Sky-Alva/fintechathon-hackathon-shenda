@@ -91,7 +91,7 @@ def test_transactions_filter_by_date_range_category_and_merchant(client: TestCli
                          end_date="2026-07-31", category="transport", merchant="didi")
 
     assert [(t["occurred_at"][:10], t["amount"]) for t in found] == [
-        ("2026-07-20", "38.00"), ("2026-06-20", "168.00"),
+        ("2026-07-09", "38.00"), ("2026-06-20", "168.00"),
     ]
 
 
@@ -178,7 +178,9 @@ def test_frequent_purchases_at_irregular_intervals_are_not_recurring_charges(
 ) -> None:
     charges = output(call(client, login(client, "liming"), "detect_recurring_charges"))["charges"]
 
-    assert not {c["merchant"] for c in charges} & {"Meituan", "Ele.me"}
+    assert not {c["merchant"] for c in charges} & {
+        "Meituan", "Ele.me", "DiDi", "Shenzhen Metro",
+    }
 
 
 def test_subscriptions_show_their_next_renewal_date(client: TestClient) -> None:
