@@ -318,6 +318,16 @@ function AgentEntry({ entry }: { entry: HistoryEntry }) {
           </details>
         </>
       )
+    case 'chart':
+      return (
+        <>
+          <b>图表</b> <code>{entry.step_id}</code> {entry.title}（银行返回，未改动）
+          <details>
+            <summary>图表数据</summary>
+            <pre>{json(entry.data)}</pre>
+          </details>
+        </>
+      )
     default:
       return (
         <>
