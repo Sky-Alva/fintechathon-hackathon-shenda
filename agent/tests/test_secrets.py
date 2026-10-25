@@ -236,13 +236,13 @@ def test_the_banks_own_ids_in_an_answer_are_not_taken_for_codes(
     agent: TestClient, bank: TestClient, model: FakeModel
 ) -> None:
     to_mum = {"payee_id": "PAY-LM-002", "amount": "200.00", "note": ""}
-    model.script(plan(step("s1", "transfer", to_mum)), say("已向王秀英转账 200.00 元，流水号 TRF-000001。"))
+    model.script(plan(step("s1", "transfer", to_mum)), say("已向王秀英转账 200.00 元，流水号 TRF-000009。"))
     conversation = start_conversation(agent, log_in(bank, "liming"))
     plan_id = shown(send(agent, conversation, "给老妈转200"))[0]["plan_id"]
 
     events = act(agent, conversation, "confirm", plan_id=plan_id)
 
-    assert answer_text(events) == "已向王秀英转账 200.00 元，流水号 TRF-000001。"
+    assert answer_text(events) == "已向王秀英转账 200.00 元，流水号 TRF-000009。"
 
 
 # --- The Agent never asks for a code or a password -----------------------------------
