@@ -7,17 +7,23 @@ from typing import Any, Literal
 
 from agent import charts, failures
 from agent.bank import BankRefused, BankSession, BankUnavailable
-from agent.events import Event, PlanStep, StepFailed, StepStarted, StepSucceeded
+from agent.events import (
+    BankRefusal,
+    Event,
+    PlanStep,
+    Reversal,
+    StepFailed,
+    StepStarted,
+    StepSucceeded,
+)
 from agent.language import Language
 from agent.reviewer import ReviewedPlan
 
 
 # A step's failure when the Bank couldn't be reached: not a Bank refusal reason.
-BANK_UNAVAILABLE: dict[str, Any] = {
-    "reason": "bank_unavailable",
-    "message": "The Bank could not be reached",
-    "detail": {},
-}
+BANK_UNAVAILABLE = BankRefusal(
+    reason="bank_unavailable", message="The Bank could not be reached", detail={}
+)
 
 
 @dataclass(frozen=True)
@@ -31,10 +37,21 @@ class StepResult:
     operation: str
     input: dict[str, Any]
     output: dict[str, Any] | None
-    refusal: dict[str, Any] | None = None
-    reversal: dict[str, Any] | None = None
-    """The call that would undo the step (`operation`, `input`), as the Bank said when it
-    ran it; None if it can't be undone or changed nothing."""
+    refusal: BankRefusal | None = None
+    reversal: Reversal | None = None
+    """The call that would undo the step, as the Bank said when it ran it; None if it
+    can't be undone or changed nothing."""
+
+    def as_data(self) -> dict[str, Any]:
+        """The result as plain data, for the model (inside a `<bank_data>` block)."""
+        return {
+            "step_id": self.step_id,
+            "operation": self.operation,
+            "input": self.input,
+            "output": self.output,
+            "refusal": self.refusal.model_dump() if self.refusal else None,
+            "reversal": self.reversal.model_dump() if self.reversal else None,
+        }
 
 
 @dataclass(frozen=True)
@@ -94,9 +111,15 @@ def execute(
         except BankUnavailable:
             yield failed(step, BANK_UNAVAILABLE, results, language)
             return Halt(step, "failed")
+        reversal = result.get("reversal")
         results.append(
             StepResult(
-                step.id, step.operation, step.input, result["output"], None, result.get("reversal")
+                step.id,
+                step.operation,
+                step.input,
+                result["output"],
+                None,
+                Reversal.model_validate(reversal) if reversal is not None else None,
             )
         )
         yield StepSucceeded(
@@ -108,9 +131,11 @@ def execute(
 
 
 def failed(
-    step: PlanStep, refusal: dict[str, Any], results: list[StepResult], language: Language
+    step: PlanStep, refusal: BankRefusal, results: list[StepResult], language: Language
 ) -> StepFailed:
     """The step didn't run: record the Bank's refusal and explain it by its reason."""
     results.append(StepResult(step.id, step.operation, step.input, None, refusal))
-    text = failures.explain(refusal["reason"], language)
-    return StepFailed(step_id=step.id, operation=step.operation, text=text, **refusal)
+    text = failures.explain(refusal.reason, language)
+    return StepFailed(
+        step_id=step.id, operation=step.operation, text=text, **refusal.model_dump()
+    )

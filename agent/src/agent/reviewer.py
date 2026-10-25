@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from agent.bank import BankRefused, BankSession
-from agent.events import PlanStep, StepRefusal
+from agent.events import BankRefusal, PlanStep, StepRefusal
 from agent.planner import Plan, irreversible
 
 
@@ -16,7 +16,7 @@ from agent.planner import Plan, irreversible
 class ReviewedPlan:
     steps: list[PlanStep]
     """In the order they will run, each with the Bank's tier."""
-    refusals: dict[str, dict[str, Any]] = field(default_factory=dict)
+    refusals: dict[str, BankRefusal] = field(default_factory=dict)
     """The Bank's refusal (`reason`, `message`, `detail`) of each step that can't run, by
     step ID. Those steps have no tier."""
 
@@ -30,9 +30,8 @@ class ReviewedPlan:
         """The Safety Lock (`trigger`, `locked_until`) if the Bank refused a step because
         the session is under one: then nothing but Green Operations would run."""
         for refusal in self.refusals.values():
-            if refusal["reason"] == "session_locked":
-                lock: dict[str, Any] = refusal["detail"]
-                return lock
+            if refusal.reason == "session_locked":
+                return refusal.detail
         return None
 
     @property
@@ -42,7 +41,8 @@ class ReviewedPlan:
         return [
             step
             for step in self.steps
-            if self.refusals.get(step.id, {}).get("reason") == "forbidden_other_customer"
+            if (refusal := self.refusals.get(step.id)) is not None
+            and refusal.reason == "forbidden_other_customer"
         ]
 
     @property
@@ -59,7 +59,9 @@ class ReviewedPlan:
     @property
     def card_refusals(self) -> list[StepRefusal]:
         """The refused steps, as the Plan card lists them."""
-        return [StepRefusal(step_id=id, **refusal) for id, refusal in self.refusals.items()]
+        return [
+            StepRefusal(step_id=id, **refusal.model_dump()) for id, refusal in self.refusals.items()
+        ]
 
 
 class ConfirmationRefused(Exception):
@@ -112,5 +114,9 @@ def review(
     pairs = list(zip(ordered, preview, strict=True))
     return ReviewedPlan(
         steps=[step.model_copy(update={"tier": tiered.get("tier")}) for step, tiered in pairs],
-        refusals={step.id: tiered["refusal"] for step, tiered in pairs if tiered.get("refusal")},
+        refusals={
+            step.id: BankRefusal.model_validate(tiered["refusal"])
+            for step, tiered in pairs
+            if tiered.get("refusal")
+        },
     )

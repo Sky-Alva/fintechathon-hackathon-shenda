@@ -11,7 +11,7 @@ says the information couldn't be retrieved.
 """
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Any
 
 from agent import untrusted
@@ -96,7 +96,7 @@ def answer(
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT.format(untrusted=untrusted.RULE)},
         *history,
-        untrusted.bank_data("Bank results for this turn:", [asdict(result) for result in results]),
+        untrusted.bank_data("Bank results for this turn:", [result.as_data() for result in results]),
         {"role": "system", "content": REPLY_IN[language]},
     ]
     draft = model.chat(messages).content or ""

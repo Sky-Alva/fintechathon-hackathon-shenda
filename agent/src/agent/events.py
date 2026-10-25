@@ -110,14 +110,19 @@ class StepFailed(BankRefusal):
     text: str
 
 
-class ReversalStep(BaseModel):
-    """How one completed step would be undone: the Operation that reverses it, with its
+class Reversal(BaseModel):
+    """The call that would undo a completed step: the Operation that reverses it, with its
     input, as the Bank said when the step ran."""
+
+    operation: str
+    input: dict[str, Any]
+
+
+class ReversalStep(Reversal):
+    """How one completed step would be undone."""
 
     step_id: str
     """The completed step it would undo."""
-    operation: str
-    input: dict[str, Any]
 
 
 class ReversalOffered(BaseModel):

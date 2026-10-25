@@ -68,7 +68,7 @@ def known(results: list[StepResult]) -> dict[str, Payee]:
             payee = _payee(result.output["payee"])
             found[payee.payee_id] = payee
         elif result.operation == LOOKUP and ambiguous(result) is not None:
-            for candidate in result.refusal["detail"]["candidates"]:  # type: ignore[index]
+            for candidate in result.refusal.detail["candidates"]:  # type: ignore[union-attr]
                 payee = _payee(candidate)
                 found.setdefault(payee.payee_id, payee)
         elif result.operation == PAYS and result.output is not None:
@@ -81,9 +81,9 @@ def known(results: list[StepResult]) -> dict[str, Payee]:
 def ambiguous(result: StepResult) -> list[Payee] | None:
     """The candidates, if the Bank refused this lookup because several Payees match."""
     refusal = result.refusal
-    if result.operation != LOOKUP or refusal is None or refusal["reason"] != "ambiguous_payee":
+    if result.operation != LOOKUP or refusal is None or refusal.reason != "ambiguous_payee":
         return None
-    return [_payee(candidate) for candidate in refusal["detail"].get("candidates", [])]
+    return [_payee(candidate) for candidate in refusal.detail.get("candidates", [])]
 
 
 def which_one(results: list[StepResult], language: Language) -> ClarificationQuestion | None:
@@ -91,7 +91,7 @@ def which_one(results: list[StepResult], language: Language) -> ClarificationQue
     for result in results:
         candidates = ambiguous(result)
         if candidates:
-            query = str(result.refusal["detail"].get("query", ""))  # type: ignore[index]
+            query = str(result.refusal.detail.get("query", ""))  # type: ignore[union-attr]
             text = (
                 f"I found {len(candidates)} Payees matching “{query}”. Which one do you mean?"
                 if language == "en"

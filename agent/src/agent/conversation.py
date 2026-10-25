@@ -30,6 +30,7 @@ from agent import (
 from agent.bank import BankRefused, BankSession, BankUnavailable, HttpClient
 from agent.events import (
     Answer,
+    BankRefusal,
     CancellationOffered,
     ClarificationQuestion,
     ConfirmationRequested,
@@ -493,7 +494,7 @@ def interruption(
     if not isinstance(pending, PausedPlan | PendingVerification):
         return None
     return {
-        "ran": [asdict(result) for result in pending.results],
+        "ran": [result.as_data() for result in pending.results],
         "not_run": [step.model_dump(mode="json", exclude={"tier"}) for step in pending.plan.steps],
     }
 
@@ -708,7 +709,7 @@ class Conversations:
                 self.model,
                 conversation.history,
                 catalogue,
-                [asdict(result) for result in looked_up] if looked_up else None,
+                [result.as_data() for result in looked_up] if looked_up else None,
                 interrupted=interrupted,
                 failed=failed_context,
                 now=now,
@@ -1357,7 +1358,7 @@ class Conversations:
                 preview = {}
             if (refusal := preview.get("refusal")) is not None:
                 language = customer_language(conversation.history)
-                yield failed(step, refusal, pending.results, language)
+                yield failed(step, BankRefusal.model_validate(refusal), pending.results, language)
                 yield from self._finish(conversation, pending.results)
                 return
             text = notices.wrong_code(failed_attempts, customer_language(conversation.history))
@@ -1449,7 +1450,7 @@ class Conversations:
         failed_step = results[-1]
         refusal = failed_step.refusal
         assert refusal is not None, "the failed step is the last result"
-        if refusal["reason"] in NO_CLEAN_UP:
+        if refusal.reason in NO_CLEAN_UP:
             return
         # The card's completed steps that can be undone, the last to run first.
         done = [
@@ -1459,22 +1460,22 @@ class Conversations:
         ]
         if done:
             offer = ReversalOffer(
-                plan_id, [ReversalStep(step_id=id, **reversal) for id, reversal in done]
+                plan_id, [ReversalStep(step_id=id, **reversal.model_dump()) for id, reversal in done]
             )
             conversation.reversal = offer
             numbers = [str(card.index(id) + 1) for id, _ in done]
             text = reversal_text(numbers, customer_language(conversation.history))
             conversation.history.append({"role": "assistant", "content": text})
             yield ReversalOffered(plan_id=plan_id, steps=offer.steps, text=text)
-        if refusal["reason"] == "bank_unavailable":
+        if refusal.reason == "bank_unavailable":
             return  # nothing to re-plan around: the Bank can't be reached
         try:
             catalogue = conversation.bank.catalogue()
         except (BankRefused, BankUnavailable):
             return
         context = {
-            "ran": [asdict(result) for result in results[:-1] if result.output is not None],
-            "failed": asdict(failed_step),
+            "ran": [result.as_data() for result in results[:-1] if result.output is not None],
+            "failed": failed_step.as_data(),
             "not_run": [step.model_dump(mode="json", exclude={"tier"}) for step in not_run],
         }
         yield from self._plan(conversation, catalogue, failed=failed_step, failed_context=context)
@@ -1498,8 +1499,8 @@ class Conversations:
         step because the session is under a Safety Lock, the notice of what still works."""
         yield self._answer(conversation, results)
         for result in results:
-            if result.refusal is not None and result.refusal["reason"] == "session_locked":
-                yield self._locked(conversation, result.refusal["detail"])
+            if result.refusal is not None and result.refusal.reason == "session_locked":
+                yield self._locked(conversation, result.refusal.detail)
                 return
 
     def _locked(self, conversation: Conversation, lock: dict[str, Any]) -> SessionLocked:
