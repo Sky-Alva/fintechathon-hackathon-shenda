@@ -80,6 +80,27 @@ If a step's input can only be known from another step's result (e.g. "send Mum h
 balance"), list that step in `depends_on` and leave the unknown inputs out: the Agent runs
 the Green look-ups first and then asks you to complete the Plan with exact inputs.
 
+银行时钟（今天的日期以此为准）：{now}
+The Bank clock (what "today" is): {now}
+
+客户问最近有什么要安排、或提到家人的生日时：查询客户资料（配偶生日）和去年同期的礼物消费，
+如果配偶生日在两周内，就提出计划：预留 ¥1,000 作为生日礼物资金（可付款给鲜花店和蛋糕店），
+并从商户订鲜花和蛋糕，送达日期为生日前两天，用这笔预留资金付款（下单时不填 reservation_id，
+银行会用能付这类商户的预留资金）。
+When the Customer asks what's coming up, or mentions a family member's birthday: look up
+their profile (the spouse's birthday) and last year's gift purchases around that date. If
+the spouse's birthday is within two weeks, propose: reserve ¥1,000 for the birthday gift
+(for the flower and cake Merchants), and order flowers and a cake from the Merchants for
+delivery two days before the birthday, paid from those Reserved Funds (leave
+`reservation_id` out of the orders: the Bank pays them from Reserved Funds for that kind of
+Merchant).
+
+计划需要客户确认时，可以在 note 里用一两句话说明你从查询结果中注意到了什么（例如日期、去年的消费），
+只写银行结果中出现的事实；计划卡片会列出每一步和金额，不要重复。
+When the Plan needs the Customer's approval, `note` may say in a sentence or two what you
+noticed in the look-up results that led to it (a date, last year's purchase), stating only
+facts from the Bank's results; the Plan card lists each step and amount, so don't repeat them.
+
 收款人：客户用昵称（老妈）、姓名、手机号或过往转账备注（房租）称呼收款人时，先用 find_payee 查询，
 转账依赖这一步；不要自己编 payee_id。“老样子”“上次那样”的金额用银行查到的上一笔转账金额。
 银行找到多位收款人时，Agent 会自己请客户选择：不要猜。
@@ -150,6 +171,9 @@ class Plan(BaseModel):
     intent: str = ""
     """What the model understood the Customer wants, for the decision trace."""
     steps: list[PlanStep]
+    note: str | None = None
+    """What the model noticed in the look-up results that led to the Plan, for the Customer:
+    shown before the Plan card only if every fact in it is in a Bank result."""
 
     def in_dependency_order(self, irreversible: frozenset[str] = frozenset()) -> list[PlanStep]:
         """The steps so that each comes after the steps it depends on, and Operations named
@@ -269,6 +293,12 @@ def plan_tool(catalogue: list[dict[str, Any]]) -> dict[str, Any]:
                         "type": "string",
                         "description": "The Customer's request as you understood it, in one"
                         " short sentence in the Customer's language",
+                    },
+                    "note": {
+                        "type": "string",
+                        "description": "Optional, for a Plan that needs approval: what you"
+                        " noticed in the Bank's look-up results that led to it, in the"
+                        " Customer's language, stating only facts from those results",
                     },
                     "steps": {
                         "type": "array",
@@ -412,6 +442,7 @@ def make_plan(
     looked_up: list[dict[str, Any]] | None = None,
     interrupted: dict[str, Any] | None = None,
     failed: dict[str, Any] | None = None,
+    now: str = "",
     payees: list[dict[str, Any]] | None = None,
 ) -> Plan | Declined | HumanAsked | Clarification | CancellationsAsked:
     """The Plan for the Customer's latest request, why the Planner declines it, that the
@@ -434,6 +465,7 @@ def make_plan(
         offer_tool=OFFER_TOOL,
         untrusted=untrusted.RULE,
         catalogue=describe(catalogue),
+        now=now or "unknown",
     )
     messages = [{"role": "system", "content": system}, *history]
     # Bank results go in a marked data block of their own, never into the instructions.

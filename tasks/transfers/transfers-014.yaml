@@ -31,12 +31,12 @@ expect:
   clarifying_question: false
   final_state:
     - operation: query_balance
-      output: {accounts: [{account_id: ACC-LM-001, balance: "881.00", available_balance: "180.00"}]}
+      output: {accounts: [{account_id: ACC-LM-001, balance: "1180.00", available_balance: "180.00"}]}
     - operation: list_merchant_orders
       output:
         orders:
-          - {order_id: ORD-000001, merchant_id: MER-FLOWER-001, delivery_date: "2026-10-26", amount: "299.00"}
+          - {order_id: ORD-000001, merchant_id: MER-FLOWER-001, delivery_date: "2026-10-26", amount: "299.00", status: pending}
     - operation: list_reserved_funds
       output:
         reservations:
-          - {reservation_id: RSV-000001, spent: "299.00", remaining: "701.00", status: active}
+          - {reservation_id: RSV-000001, spent: "0.00", remaining: "1000.00", status: active}

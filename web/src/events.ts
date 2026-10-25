@@ -188,7 +188,8 @@ export type ClarificationQuestion = {
   options: { label: string; value: string }[]
 }
 // Emitted since #46. `human_requested` ends the Customer's turn; the takeover events
-// arrive outside the Customer's turns, from GET /conversations/{id}/updates.
+// arrive outside the Customer's turns, from GET /conversations/{id}/updates, as does an
+// `answer` telling the Customer that Merchant orders were paid on the Bank clock (#48).
 export type HumanRequested = { type: 'human_requested'; text: string }
 export type HandedOver = { type: 'handed_over'; staff: string }
 export type StaffMessage = { type: 'staff_message'; staff: string; text: string }

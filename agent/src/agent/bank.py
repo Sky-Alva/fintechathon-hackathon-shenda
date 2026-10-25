@@ -80,6 +80,12 @@ class BankSession:
         ]
         return operations
 
+    def clock(self) -> str:
+        """The Bank clock's "now" (ISO 8601, Bank time): the only date the Agent plans by."""
+        # Not traced, like the catalogue: context for planning, read every turn.
+        now: str = self._send("get", "/clock", traced=False)["now"]
+        return now
+
     def tier_preview(self, operations: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Each `{operation, input}`'s tier (or refusal), in order. Changes nothing."""
         steps: list[dict[str, Any]] = self._send(
