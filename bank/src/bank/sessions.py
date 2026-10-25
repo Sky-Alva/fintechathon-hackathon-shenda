@@ -111,6 +111,20 @@ def authenticate_phone(conn: sqlite3.Connection, phone_token: str | None) -> Ses
     )
 
 
+def by_id(conn: sqlite3.Connection, session_id: str) -> Session:
+    """A session, ended or not, for what the Bank does later on its behalf (e.g. running a
+    Scheduled Transfer it approved)."""
+    row = conn.execute(
+        "SELECT s.session_id, s.session_token, s.phone_token, s.customer_id, c.name"
+        " FROM sessions s JOIN customers c USING (customer_id) WHERE s.session_id = ?",
+        (session_id,),
+    ).fetchone()
+    return Session(
+        row["session_id"], row["session_token"], row["phone_token"], row["customer_id"],
+        row["name"],
+    )
+
+
 def exists(conn: sqlite3.Connection, session_id: str) -> bool:
     return (
         conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone()

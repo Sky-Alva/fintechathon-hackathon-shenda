@@ -48,7 +48,13 @@ def record(
 
 def tier_for_outgoing(amount: Decimal, ctx: OperationContext) -> Tier:
     """Yellow while the Daily Transfer Total including `amount` stays ≤ ¥1,000, else Red."""
-    return Tier.YELLOW if ctx.daily_transfer_total + amount <= DAILY_TRANSFER_LIMIT else Tier.RED
+    return tier_for_day_total(ctx.daily_transfer_total, amount)
+
+
+def tier_for_day_total(day_total: Decimal, amount: Decimal) -> Tier:
+    """The same rule for a day other than today, given what that day's total is (or is set
+    to be) before `amount`: how a Scheduled Transfer is tiered against its run day."""
+    return Tier.YELLOW if day_total + amount <= DAILY_TRANSFER_LIMIT else Tier.RED
 
 
 MODULE = BankModule(name="limits", schema=SCHEMA)

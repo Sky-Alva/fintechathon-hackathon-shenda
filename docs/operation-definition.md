@@ -54,6 +54,8 @@ Mark an input field the audit log must never store, such as a new password, as `
 
 The policy gate owns it. `ctx.daily_transfer_total` is the Customer's total for the Bank-clock day *before* this Operation. When the Bank tiers several steps of a Plan together (a tier preview or a Confirmation request), it also includes the earlier steps, in order, without writing anything. So a tier rule only ever needs `(input, ctx)`.
 
+The one exception is money leaving on another day. A Scheduled Transfer is tiered against its run day's *projected* total (sent that day, plus the Customer's other Scheduled Transfers waiting to run on it), read by its own tier rule and passed to `limits.tier_for_day_total`. When it runs, at 09:00 on its run date, it goes through the gate's `policy.run_approved` as the `transfer` the Customer approved: the gate checks the session's Safety Lock and the tier again, adds it to that day's total and audits it in the session that scheduled it.
+
 ### Refusing
 
 Raise `Refusal(RefusalReason.X, message, detail)` from a handler or tier rule. The gate rolls back everything the call wrote, audits the refusal and returns it. Reasons:
