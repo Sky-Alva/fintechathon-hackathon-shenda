@@ -28,7 +28,7 @@ The Customer can ask for a human at any time, with the `ask_for_human` action (t
 While a Staff Member has the conversation (`handed_over` until `handed_back`), the Agent is paused:
 
 - **A Customer message** goes to the Staff Member: it is in the staff history, and the turn has no events at all (the Agent doesn't call the model or the Bank).
-- **A Customer action** that would start a step (`confirm`, `reject`, `stop`, `resume`, `cancel`, `reverse`) is `409 {"error": "already_handed_over", "staff": "…"}`, before any event. `ask_for_human` is answered with no events: a human is already there.
+- **A Customer action** that would start a step (`confirm`, `reject`, `stop`, `resume`, `cancel`, `reverse`, `cancel_subscriptions`) is `409 {"error": "already_handed_over", "staff": "…"}`, before any event. `ask_for_human` is answered with no events: a human is already there.
 - **The Staff Member's replies** reach the Customer as `staff_message` events, marked with the Staff Member's name.
 
 `handed_over`, `staff_message` and `handed_back` happen outside the Customer's turns, so the Channel polls `GET /conversations/{id}/updates?after=N` for them (`{"events": [...], "next": N'}`). They are in the staff history too, in order.
@@ -37,7 +37,7 @@ Handing back resumes the Agent on the Customer's next message, with the whole co
 
 ### Customer actions
 
-The Customer answers a Plan card and the other prompts with `POST /conversations/{id}/actions`. `confirm` and `reject` (#31), `verified` and `wrong_code` (#37), `ask_for_human` (#46), `stop`, `resume` and `cancel` (#38) and `reverse` (#42) are built; the rest are proposed, and the ticket that builds one may refine it and must update this table. An action the Agent doesn't know yet is `422`.
+The Customer answers a Plan card and the other prompts with `POST /conversations/{id}/actions`. `confirm` and `reject` (#31), `verified` and `wrong_code` (#37), `ask_for_human` (#46), `stop`, `resume` and `cancel` (#38), `reverse` (#42) and `cancel_subscriptions` (#41) are built; the rest are proposed, and the ticket that builds one may refine it and must update this table. An action the Agent doesn't know yet is `422`.
 
 | `action` | Fields | Answers |
 |----------|--------|---------|
@@ -47,6 +47,7 @@ The Customer answers a Plan card and the other prompts with `POST /conversations
 | `wrong_code` (built, #37) | `plan_id`, `step_id`, `failed_attempts` | `verification_requested`, when the Bank refused the code typed into the phone (`token_invalid`; `failed_attempts` is from its `detail`). The Agent checks with the Bank (a tier preview of the step) whether the session is now locked. If not, the turn is an `answer` explaining the wrong code, then the same `verification_requested` again: the challenge stays open. If it is (the 3rd wrong code), the turn is the step's `step_failed` (`session_locked`), `answer`, `session_locked`. |
 | `choose` | `value` | `clarification_question` |
 | `reverse` (built, #42) | `plan_id`, `step_ids` (at least one) | `reversal_offered`: undo these of the offered steps. Nothing is reversed without this, and nothing runs yet: the undo is a new Plan (step IDs `undo_<step_id>`, in the offer's order) that the Bank tiers like any other, and the turn is its `plan_proposed` and `confirmation_requested` (or, under a Safety Lock, `session_locked`). It runs only once the Customer confirms that card, with Strong Verification for a Red step (lifting a Card Lock is Red). It replaces a Plan card still waiting. A step ID the offer doesn't list is `422 {"error": "unknown_step"}`; an offer already answered, or dropped by a new message, is `409 {"error": "plan_not_pending"}`. |
+| `cancel_subscriptions` (built, #41) | `offer_id`, `subscription_ids` | `cancellation_offered`: the Customer's pick of the offered Subscriptions. Nothing is cancelled yet: the pick is one Plan (`s1`…: one `cancel_subscription` per pick, in the offer's order, then a Green `list_subscriptions` that depends on them all, to read back what the Bank shows) that the Bank tiers like any other, and the turn is its `plan_proposed` and `confirmation_requested`; one `confirm` cancels them all. When that Plan has run, the `answer` is written by the Agent from the read-back, not by the model: which of the picked Subscriptions the Bank shows as cancelled, and which are still active. An empty pick cancels nothing: the turn is one `answer` saying so, and the Agent calls the Bank for nothing. An ID the offer doesn't list is `422 {"error": "unknown_step"}` before any event, and the offer still waits; an offer already answered, or dropped by a new message, is `409 {"error": "plan_not_pending"}`. It replaces a Plan card still waiting. |
 | `stop` (built, #38) | `plan_id` | a running Plan (from the `confirm`, `verified` or `resume` tap until its turn ends): pause it. The response has no events; the running turn ends with `plan_paused`. A Plan waiting for `verified` is paused at its Red step, and the response is its `plan_paused`. |
 | `resume` (built, #38) | `plan_id` | `plan_paused`: the rest runs as in a `confirm` turn (no new Confirmations; no `/confirmations` pair), ending with `answer` from the whole Plan's results, `plan_paused` again, or a Red step's `verification_requested` (a new challenge, also when the Plan was stopped while waiting for one). |
 | `cancel` (built, #38) | `plan_id` | `plan_paused`: nothing more runs; the turn is one `answer` acknowledging it. |
@@ -186,6 +187,16 @@ A step of the Plan failed (see `step_failed`): the Agent offers to undo the Plan
 {"type": "reversal_offered", "plan_id": "p1",
  "steps": [{"step_id": "s2", "operation": "lift_card_lock", "input": {"card_id": "CARD-LM-001", "scope": "online"}}],
  "text": "已完成的步骤可以撤销：按第 1 步的顺序。需要撤销吗？撤销是一个新的计划，会先给您看计划卡片并请您确认；不撤销则保持不变。"}
+```
+
+### `cancellation_offered` (emitted, #41)
+
+The Customer asked to cancel the Subscriptions they don't use or need without naming which ("这个月帮我把用不上的会员都退了"). The Planner never picks for them: it calls its `offer_cancellations` tool instead of planning, and the Agent plans and runs one Green `list_subscriptions` look-up (`step_started`, `step_succeeded`), then sends this. `candidates` are the active Subscriptions whose `reasons_it_may_not_be_needed` the Bank left non-empty, each the Bank's Subscription object unchanged, in the Bank's order. `text` lists them, numbered, each with its price and the Bank's reasons in the Customer's language; the Agent writes it, never the model. Ends the turn. The Customer answers with `cancel_subscriptions`, or picks in words in a new message (planned like any request; the message drops the offer). When the Bank flags none, the turn ends with an `answer` saying so instead.
+
+```json
+{"type": "cancellation_offered", "offer_id": "o1",
+ "candidates": [{"subscription_id": "SUB-LM-003", "merchant": "StreamPlus", "category": "video", "original_amount": "25.00", "current_amount": "25.00", "signed_up_on": "2026-07-05", "status": "active", "next_renewal_date": "2026-11-05", "reasons_it_may_not_be_needed": [{"reason": "trial_converted", "detail": "A free trial converted to a paid subscription."}]}],
+ "text": "银行标记了 1 个可能用不上的订阅：\n1. StreamPlus（¥25.00）：免费试用已转为付费\n请选择要取消的订阅。选好后，我会把它们放在一张计划卡片上，您确认一次即可。"}
 ```
 
 ### `clarification_question` (reserved, #39)

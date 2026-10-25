@@ -148,6 +148,8 @@ class _Run:
                 events = self.answer_verification(prompt)
             elif prompt["type"] == "reversal_offered":
                 events = self.answer_reversal(prompt)
+            elif prompt["type"] == "cancellation_offered":
+                events = self.answer_offer(prompt)
             else:
                 return
         raise RunError(f"the Agent asked more than {MAX_PROMPTS_PER_TURN} times in one turn")
@@ -179,6 +181,19 @@ class _Run:
         if answer == "accept":
             return self.act("reverse", plan_id=prompt["plan_id"], step_ids=step_ids)
         return self.act("reject", plan_id=prompt["plan_id"])
+
+    def answer_offer(self, prompt: dict[str, Any]) -> list[dict[str, Any]]:
+        """Pick the scripted Subscriptions to cancel. Unscripted, the offer is left
+        unanswered: the Customer may pick in words in the next turn."""
+        offered = [candidate["subscription_id"] for candidate in prompt["candidates"]]
+        if not self.approvals or self.approvals[0].kind != "pick":
+            self.log(f"Agent: cancellation offer of {offered} -> no pick (unscripted)")
+            return []
+        picked = self.approvals.popleft().pick or []
+        self.log(f"Agent: cancellation offer of {offered} -> pick {picked}")
+        return self.act(
+            "cancel_subscriptions", offer_id=prompt["offer_id"], subscription_ids=picked
+        )
 
     def answer_verification(self, prompt: dict[str, Any]) -> list[dict[str, Any]]:
         answer = self.take("verification")

@@ -204,6 +204,12 @@ function AgentEntry({ entry }: { entry: HistoryEntry }) {
             <b>客户操作</b> 请求人工客服
           </>
         )
+      if (entry.action === 'cancel_subscriptions')
+        return (
+          <>
+            <b>客户操作</b> 选择要取消的订阅（见随后的计划）
+          </>
+        )
       if (entry.action === 'verified' || entry.action === 'wrong_code')
         return (
           <>
@@ -248,6 +254,18 @@ function AgentEntry({ entry }: { entry: HistoryEntry }) {
             <summary>内容</summary>
             <pre>{json(entry.steps)}</pre>
           </details>
+        </>
+      )
+    case 'cancellation_offered':
+      return (
+        <>
+          <b>可取消的订阅</b> <code>{entry.offer_id}</code>：
+          {entry.candidates
+            .map(
+              (c) =>
+                `${c.merchant}（${c.reasons_it_may_not_be_needed.map((r) => r.reason).join('、')}）`,
+            )
+            .join('，')}
         </>
       )
     case 'refusal':
