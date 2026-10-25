@@ -13,7 +13,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent import guard, notices, planner, refusals, responder, reviewer, secrets_guard
+from agent import guard, notices, orders, planner, refusals, responder, reviewer, secrets_guard
 from agent.bank import BankRefused, BankSession, BankUnavailable, HttpClient
 from agent.events import (
     Answer,
@@ -37,6 +37,7 @@ from agent.events import (
     VerificationRequested,
 )
 from agent.executor import BANK_UNAVAILABLE, StepResult, execute, failed
+from agent.fact_check import Facts
 from agent.language import Language, customer_language
 from agent.model import ModelClient
 from agent.reviewer import ReviewedPlan
@@ -147,6 +148,10 @@ class Conversation:
     replying, handing back), which the Channel polls for."""
     human_requested: bool = False
     """The Customer asked for a human and no Staff Member has taken over since."""
+    awaiting_orders: dict[str, str] = field(default_factory=dict)
+    """The Merchant orders placed in this conversation that the Bank will pay on their
+    delivery date, by order ID: the Customer is told when the Bank has paid them (or
+    couldn't)."""
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def next_plan_id(self) -> str:
@@ -488,6 +493,10 @@ class Conversations:
             return self._push(conversation, HandedBack())
 
     def updates(self, conversation: Conversation, after: int) -> list[Event]:
+        """What the Customer was sent outside their own turns, from the `after`-th on:
+        a Staff Member's takeover, replies and hand-back, and the Merchant orders the Bank
+        has paid on the Bank clock."""
+        self.check_orders(conversation)
         return conversation.updates[after:]
 
     def _push[E: Event](self, conversation: Conversation, event: E) -> E:
@@ -547,6 +556,11 @@ class Conversations:
         again as it was, and an empty Plan means there is nothing more to propose."""
         bank = conversation.bank
         language = customer_language(conversation.history)
+        try:
+            now = bank.clock()
+        except (BankRefused, BankUnavailable):
+            yield self._not_retrieved(conversation)
+            return
 
         def ask(
             looked_up: list[StepResult] | None = None,
@@ -558,6 +572,7 @@ class Conversations:
                 [asdict(result) for result in looked_up] if looked_up else None,
                 interrupted=interrupted,
                 failed=failed_context,
+                now=now,
             )
             if failed is None or not isinstance(plan, planner.Plan):
                 return plan
@@ -607,7 +622,7 @@ class Conversations:
         except (BankRefused, BankUnavailable):
             yield self._not_retrieved(conversation)
             return
-        yield from self._propose(conversation, reviewed, looked_up, catalogue)
+        yield from self._propose(conversation, reviewed, looked_up, catalogue, plan.note)
 
     def _propose(
         self,
@@ -615,8 +630,10 @@ class Conversations:
         reviewed: ReviewedPlan,
         looked_up: list[StepResult],
         catalogue: list[dict[str, Any]],
+        note: str | None = None,
     ) -> Iterator[Event]:
-        """The reviewed Plan's Plan card, or, if it needs none, its run."""
+        """The reviewed Plan's Plan card, or, if it needs none, its run. A Plan card comes
+        after the Planner's `note` of what it noticed, if the Bank's results back it."""
         yield trace("plan", plan_data(reviewed))
         if reviewed.other_customers:
             yield from self._other_customer(conversation, reviewed)
@@ -628,6 +645,8 @@ class Conversations:
         if reviewed.green_only:
             yield from self._run(conversation, reviewed, looked_up)
             return
+        if note and (noticed := self._noticed(conversation, note, looked_up)) is not None:
+            yield noticed
         pending = PendingPlan(conversation.next_plan_id(), reviewed, looked_up)
         conversation.pending = pending
         yield PlanProposed(
@@ -1138,11 +1157,62 @@ class Conversations:
         conversation.history.append({"role": "assistant", "content": text})
         return Answer(text=text)
 
+    def _noticed(
+        self, conversation: Conversation, note: str, looked_up: list[StepResult]
+    ) -> Answer | None:
+        """The Planner's note of what it noticed in the look-ups, as an answer before the
+        Plan card; None, so nothing is said, unless every fact in it is in a Bank result.
+        Not regenerated: the Plan card says what will happen either way."""
+        earlier = [*conversation.bank_results, *looked_up]
+        facts = Facts.of(result.output for result in earlier if result.output is not None)
+        if responder.check(note, facts) is not None:
+            return None
+        text = secrets_guard.mask(note)
+        self._remember(conversation, looked_up)
+        conversation.history.append({"role": "assistant", "content": text})
+        return Answer(text=text)
+
     def _remember(self, conversation: Conversation, results: list[StepResult]) -> None:
-        """Keep the Bank's results as facts later answers may state."""
+        """Keep the Bank's results as facts later answers may state, and note the Merchant
+        orders the Bank will pay later."""
         conversation.bank_results.extend(
             result for result in results if result not in conversation.bank_results
         )
+        conversation.awaiting_orders.update(orders.placed(results))
+
+    def check_orders(self, conversation: Conversation) -> None:
+        """Tell the Customer, between their turns, about the orders placed in this
+        conversation that the Bank has paid since (or couldn't pay) on their delivery
+        date. Checked only once the Bank clock has reached one, and skipped while a turn
+        is under way: the next poll checks again."""
+        if not conversation.awaiting_orders or not conversation.lock.acquire(blocking=False):
+            return
+        try:
+            if conversation.handed_over_to is not None:
+                return  # the Staff Member has the conversation: told once it is handed back
+            bank = conversation.bank
+            try:
+                if not orders.any_due(conversation.awaiting_orders, bank.clock()):
+                    return
+                listed = bank.call("list_merchant_orders", {})
+            except (BankRefused, BankUnavailable):
+                return  # try again on the next poll
+            result = StepResult(
+                "orders", "list_merchant_orders", {}, listed["output"], None, None
+            )
+            settled = orders.settled(conversation.awaiting_orders, listed["output"])
+            if not settled:
+                bank.take_exchanges()  # nothing to tell: nothing for the trace either
+                return
+            for order in settled:
+                del conversation.awaiting_orders[order["order_id"]]
+            text = orders.settled_text(settled, customer_language(conversation.history))
+            self._remember(conversation, [result])
+            conversation.history.append({"role": "assistant", "content": text})
+            for event in with_bank_traces(bank, iter([Answer(text=text)])):
+                self._push(conversation, event)
+        finally:
+            conversation.lock.release()
 
     def _not_retrieved(self, conversation: Conversation) -> Answer:
         """The answer when the Bank can't be reached, or refuses the session, before

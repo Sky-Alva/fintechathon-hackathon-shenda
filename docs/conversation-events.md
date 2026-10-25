@@ -9,7 +9,7 @@ The contract between the Agent's conversation service and everything that talks 
 | `POST /conversations` | `{session_token}` | `{conversation_id}` |
 | `POST /conversations/{conversation_id}/messages` | `{text}` | the turn's events |
 | `POST /conversations/{conversation_id}/actions` | `{action, ...}` | the turn's events (see below) |
-| `GET /conversations/{conversation_id}/updates?after=N` | none | `{events, next}`: the events the Customer was sent outside their own turns (see [Human takeover](#human-takeover)), from the `N`-th on; poll again with `after=next` |
+| `GET /conversations/{conversation_id}/updates?after=N` | none | `{events, next}`: the events the Customer was sent outside their own turns (see [Human takeover](#human-takeover) and [Orders paid on the Bank clock](#orders-paid-on-the-bank-clock-48)), from the `N`-th on; poll again with `after=next` |
 | `GET /conversations/{conversation_id}/audit-trail` | none | one `trace` event (`stage: "audit_trail"`): the session's audit trail, for the decision trace panel |
 
 - **Login stays with the Channel.** The Channel logs the Customer in with the Bank (`POST /sessions`), keeps the `phone_token` for its simulated phone and hands the Agent the `session_token` only. `POST /conversations` refuses any other field (422), so the Agent never sees a password or the phone token. The Agent acts only through that session and holds no Bank admin key ([ADR-0001](adr/0001-bank-enforces-permission-tiers.md)).
@@ -117,6 +117,15 @@ Every amount, date, card and Payee it mentions appears in a Bank result from thi
 ```json
 {"type": "answer", "text": "您的活期账户余额为 1,180.00 元。"}
 ```
+
+Two `answer`s don't end a turn (#48):
+
+- **What the Planner noticed**, right before a `plan_proposed`. The Planner may give its Plan a `note` (in `propose_plan`) saying what it noticed in the look-up results that led to the Plan ("韩梅梅的生日是 10月28日；去年 2025-10-26 您为她买过生日鲜花（¥268.00）"). It is sent only if every amount, date, card and Payee in it is in a Bank result, as for any answer; otherwise nothing is said (no regenerate: the Plan card says what will happen either way).
+- **Orders paid on the Bank clock**, sent outside the Customer's turns: see below.
+
+#### Orders paid on the Bank clock (#48)
+
+A Merchant order (`order_from_merchant`) is accepted when the Customer approves it and paid by the Bank from its Reserved Funds at 09:00 on its delivery date, when the Bank clock gets there, with no further approval. The Agent notes each order placed in the conversation; whenever the Channel polls `GET /conversations/{id}/updates` and the Bank clock (`GET /clock`, not traced) has reached an order's payment time, it reads the Bank's `list_merchant_orders` and, for the orders the Bank has since paid or failed to pay, pushes one `answer` (Agent-written from the Bank's order list: product, Merchant, amount, delivery date; a failed one with the Bank's reason in plain words), preceded by that call's `bank_request`/`bank_response` traces. Each order is told once. Nothing is checked while a turn is under way or a Staff Member has the conversation; the next poll checks again.
 
 ### `plan_proposed` (emitted, #31)
 
@@ -263,6 +272,6 @@ Decision-trace data for the Channel's toggleable panel, hidden by default: what 
 {"type": "trace", "stage": "audit_trail", "data": {"session_id": "…", "entries": [/* read_audit_trail output */]}}
 ```
 
-- **Order in a turn.** `intent` once the Plan is made (a declined request has only `intent`, then its `refusal`), `plan` once the Bank's tier preview has tiered it, and every Bank call as a `bank_request` + `bank_response` pair just before the first event that follows it. A Green turn is: `intent`, tier-preview pair, `plan`, then per step `step_started`, its pair, `step_succeeded`; then `answer`. A Plan-card turn ends with `plan`, `plan_proposed`, `confirmation_requested`; when Green look-ups run first, it starts with their own `plan` trace (`"look_ups": true`) and steps, then the completed Plan's tier-preview pair and `plan`. A `plan` trace lists the steps the preview refused under `refusals`. A `confirm` turn starts with the `/confirmations` pair (its tokens redacted), then the steps as in a Green turn; a Red step's `/verifications` pair comes just before its `verification_requested`, and its `/operations/…` request carries `verification_token: "[redacted]"`. A `wrong_code` turn starts with the step's tier-preview pair. With `removed_step_ids`, a `confirm` turn starts with the rest's tier-preview pair and `plan`. A `resume` turn is the steps only. The Operation catalogue fetch is not traced.
+- **Order in a turn.** `intent` once the Plan is made (a declined request has only `intent`, then its `refusal`), `plan` once the Bank's tier preview has tiered it, and every Bank call as a `bank_request` + `bank_response` pair just before the first event that follows it. A Green turn is: `intent`, tier-preview pair, `plan`, then per step `step_started`, its pair, `step_succeeded`; then `answer`. A Plan-card turn ends with `plan`, `plan_proposed`, `confirmation_requested`; when Green look-ups run first, it starts with their own `plan` trace (`"look_ups": true`) and steps, then the completed Plan's tier-preview pair and `plan`. A `plan` trace lists the steps the preview refused under `refusals`. A `confirm` turn starts with the `/confirmations` pair (its tokens redacted), then the steps as in a Green turn; a Red step's `/verifications` pair comes just before its `verification_requested`, and its `/operations/…` request carries `verification_token: "[redacted]"`. A `wrong_code` turn starts with the step's tier-preview pair. With `removed_step_ids`, a `confirm` turn starts with the rest's tier-preview pair and `plan`. A `resume` turn is the steps only. The Operation catalogue and Bank clock reads (`GET /operations`, `GET /clock`) are not traced; the Planner is told the Bank clock every turn (#48).
 - **The audit trail** is not part of a turn: the panel fetches it with `GET /conversations/{id}/audit-trail`, which runs the Green `read_audit_trail` Operation through the session (so it works under a Safety Lock). The read is itself audited and shows up in the next read.
 - **No secrets.** A `trace` never carries a token (session, phone, Confirmation, verification), a password or a verification code: the session token travels in a header, which is never traced, and any field whose name contains `token` or `password`, or is `code`, is replaced by `"[redacted]"` wherever it appears.

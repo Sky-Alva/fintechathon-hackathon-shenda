@@ -217,7 +217,9 @@ export default function Chat({
 
   useEffect(() => bottom.current?.scrollIntoView({ behavior: 'smooth' }), [items])
 
-  // A Staff Member's takeover, replies and hand-back arrive between the Customer's turns.
+  // A Staff Member's takeover, replies and hand-back arrive between the Customer's turns,
+  // and so does the news that Merchant orders were paid when the Bank clock reached their
+  // delivery date (#48).
   useEffect(() => {
     let seen = 0
     let polling = false

@@ -23,6 +23,8 @@ const OPERATION_LABELS: Record<string, string> = {
   add_card_lock: '添加卡锁',
   lower_card_limit: '调低卡限额',
   apply_virtual_card: '申请虚拟卡',
+  reserve_funds: '预留资金',
+  order_from_merchant: '向商户下单（送达日从预留资金付款）',
 }
 
 const TIER_LABELS: Record<Tier, string> = {
@@ -39,16 +41,29 @@ const INPUT_LABELS: Record<string, string> = {
   scope: '范围',
   new_limit: '新限额',
   name: '名称',
+  purpose: '用途',
+  merchant_categories: '可付款商户',
+  merchant_id: '商户',
+  product_id: '商品',
+  quantity: '数量',
+  delivery_date: '送达日期',
+  reservation_id: '预留资金',
+}
+
+const CATEGORY_LABELS: Record<string, string> = { flowers: '鲜花店', cake: '蛋糕店' }
+
+function shownValue(key: string, value: unknown): string {
+  if (key === 'amount' || key === 'new_limit') return `¥${value}`
+  if (key === 'merchant_categories' && Array.isArray(value))
+    return value.map((category) => CATEGORY_LABELS[category] ?? String(category)).join('、')
+  return String(value)
 }
 
 /** Every input of the step, exactly as it will be sent to the Bank. */
 function details(step: PlanStep): [string, string][] {
   return Object.entries(step.input)
     .filter(([, value]) => value !== '' && value !== null && value !== undefined)
-    .map(([key, value]) => [
-      INPUT_LABELS[key] ?? key,
-      key === 'amount' || key === 'new_limit' ? `¥${value}` : String(value),
-    ])
+    .map(([key, value]) => [INPUT_LABELS[key] ?? key, shownValue(key, value)])
 }
 
 const STATUS_TEXT: Partial<Record<PlanCardStatus, string>> = {
