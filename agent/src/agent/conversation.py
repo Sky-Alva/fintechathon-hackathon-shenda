@@ -49,6 +49,7 @@ from agent.events import (
     ReversalStep,
     SessionLocked,
     StaffMessage,
+    Subscription,
     Trace,
     VerificationRequested,
 )
@@ -150,7 +151,7 @@ class CancellationOffer:
     pick which to cancel, until they answer or send a new message."""
 
     offer_id: str
-    candidates: list[dict[str, Any]]
+    candidates: list[Subscription]
     """The Bank's Subscriptions, as `list_subscriptions` returned them."""
 
 
@@ -956,7 +957,7 @@ class Conversations:
         offer = conversation.offer
         if offer is None or offer.offer_id != action.offer_id:
             raise PlanNotPending(action.offer_id)
-        offered = [candidate["subscription_id"] for candidate in offer.candidates]
+        offered = [candidate.subscription_id for candidate in offer.candidates]
         if not set(action.subscription_ids) <= set(offered):
             raise UnknownStep(sorted(set(action.subscription_ids) - set(offered)))
         conversation.offer = None  # an offer is answered once
@@ -1226,11 +1227,13 @@ class Conversations:
             conversation.history.append({"role": "assistant", "content": text})
             yield Answer(text=text)
             return
-        offer = CancellationOffer(conversation.next_offer_id(), offered)
+        offer = CancellationOffer(
+            conversation.next_offer_id(), [Subscription.model_validate(c) for c in offered]
+        )
         conversation.offer = offer
         text = subscriptions.offer_text(offered, listed["subscriptions"], language)
         conversation.history.append(untrusted.shown(text))
-        yield CancellationOffered(offer_id=offer.offer_id, candidates=offered, text=text)
+        yield CancellationOffered(offer_id=offer.offer_id, candidates=offer.candidates, text=text)
 
     def _rejected(self, conversation: Conversation) -> Iterator[Event]:
         with conversation.lock:

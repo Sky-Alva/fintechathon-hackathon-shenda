@@ -133,6 +133,27 @@ class ReversalOffered(BaseModel):
     text: str
 
 
+class SubscriptionReason(BaseModel):
+    """One of the Bank's reasons a Subscription may not be needed."""
+
+    reason: Literal["same_category", "price_increase", "trial_converted"]
+    detail: str
+
+
+class Subscription(BaseModel):
+    """A Subscription as the Bank's `list_subscriptions` returns it, unchanged."""
+
+    subscription_id: str
+    merchant: str
+    category: str
+    original_amount: str
+    current_amount: str
+    signed_up_on: str
+    status: Literal["active", "cancelled"]
+    next_renewal_date: str | None
+    reasons_it_may_not_be_needed: list[SubscriptionReason]
+
+
 class CancellationOffered(BaseModel):
     """The Subscriptions the Bank flags as possibly unneeded, for the Customer to pick
     which to cancel. Each candidate is the Bank's Subscription, unchanged, with the Bank's
@@ -142,7 +163,7 @@ class CancellationOffered(BaseModel):
 
     type: Literal["cancellation_offered"] = "cancellation_offered"
     offer_id: str
-    candidates: list[dict[str, Any]]
+    candidates: list[Subscription]
     text: str
 
 
@@ -231,13 +252,17 @@ class InjectionWarning(BaseModel):
     text: str
 
 
+LockTrigger = Literal["wrong_codes", "reported_attempts", "red_operations"]
+"""What made the Bank place a Safety Lock."""
+
+
 class SessionLocked(BaseModel):
     """The Bank has put the session under a Safety Lock: only Green Operations run until
     `locked_until` or until a Staff Member lifts it. `text` tells the Customer so, in
     their language. Ends the turn."""
 
     type: Literal["session_locked"] = "session_locked"
-    trigger: str
+    trigger: LockTrigger
     locked_until: str
     text: str
 
