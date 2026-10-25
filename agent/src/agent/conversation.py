@@ -24,6 +24,7 @@ from agent import (
     reviewer,
     secrets_guard,
     subscriptions,
+    untrusted,
 )
 from agent.bank import BankRefused, BankSession, BankUnavailable, HttpClient
 from agent.events import (
@@ -65,9 +66,11 @@ HANDED_BACK_NOTE = (
 )
 
 CHOSEN_NOTE = (
-    "客户对上面的问题选择了：{label}（{value}）。\n"
-    "The Customer answered the question above by choosing: {label} ({value})."
+    "客户对上面的问题选择了第 {number} 个选项（{value}）。\n"
+    "The Customer answered the question above by choosing option {number} ({value})."
 )
+"""Not the option's label, which may quote the Bank's data (a Payee's masked phone): the
+question above, with its options, is in the history as data."""
 
 
 @dataclass
@@ -892,17 +895,16 @@ class Conversations:
         pending = conversation.pending
         if not isinstance(pending, PendingClarification):
             raise PlanNotPending("")
-        chosen = next((o for o in pending.question.options if o.value == value), None)
-        if chosen is None:
+        values = [option.value for option in pending.question.options]
+        if value not in values:
             raise UnknownOption(value)
         conversation.pending = None  # a question is answered once
         conversation.reversal = None  # moving on drops the other offers, as a message does
         conversation.offer = None
         conversation.record.append(CustomerActionEntry(action="choose", plan_id=None))
         # A note, not a Customer message: the option's label mustn't change the language.
-        conversation.history.append(
-            {"role": "system", "content": CHOSEN_NOTE.format(label=chosen.label, value=value)}
-        )
+        note = CHOSEN_NOTE.format(number=values.index(value) + 1, value=value)
+        conversation.history.append({"role": "system", "content": note})
         turn = self._replan(conversation)
         return self._recorded(conversation, with_bank_traces(conversation.bank, turn))
 
@@ -1105,7 +1107,7 @@ class Conversations:
         listed = "".join(
             f"\n- {option.label} [{option.value}]" for option in question.options
         )
-        conversation.history.append({"role": "assistant", "content": question.text + listed})
+        conversation.history.append(untrusted.shown(question.text + listed))
         return question
 
     def _code_in_chat(self, conversation: Conversation) -> Answer:
@@ -1221,7 +1223,7 @@ class Conversations:
         offer = CancellationOffer(conversation.next_offer_id(), offered)
         conversation.offer = offer
         text = subscriptions.offer_text(offered, listed["subscriptions"], language)
-        conversation.history.append({"role": "assistant", "content": text})
+        conversation.history.append(untrusted.shown(text))
         yield CancellationOffered(offer_id=offer.offer_id, candidates=offered, text=text)
 
     def _rejected(self, conversation: Conversation) -> Iterator[Event]:
@@ -1501,16 +1503,22 @@ class Conversations:
 
     def _answer(self, conversation: Conversation, results: list[StepResult]) -> Answer:
         """The answer from this Plan's Bank results (and earlier ones in the conversation)."""
-        text = subscriptions.report(results, customer_language(conversation.history))
-        if text is None:
-            text = responder.answer(
+        reported = subscriptions.report(results, customer_language(conversation.history))
+        if reported is not None:
+            written = responder.Written(reported, quotes_bank=True)
+        else:
+            written = responder.answer(
                 self.model, conversation.history, results, conversation.bank_results
             )
         # The outgoing check: nothing that looks like a full card number or a code goes
         # out, even when a Bank result contained it.
-        text = secrets_guard.mask(text)
+        text = secrets_guard.mask(written.text)
         self._remember(conversation, results)
-        conversation.history.append({"role": "assistant", "content": text})
+        conversation.history.append(
+            untrusted.shown(text)
+            if written.quotes_bank
+            else {"role": "assistant", "content": text}
+        )
         return Answer(text=text)
 
     def _noticed(
@@ -1564,7 +1572,7 @@ class Conversations:
                 del conversation.awaiting_orders[order["order_id"]]
             text = orders.settled_text(settled, customer_language(conversation.history))
             self._remember(conversation, [result])
-            conversation.history.append({"role": "assistant", "content": text})
+            conversation.history.append(untrusted.shown(text))
             for event in with_bank_traces(bank, iter([Answer(text=text)])):
                 self._push(conversation, event)
         finally:

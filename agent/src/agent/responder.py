@@ -11,7 +11,7 @@ says the information couldn't be retrieved.
 """
 
 import json
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from typing import Any
 
 from agent import untrusted
@@ -71,12 +71,21 @@ NOT_RETRIEVED: dict[Language, str] = {
 }
 
 
+@dataclass(frozen=True)
+class Written:
+    """An answer, and whether it quotes the Bank's data as it was returned (the raw Bank
+    result), which the model then reads back only as data."""
+
+    text: str
+    quotes_bank: bool = False
+
+
 def answer(
     model: ModelClient,
     history: list[dict[str, Any]],
     results: list[StepResult],
     earlier: list[StepResult],
-) -> str:
+) -> Written:
     """The answer to this turn: `results` are this turn's, `earlier` the conversation's."""
     language = customer_language(history)
     retrieved = [result.output for result in results if result.output is not None]
@@ -92,15 +101,15 @@ def answer(
     ]
     draft = model.chat(messages).content or ""
     if (problems := check(draft, facts)) is None:
-        return draft
+        return Written(draft)
     messages += [
         {"role": "assistant", "content": draft},
         {"role": "system", "content": problems},
     ]
     draft = model.chat(messages).content or ""
     if check(draft, facts) is None:
-        return draft
-    return raw(results, language)
+        return Written(draft)
+    return Written(raw(results, language), quotes_bank=True)
 
 
 def check(draft: str, facts: Facts) -> str | None:

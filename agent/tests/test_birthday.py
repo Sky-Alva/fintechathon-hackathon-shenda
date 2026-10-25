@@ -22,7 +22,7 @@ from conftest import (
     updates,
 )
 from evaluation import load_task, run_task
-from fake_model import FakeModel, say, step
+from fake_model import FakeModel, plan, say, step
 
 SHORTLY_BEFORE = "2026-10-24T10:00:00+08:00"  # 韩梅梅's birthday is 10-28
 TWO_DAYS_BEFORE = "2026-10-26T09:00:00+08:00"
@@ -221,6 +221,24 @@ def test_moving_the_clock_to_the_order_date_pays_the_orders_and_the_channel_is_t
     assert [e["at"] for e in paid] == [TWO_DAYS_BEFORE, TWO_DAYS_BEFORE]
     issued = [e["operation"] for e in audit if e["event"] == "confirmation_issued"]
     assert issued == ["reserve_funds", "order_from_merchant", "order_from_merchant"]  # no more
+
+
+def test_the_paid_orders_reach_the_model_later_only_as_bank_data(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    conversation, _ = confirmed(agent, bank, model)
+    set_clock(bank, TWO_DAYS_BEFORE)
+    updates(agent, conversation)
+    model.script(plan(step("s1", "query_balance")), say("您的余额为 180.00 元。"))
+
+    send(agent, conversation, "我余额多少？")
+
+    holding = [m for m in model.requests[-2].messages if "红玫瑰花束" in m["content"]]
+    assert holding
+    for message in holding:
+        assert message["role"] == "assistant"
+        assert message["content"].startswith("<bank_data>")
+        assert message["content"].endswith("</bank_data>")
 
 
 def test_an_order_that_could_not_be_paid_is_told_with_the_banks_reason(
