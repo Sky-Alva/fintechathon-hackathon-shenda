@@ -10,6 +10,7 @@ from conftest import (
     call,
     confirm,
     login,
+    login_session,
     login_with_phone,
     preview_tiers,
     request_confirmations,
@@ -89,6 +90,17 @@ def order(client: TestClient, headers: dict[str, str], input: dict[str, Any]) ->
 def attempt(client: TestClient, headers: dict[str, str], input: dict[str, Any]) -> httpx.Response:
     """An order with no approval, for the cases the Bank refuses before approval matters."""
     return call(client, headers, "order_from_merchant", input)
+
+
+def set_clock(client: TestClient, now: str) -> None:
+    admin(client, "put", "/admin/clock", json={"now": now})
+
+
+def orders(client: TestClient, headers: dict[str, str]) -> list[dict[str, Any]]:
+    response = call(client, headers, "list_merchant_orders", {})
+    assert response.status_code == 200, response.text
+    found: list[dict[str, Any]] = response.json()["output"]["orders"]
+    return found
 
 
 def reservations(
@@ -372,16 +384,14 @@ def test_merchants_can_be_listed_by_kind(client: TestClient) -> None:
     assert [m["merchant_id"] for m in found.json()["output"]["merchants"]] == [CAKE_SHOP]
 
 
-def test_ordering_flowers_and_a_cake_for_a_delivery_date_works_end_to_end(
+def test_an_order_is_accepted_now_and_nothing_is_paid_before_its_delivery_date(
     client: TestClient,
 ) -> None:
     headers = login(client, "liming")
     reservation_id = reserve(client, headers, "1000.00", ["flowers", "cake"])
 
     flowers = order(client, headers, order_input(reservation_id))
-    cake = order(
-        client, headers, order_input(reservation_id, CAKE_8, "388.00", CAKE_SHOP, "2026-10-26")
-    )
+    cake = order(client, headers, order_input(reservation_id, CAKE_8, "388.00", CAKE_SHOP))
 
     assert (flowers.status_code, cake.status_code) == (200, 200), flowers.text + cake.text
     assert flowers.json()["tier"] == "yellow"
@@ -392,9 +402,30 @@ def test_ordering_flowers_and_a_cake_for_a_delivery_date_works_end_to_end(
         "红玫瑰花束 Red rose bouquet",
     )
     assert (placed["delivery_date"], placed["amount"]) == (BIRTHDAY, "299.00")
-    assert flowers.json()["output"]["reservation"]["remaining"] == "701.00"
-    assert cake.json()["output"]["reservation"]["remaining"] == "313.00"
-    # The orders were paid from the reserved ¥1,000, so ¥180 is still available to spend.
+    assert (placed["status"], placed["paid_at"]) == ("pending", None)
+    assert reservations(client, headers)[reservation_id]["remaining"] == "1000.00"
+    assert accounts(client, headers)[LIMING_ACCOUNT] == ("1180.00", "180.00")
+
+
+def test_orders_are_paid_from_the_reserved_funds_when_the_clock_reaches_their_date(
+    client: TestClient,
+) -> None:
+    headers = login(client, "liming")
+    reservation_id = reserve(client, headers, "1000.00", ["flowers", "cake"])
+    order(client, headers, order_input(reservation_id))
+    order(client, headers, order_input(reservation_id, CAKE_8, "388.00", CAKE_SHOP))
+
+    set_clock(client, "2026-10-26T08:59:00+08:00")
+    assert [o["status"] for o in orders(client, headers)] == ["pending", "pending"]
+    admin(client, "post", "/admin/clock/advance", json={"minutes": 1})
+
+    paid = orders(client, headers)
+    assert [(o["status"], o["paid_at"]) for o in paid] == [
+        ("paid", "2026-10-26T09:00:00+08:00"),
+        ("paid", "2026-10-26T09:00:00+08:00"),
+    ]
+    assert reservations(client, headers)[reservation_id]["remaining"] == "313.00"
+    # Paid from the reserved ¥1,000, so ¥180 is still available to spend.
     assert accounts(client, headers)[LIMING_ACCOUNT] == ("493.00", "180.00")
 
 
@@ -436,20 +467,44 @@ def test_a_payment_that_stays_within_1000_for_the_day_is_yellow(client: TestClie
     assert tier_of(client, headers, "order_from_merchant", two_cakes) == "yellow"
 
 
-def test_a_merchant_payment_counts_toward_the_daily_transfer_total(client: TestClient) -> None:
+BIRTHDAY_9AM = "2026-10-26T09:00:00+08:00"
+
+
+def test_an_order_is_tiered_against_its_delivery_days_projected_total(
+    client: TestClient,
+) -> None:
     headers = login(client, "hanmei")
     reservation_id = reserve(client, headers, "3000.00")
     order(client, headers, order_input(reservation_id, CAKE_8, "776.00", CAKE_SHOP, quantity=2))
 
     another = order_input(reservation_id, CAKE_8, "388.00", CAKE_SHOP)  # ¥776 + ¥388 = ¥1,164
-    transfer = {"payee_id": "PAY-HM-001", "amount": "300.00"}  # ¥776 + ¥300 = ¥1,076
+    other_day = {**another, "delivery_date": "2026-10-27"}
+    schedule = {"payee_id": "PAY-HM-001", "amount": "300.00", "run_date": BIRTHDAY}
+    transfer_today = {"payee_id": "PAY-HM-001", "amount": "1000.00"}
 
     assert tier_of(client, headers, "order_from_merchant", another) == "red"
-    assert tier_of(client, headers, "transfer", transfer) == "red"
-    assert tier_of(client, headers, "transfer", {**transfer, "amount": "224.00"}) == "yellow"
+    assert tier_of(client, headers, "order_from_merchant", other_day) == "yellow"
+    assert tier_of(client, headers, "schedule_transfer", schedule) == "red"  # ¥1,076 that day
+    assert tier_of(client, headers, "transfer", transfer_today) == "yellow"  # nothing paid today
 
 
-def test_a_merchant_payment_that_takes_the_total_above_1000_is_red(client: TestClient) -> None:
+def test_a_paid_order_counts_toward_the_daily_transfer_total_of_the_day_it_is_paid(
+    client: TestClient,
+) -> None:
+    headers = login(client, "hanmei")
+    reservation_id = reserve(client, headers, "3000.00")
+    order(client, headers, order_input(reservation_id, CAKE_8, "776.00", CAKE_SHOP, quantity=2))
+
+    set_clock(client, BIRTHDAY_9AM)
+
+    transfer = {"payee_id": "PAY-HM-001", "amount": "224.00"}  # ¥776 + ¥224 = ¥1,000
+    assert tier_of(client, headers, "transfer", transfer) == "yellow"
+    assert tier_of(client, headers, "transfer", {**transfer, "amount": "224.01"}) == "red"
+
+
+def test_an_order_that_takes_its_delivery_days_total_above_1000_is_red(
+    client: TestClient,
+) -> None:
     headers, phone = login_with_phone(client, "hanmei")
     reservation_id = reserve(client, headers, "3000.00")
     big = order_input(reservation_id, CAKE_8, "1164.00", CAKE_SHOP, quantity=3)
@@ -461,10 +516,12 @@ def test_a_merchant_payment_that_takes_the_total_above_1000_is_red(client: TestC
 
     token = verify(client, headers, phone, "order_from_merchant", big)
     response = call(client, headers, "order_from_merchant", big, verification_token=token)
-
     assert response.status_code == 200, response.text
     assert response.json()["tier"] == "red"
-    assert response.json()["output"]["daily_transfer_total"] == "1164.00"
+
+    set_clock(client, BIRTHDAY_9AM)  # verified when ordered: paid with no further approval
+
+    assert [o["status"] for o in orders(client, headers)] == ["paid"]
     assert accounts(client, headers)[HANMEI_ACCOUNT] == ("7486.00", "5650.00")
 
 
@@ -481,16 +538,28 @@ def test_an_order_cannot_spend_more_than_is_left_in_the_reserved_funds(
     assert accounts(client, headers)[HANMEI_ACCOUNT] == ("8650.00", "8350.00")
 
 
+def test_pending_orders_cannot_together_spend_more_than_is_reserved(client: TestClient) -> None:
+    headers = login(client, "liming")
+    reservation_id = reserve(client, headers, "500.00")
+    order(client, headers, order_input(reservation_id))  # ¥299 waiting to be paid
+
+    response = attempt(client, headers, order_input(reservation_id, CAKE_6, "268.00", CAKE_SHOP))
+
+    assert reasons(response) == "insufficient_funds"
+    assert len(orders(client, headers)) == 1
+
+
 def test_a_reservation_that_is_used_up_closes(client: TestClient) -> None:
     headers = login(client, "liming")
     reservation_id = reserve(client, headers, "199.00")
-
     order(client, headers, order_input(reservation_id, SUNFLOWERS, "199.00"))
+
+    set_clock(client, BIRTHDAY_9AM)
 
     closed = reservations(client, headers)[reservation_id]
     assert (closed["status"], closed["remaining"], closed["spent"]) == ("used", "0.00", "199.00")
-    again = attempt(client, headers, order_input(reservation_id, SUNFLOWERS, "199.00"))
-    assert reasons(again) == "invalid_input"
+    later = order_input(reservation_id, SUNFLOWERS, "199.00", delivery_date="2026-10-28")
+    assert reasons(attempt(client, headers, later)) == "invalid_input"
 
 
 def test_an_order_cannot_use_released_reserved_funds(client: TestClient) -> None:
@@ -502,6 +571,66 @@ def test_an_order_cannot_use_released_reserved_funds(client: TestClient) -> None
 
     assert response.status_code == 422
     assert reasons(response) == "invalid_input"
+
+
+def test_an_order_whose_reserved_funds_were_released_fails_when_due(client: TestClient) -> None:
+    headers = login(client, "liming")
+    reservation_id = reserve(client, headers, "1000.00")
+    order(client, headers, order_input(reservation_id))
+    confirmed_call(client, headers, "release_reserved_funds", {"reservation_id": reservation_id})
+
+    set_clock(client, BIRTHDAY_9AM)
+
+    [failed] = orders(client, headers)
+    assert (failed["status"], failed["failure_reason"], failed["paid_at"]) == (
+        "failed",
+        "invalid_input",
+        None,
+    )
+    assert accounts(client, headers)[LIMING_ACCOUNT] == ("1180.00", "1180.00")
+
+
+def test_an_order_that_has_become_red_by_its_payment_time_fails(client: TestClient) -> None:
+    headers = login(client, "hanmei")
+    reservation_id = reserve(client, headers, "1000.00")
+    order(client, headers, order_input(reservation_id))  # Yellow: ¥299 on the 26th
+    set_clock(client, "2026-10-26T08:00:00+08:00")
+    confirmed_call(client, headers, "transfer", {"payee_id": "PAY-HM-001", "amount": "800.00"})
+
+    set_clock(client, BIRTHDAY_9AM)  # ¥800 sent that day + ¥299 would be ¥1,099
+
+    [failed] = orders(client, headers)
+    assert (failed["status"], failed["failure_reason"]) == ("failed", "needs_verification")
+    assert reservations(client, headers)[reservation_id]["remaining"] == "1000.00"
+
+
+def test_an_order_whose_session_is_under_a_safety_lock_fails(client: TestClient) -> None:
+    headers = login(client, "liming")
+    order(client, headers, order_input(reserve(client, headers, "1000.00")))
+    set_clock(client, "2026-10-26T08:50:00+08:00")
+    evidence = {"kind": "impersonation", "evidence": "我是银行安全中心的，马上转账"}
+    call(client, headers, "report_suspected_attempt", evidence)
+    call(client, headers, "report_suspected_attempt", evidence)  # locked until 09:20
+
+    set_clock(client, BIRTHDAY_9AM)
+
+    [failed] = orders(client, headers)
+    assert (failed["status"], failed["failure_reason"]) == ("failed", "session_locked")
+    assert accounts(client, headers)[LIMING_ACCOUNT] == ("1180.00", "180.00")
+
+
+def test_payments_are_audited_in_the_session_that_ordered(client: TestClient) -> None:
+    session_id, headers = login_session(client, "liming")
+    order(client, headers, order_input(reserve(client, headers, "1000.00")))
+
+    set_clock(client, "2026-10-27T12:00:00+08:00")  # the clock reaches it late
+
+    entries = admin(client, "get", f"/admin/sessions/{session_id}/audit")["entries"]
+    payments = [e for e in entries if "order_id" in (e["detail"] or {})]
+    assert [(e["operation"], e["tier"], e["outcome"], e["at"]) for e in payments] == [
+        ("pay_merchant_order", "yellow", "ok", BIRTHDAY_9AM)
+    ]
+    assert orders(client, headers)[0]["paid_at"] == BIRTHDAY_9AM
 
 
 def test_a_customer_cannot_pay_with_the_other_customers_reserved_funds(
@@ -531,7 +660,7 @@ def test_the_amount_must_be_the_listed_price_times_the_quantity(client: TestClie
     assert right.status_code == 200, right.text
 
 
-def test_the_delivery_date_cannot_be_in_the_past_or_over_a_year_away(client: TestClient) -> None:
+def test_the_delivery_date_must_be_after_today_and_within_a_year(client: TestClient) -> None:
     headers = login(client, "hanmei")
     reservation_id = reserve(client, headers, "3000.00")
 
@@ -539,8 +668,10 @@ def test_the_delivery_date_cannot_be_in_the_past_or_over_a_year_away(client: Tes
         response = attempt(client, headers, order_input(reservation_id, delivery_date=bad))
         assert response.status_code == 422, bad
         assert reasons(response) == "invalid_input", bad
-    today = order(client, headers, order_input(reservation_id, delivery_date="2026-10-20"))
-    assert today.status_code == 200, today.text  # same-day delivery is fine
+    today = attempt(client, headers, order_input(reservation_id, delivery_date="2026-10-20"))
+    assert reasons(today) == "invalid_input"  # paid on its delivery date, so ordered ahead
+    tomorrow = order(client, headers, order_input(reservation_id, delivery_date="2026-10-21"))
+    assert tomorrow.status_code == 200, tomorrow.text
 
 
 def test_an_order_names_a_real_merchant_and_one_of_its_products(client: TestClient) -> None:
@@ -590,7 +721,9 @@ def test_catalogue_declares_reversibility_and_descriptions(client: TestClient) -
         "operation": "reserve_funds",
     }
     assert entries["order_from_merchant"]["reversibility"] == {"kind": "irreversible"}
-    assert entries["order_from_merchant"]["counts_toward_daily_transfer_total"] is True
+    # Counted on the day it is paid, not when ordered; paying is the Bank's, not in the catalogue.
+    assert entries["order_from_merchant"]["counts_toward_daily_transfer_total"] is False
+    assert "pay_merchant_order" not in entries
     assert entries["reserve_funds"]["counts_toward_daily_transfer_total"] is False
     assert entries["order_from_merchant"]["tier"]["kind"] == "rule"
     for name in ["list_reserved_funds", "list_merchants", "list_merchant_orders"]:

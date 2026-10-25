@@ -2,29 +2,41 @@
 
 Simulated businesses inside the Bank: a flower shop and a cake shop. A Customer orders goods
 for a delivery date and pays from Reserved Funds, so an order only works with a reservation
-that allows that kind of Merchant and has enough left. The payment is tiered like a transfer
-of the same amount and counts toward the Daily Transfer Total, so one that takes the total
-above ¥1,000 is Red. A payment cannot be taken back.
+that allows that kind of Merchant and has enough left once its other pending orders are paid.
+
+An order is accepted now and paid at 09:00 on its delivery date, like a Scheduled Transfer:
+nothing is debited and no Reserved Funds are spent before then. It is tiered when ordered like
+a transfer of the same amount on its delivery day, against that day's *projected* Daily
+Transfer Total (`scheduled_transfers.projected_total`), so one that takes it above ¥1,000 is
+Red. The Bank pays every due order whenever the Bank clock is set or advanced (`run_due`,
+called by the admin clock endpoints), through the policy gate as the payment the Customer
+approved when ordering: the Safety Lock, the tier and the Reserved Funds are checked again
+then, and the payment counts toward the Daily Transfer Total of the day it is paid. An order
+that can't be paid then is marked failed with the reason, never silently dropped. A payment
+cannot be taken back.
 
 Merchants keep no account of their own: the Customer's account is debited and that is all.
 """
 
 import sqlite3
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from bank import customers, limits, reserved_funds
+from bank import clock, customers, limits, policy, reserved_funds, scheduled_transfers, sessions
 from bank.money import Amount, from_cents, to_cents
 from bank.registry import (
     BankModule,
     Irreversible,
     Operation,
     OperationContext,
+    OwnedBy,
     ReadOnly,
     Refusal,
     RefusalReason,
+    Registry,
     Tier,
     TierRule,
 )
@@ -52,11 +64,22 @@ CREATE TABLE merchant_orders (
     delivery_date TEXT NOT NULL,
     reservation_id TEXT NOT NULL REFERENCES reserved_funds (reservation_id),
     note TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    approved_tier TEXT NOT NULL CHECK (approved_tier IN ('yellow', 'red')),
+    created_session_id TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'paid', 'failed')),
+    created_at TEXT NOT NULL,
+    paid_at TEXT,
+    failure_reason TEXT
 );
 """
 
 MAX_DAYS_AHEAD = 365
+PAY_TIME = time(9, 0)  # Bank-clock time an order is paid on its delivery date
+
+Status = Literal["pending", "paid", "failed"]
+
+# One of the session's Customer's Merchant orders. The gate refuses another Customer's.
+OrderId = Annotated[str, OwnedBy("merchant_orders", "order_id")]
 
 
 def seed(conn: sqlite3.Connection) -> None:
@@ -134,7 +157,7 @@ def list_merchants(ctx: OperationContext, input: ListMerchantsInput) -> ListMerc
     return ListMerchantsOutput(merchants=result)
 
 
-# --- Order and pay from Reserved Funds ----------------------------------------------
+# --- Order, to be paid from Reserved Funds on the delivery date ---------------------
 
 
 class OrderFromMerchantInput(BaseModel):
@@ -143,7 +166,9 @@ class OrderFromMerchantInput(BaseModel):
     product_id: str
     quantity: int = Field(default=1, ge=1, le=20)
     amount: Amount = Field(description="The listed price times the quantity.")
-    delivery_date: date = Field(description="The Bank-clock date it is delivered; not in the past.")
+    delivery_date: date = Field(
+        description="The Bank-clock date it is delivered and paid, at 09:00; after today."
+    )
     reservation_id: ReservationId  # the Reserved Funds to pay from
     note: str = Field(default="", max_length=100)
 
@@ -159,19 +184,22 @@ class Order(BaseModel):
     delivery_date: date
     reservation_id: str
     note: str
+    status: Status = Field(
+        description="pending until paid at 09:00 on the delivery date; failed if it couldn't be."
+    )
+    paid_at: datetime | None
+    failure_reason: str | None = Field(description="Why it could not be paid, when failed.")
 
 
 class OrderFromMerchantOutput(BaseModel):
     order: Order
-    reservation: Reservation
-    balance_after: Decimal
-    daily_transfer_total: Decimal
+    reservation: Reservation = Field(description="Nothing is spent from it until the order is paid.")
 
 
 def _validate(
     ctx: OperationContext, input: OrderFromMerchantInput
-) -> tuple[sqlite3.Row, sqlite3.Row, sqlite3.Row]:
-    """The Merchant, product and reservation of an order that could be paid right now."""
+) -> tuple[sqlite3.Row, sqlite3.Row]:
+    """The Merchant and product of an order that can be accepted now."""
     merchant: sqlite3.Row | None = ctx.conn.execute(
         "SELECT * FROM merchants WHERE merchant_id = ?", (input.merchant_id,)
     ).fetchone()
@@ -190,10 +218,10 @@ def _validate(
             {"merchant_id": input.merchant_id, "product_id": input.product_id},
         )
     today = ctx.now.date()
-    if not today <= input.delivery_date <= today + timedelta(days=MAX_DAYS_AHEAD):
+    if not today < input.delivery_date <= today + timedelta(days=MAX_DAYS_AHEAD):
         raise Refusal(
             RefusalReason.INVALID_INPUT,
-            f"The delivery date must be from {today.isoformat()} and within"
+            f"The delivery date must be after {today.isoformat()} and within"
             f" {MAX_DAYS_AHEAD} days",
             {"delivery_date": input.delivery_date.isoformat(), "today": today.isoformat()},
         )
@@ -205,57 +233,68 @@ def _validate(
             {"amount": str(input.amount), "price_total": str(from_cents(price_cents))},
         )
     reservation = reserved_funds.active_reservation(ctx, input.reservation_id)
-    reserved_funds.check_can_pay(reservation, merchant["category"], price_cents)
-    return merchant, product, reservation
+    # It must also cover the orders already waiting to be paid from it.
+    committed = ctx.conn.execute(
+        "SELECT COALESCE(SUM(amount_cents), 0) FROM merchant_orders"
+        " WHERE reservation_id = ? AND status = 'pending'",
+        (input.reservation_id,),
+    ).fetchone()[0]
+    reserved_funds.check_can_pay(reservation, merchant["category"], price_cents + committed)
+    return merchant, product
+
+
+def _tier_on_delivery_day(ctx: OperationContext, input: OrderFromMerchantInput) -> Tier:
+    """Tiered like a transfer of the same amount on the day it will be paid."""
+    projected = scheduled_transfers.projected_total(
+        ctx.conn, ctx.customer_id, input.delivery_date
+    )
+    return limits.tier_for_day_total(projected, input.amount)
 
 
 def order_from_merchant_tier(input: OrderFromMerchantInput, ctx: OperationContext) -> Tier:
     _validate(ctx, input)
-    return limits.tier_for_outgoing(input.amount, ctx)  # tiered like a transfer of that amount
+    return _tier_on_delivery_day(ctx, input)
 
 
 def order_from_merchant(
     ctx: OperationContext, input: OrderFromMerchantInput
 ) -> OrderFromMerchantOutput:
-    merchant, product, reservation = _validate(ctx, input)
-    cents = to_cents(input.amount)
-    customers.debit(ctx.conn, reservation["account_id"], cents)
-    reserved_funds.spend(ctx, reservation, cents)
+    merchant, product = _validate(ctx, input)
+    tier = _tier_on_delivery_day(ctx, input)
     count = ctx.conn.execute("SELECT COUNT(*) FROM merchant_orders").fetchone()[0]
     order_id = f"ORD-{count + 1:06d}"  # Bank-wide, like transfer IDs
     ctx.conn.execute(
-        "INSERT INTO merchant_orders VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO merchant_orders (order_id, customer_id, merchant_id, product_id, quantity,"
+        " amount_cents, delivery_date, reservation_id, note, approved_tier, created_session_id,"
+        " status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
         (
             order_id,
             ctx.customer_id,
             merchant["merchant_id"],
             product["product_id"],
             input.quantity,
-            cents,
+            to_cents(input.amount),
             input.delivery_date.isoformat(),
             input.reservation_id,
             input.note,
+            tier.value,
+            ctx.session_id,
             ctx.now.isoformat(),
         ),
     )
-    account = customers.current_account(ctx.conn, ctx.customer_id)  # what Reserved Funds are in
     return OrderFromMerchantOutput(
-        order=_order_view(ctx, order_id),
-        reservation=reserved_funds.view(
-            reserved_funds.reservation(ctx, input.reservation_id)
-        ),
-        balance_after=from_cents(account["balance_cents"]),
-        daily_transfer_total=ctx.daily_transfer_total + input.amount,
+        order=_order_view(ctx.conn, order_id),
+        reservation=reserved_funds.view(reserved_funds.reservation(ctx, input.reservation_id)),
     )
 
 
-def _order_view(ctx: OperationContext, order_id: str) -> Order:
-    row = ctx.conn.execute(
+def _order_view(conn: sqlite3.Connection, order_id: str) -> Order:
+    row = conn.execute(
         "SELECT o.*, m.name AS merchant_name, p.name AS product_name FROM merchant_orders o"
         " JOIN merchants m ON m.merchant_id = o.merchant_id"
         " JOIN merchant_products p ON p.product_id = o.product_id"
-        " WHERE o.order_id = ? AND o.customer_id = ?",
-        (order_id, ctx.customer_id),
+        " WHERE o.order_id = ?",
+        (order_id,),
     ).fetchone()
     return Order(
         order_id=row["order_id"],
@@ -268,6 +307,9 @@ def _order_view(ctx: OperationContext, order_id: str) -> Order:
         delivery_date=date.fromisoformat(row["delivery_date"]),
         reservation_id=row["reservation_id"],
         note=row["note"],
+        status=row["status"],
+        paid_at=row["paid_at"],
+        failure_reason=row["failure_reason"],
     )
 
 
@@ -289,7 +331,123 @@ def list_merchant_orders(
         "SELECT order_id FROM merchant_orders WHERE customer_id = ? ORDER BY order_id",
         (ctx.customer_id,),
     ).fetchall()
-    return ListMerchantOrdersOutput(orders=[_order_view(ctx, r["order_id"]) for r in ids])
+    return ListMerchantOrdersOutput(orders=[_order_view(ctx.conn, r["order_id"]) for r in ids])
+
+
+# --- Paying due orders, when the Bank clock reaches their delivery date -------------
+
+
+class PayMerchantOrderInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    order_id: OrderId
+    amount: Amount
+
+
+class PayMerchantOrderOutput(BaseModel):
+    order: Order
+
+
+def _payable(ctx: OperationContext, input: PayMerchantOrderInput) -> sqlite3.Row:
+    """The order's Reserved Funds, if they can still pay it."""
+    order = ctx.conn.execute(
+        "SELECT o.reservation_id, m.category FROM merchant_orders o"
+        " JOIN merchants m ON m.merchant_id = o.merchant_id WHERE o.order_id = ?",
+        (input.order_id,),
+    ).fetchone()
+    reservation = reserved_funds.active_reservation(ctx, order["reservation_id"])
+    reserved_funds.check_can_pay(reservation, order["category"], to_cents(input.amount))
+    return reservation
+
+
+def pay_merchant_order_tier(input: PayMerchantOrderInput, ctx: OperationContext) -> Tier:
+    _payable(ctx, input)
+    return limits.tier_for_outgoing(input.amount, ctx)  # on the day it is paid
+
+
+def pay_merchant_order(
+    ctx: OperationContext, input: PayMerchantOrderInput
+) -> PayMerchantOrderOutput:
+    reservation = _payable(ctx, input)
+    cents = to_cents(input.amount)
+    customers.debit(ctx.conn, reservation["account_id"], cents)
+    reserved_funds.spend(ctx, reservation, cents)
+    ctx.conn.execute(
+        "UPDATE merchant_orders SET status = 'paid', paid_at = ? WHERE order_id = ?",
+        (ctx.now.isoformat(), input.order_id),
+    )
+    return PayMerchantOrderOutput(order=_order_view(ctx.conn, input.order_id))
+
+
+# Not in the Bank's catalogue: only `run_due` pays an order, as the Customer approved it.
+PAYMENTS = Registry(
+    [
+        BankModule(
+            name="merchant_payments",
+            schema="",
+            operations=[
+                Operation(
+                    name="pay_merchant_order",
+                    description_zh="在送达日9:00用预留资金支付一笔待付款的商户订单。",
+                    description_en=(
+                        "Pay a pending Merchant order from its Reserved Funds at 09:00 on"
+                        " its delivery date."
+                    ),
+                    input_model=PayMerchantOrderInput,
+                    output_model=PayMerchantOrderOutput,
+                    tier=TierRule(
+                        description_zh="与付款当日同等金额的转账分级相同。",
+                        description_en="Tiered like a transfer of the same amount that day.",
+                        resolve=pay_merchant_order_tier,
+                    ),
+                    reversibility=Irreversible(),
+                    handler=pay_merchant_order,
+                    daily_transfer_amount=lambda input: input.amount,
+                )
+            ],
+        )
+    ]
+)
+
+
+def _pay_at(delivery_date: date) -> datetime:
+    return datetime.combine(delivery_date, PAY_TIME, clock.BANK_TZ)
+
+
+def run_due(conn: sqlite3.Connection) -> None:
+    """Pay every pending order whose payment time the Bank clock has reached, oldest first.
+
+    Each one goes through the policy gate as the payment approved when it was ordered, at
+    its payment time, so it counts toward that day's Daily Transfer Total and is tiered
+    again there. Called inside the transaction that sets or advances the Bank clock, after
+    the Scheduled Transfers due at the same time.
+    """
+    now = clock.now(conn)
+    on_or_before_today = conn.execute(
+        "SELECT * FROM merchant_orders WHERE status = 'pending' AND delivery_date <= ?"
+        " ORDER BY delivery_date, order_id",
+        (now.date().isoformat(),),
+    ).fetchall()
+    for row in on_or_before_today:
+        pay_at = _pay_at(date.fromisoformat(row["delivery_date"]))
+        if pay_at > now:
+            continue
+        try:
+            policy.run_approved(
+                conn,
+                PAYMENTS,
+                sessions.by_id(conn, row["created_session_id"]),
+                "pay_merchant_order",
+                {"order_id": row["order_id"], "amount": str(from_cents(row["amount_cents"]))},
+                approved=Tier(row["approved_tier"]),
+                at=pay_at,  # also the time its Safety Lock and Daily Transfer Total are read
+                detail={"order_id": row["order_id"], "delivery_date": row["delivery_date"]},
+            )
+        except Refusal as refusal:
+            conn.execute(
+                "UPDATE merchant_orders SET status = 'failed', failure_reason = ?"
+                " WHERE order_id = ?",
+                (refusal.reason.value, row["order_id"]),
+            )
 
 
 MODULE = BankModule(
@@ -313,37 +471,43 @@ MODULE = BankModule(
         Operation(
             name="order_from_merchant",
             description_zh=(
-                "向商户下单并指定送达日期，用预留资金付款；金额等于商品单价乘以数量，付款不可撤销。"
+                "向商户下单并指定送达日期（明天起），用预留资金付款；金额等于商品单价乘以数量。"
+                "下单时不扣款，银行于送达日9:00从预留资金付款，届时再次检查；付款不可撤销。"
             ),
             description_en=(
-                "Order goods from a Merchant for a delivery date and pay from Reserved Funds;"
-                " the amount is the listed price times the quantity, and the payment cannot"
-                " be taken back."
+                "Order goods from a Merchant for a delivery date after today, paid from"
+                " Reserved Funds; the amount is the listed price times the quantity. Nothing"
+                " is paid when ordering: the Bank pays it from the Reserved Funds at 09:00 on"
+                " the delivery date, checking again then, and the payment cannot be taken back."
             ),
             input_model=OrderFromMerchantInput,
             output_model=OrderFromMerchantOutput,
             tier=TierRule(
                 description_zh=(
-                    "与同等金额的转账分级相同：当日累计转账额（含本笔）≤ ¥1,000 为黄色，否则为红色；"
-                    "预留资金不够或用途不符会被拒绝。"
+                    "与送达日同等金额的转账分级相同：送达日预计累计转账额（已转出 + 当日待执行的"
+                    "预约转账和待付款订单 + 本笔）≤ ¥1,000 为黄色，否则为红色；"
+                    "预留资金（扣除待付款订单后）不够或用途不符会被拒绝。"
                 ),
                 description_en=(
-                    "Tiered like a transfer of the same amount: Yellow if today's Daily"
-                    " Transfer Total, including this payment, stays at or below ¥1,000,"
-                    " otherwise Red; refused when the Reserved Funds are too small or not"
-                    " for this kind of Merchant."
+                    "Tiered like a transfer of the same amount on the delivery day: Yellow if"
+                    " that day's projected Daily Transfer Total (already sent, plus Scheduled"
+                    " Transfers and pending orders for that day, plus this one) stays at or"
+                    " below ¥1,000, otherwise Red; refused when the Reserved Funds, less their"
+                    " pending orders, are too small or not for this kind of Merchant."
                 ),
                 resolve=order_from_merchant_tier,
             ),
             reversibility=Irreversible(),
             handler=order_from_merchant,
-            daily_transfer_amount=lambda input: input.amount,
         ),
         Operation(
             name="list_merchant_orders",
-            description_zh="列出当前客户向商户下的订单、送达日期和付款金额。",
+            description_zh=(
+                "列出当前客户向商户下的订单、送达日期、金额和付款状态（待付款、已付款或失败）。"
+            ),
             description_en=(
-                "List the current Customer's Merchant orders with delivery dates and amounts paid."
+                "List the current Customer's Merchant orders with delivery dates, amounts and"
+                " whether each is pending, paid or failed."
             ),
             input_model=ListMerchantOrdersInput,
             output_model=ListMerchantOrdersOutput,
