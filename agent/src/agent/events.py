@@ -133,6 +133,19 @@ class ReversalOffered(BaseModel):
     text: str
 
 
+class CancellationOffered(BaseModel):
+    """The Subscriptions the Bank flags as possibly unneeded, for the Customer to pick
+    which to cancel. Each candidate is the Bank's Subscription, unchanged, with the Bank's
+    `reasons_it_may_not_be_needed`; `text` lists them in the Customer's language. Nothing
+    is cancelled unless the Customer answers with `cancel_subscriptions`, and then only
+    through a Plan card. Ends the turn."""
+
+    type: Literal["cancellation_offered"] = "cancellation_offered"
+    offer_id: str
+    candidates: list[dict[str, Any]]
+    text: str
+
+
 class PlanPaused(BaseModel):
     """The Customer tapped stop: no further step of the Plan starts until they resume,
     change or cancel it. `ran` are the card's steps the Bank ran, `not_run` those still to
@@ -272,6 +285,7 @@ Event = (
     | PlanPaused
     | ReversalOffered
     | ClarificationQuestion
+    | CancellationOffered
     | VerificationRequested
     | SessionLocked
     | HumanRequested

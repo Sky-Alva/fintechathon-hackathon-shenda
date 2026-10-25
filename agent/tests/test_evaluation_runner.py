@@ -25,7 +25,7 @@ from evaluation import (
     scoreboard,
 )
 from evaluation.__main__ import main
-from fake_model import FakeModel, plan, say, step
+from fake_model import FakeModel, offer_cancellations, plan, say, step
 
 BALANCE = {"accounts": [{"account_id": "ACC-LM-001", "balance": "1180.00"}]}
 
@@ -306,6 +306,74 @@ def test_a_reversal_offer_the_script_does_not_answer_is_declined(
 
     assert result.failures == []
     assert result.log[2:] == ["Agent: reversal of ['s1'] -> decline (unscripted)"]
+
+
+def cancellation_task(directory: Path, approvals: list[dict[str, Any]], **expect: Any) -> Path:
+    return write_task(
+        directory,
+        id="orchestration-901",
+        turns=["这个月帮我把用不上的会员都退了"],
+        approvals=approvals,
+        expect={"operations_run": [], "final_state": [], **expect},
+    )
+
+
+def test_a_scripted_pick_cancels_those_subscriptions_through_one_plan_card(
+    agent: TestClient, bank: TestClient, model: FakeModel, tmp_path: Path
+) -> None:
+    model.script(offer_cancellations())
+    task = cancellation_task(
+        tmp_path,
+        [{"pick": ["SUB-LM-002", "SUB-LM-003"]}, {"confirmation": "approve"}],
+        operations_run=[
+            {"name": "cancel_subscription", "input": {"subscription_id": "SUB-LM-002"}},
+            {"name": "cancel_subscription", "input": {"subscription_id": "SUB-LM-003"}},
+        ],
+        operations_not_run=[
+            {"name": "cancel_subscription", "input": {"subscription_id": "SUB-LM-001"}}
+        ],
+    )
+
+    result = run(task, agent, bank)
+
+    assert result.failures == []
+    assert result.log[1:] == [
+        "Agent: cancellation offer of ['SUB-LM-001', 'SUB-LM-002', 'SUB-LM-003']"
+        " -> pick ['SUB-LM-002', 'SUB-LM-003']",
+        "Agent: confirmation of ['s1', 's2'] -> approve",
+    ]
+
+
+def test_a_cancellation_offer_the_script_does_not_answer_is_left_for_the_next_turn(
+    agent: TestClient, bank: TestClient, model: FakeModel, tmp_path: Path
+) -> None:
+    # The Customer picks in words instead, in the next turn.
+    model.script(
+        offer_cancellations(),
+        plan(step("s1", "cancel_subscription", {"subscription_id": "SUB-LM-003"})),
+        say("已取消 StreamPlus。"),
+    )
+    task = write_task(
+        tmp_path,
+        id="orchestration-901",
+        turns=["这个月帮我把用不上的会员都退了", "就退 StreamPlus 吧"],
+        approvals=[{"confirmation": "approve"}],
+        expect={
+            "operations_run": [
+                {"name": "cancel_subscription", "input": {"subscription_id": "SUB-LM-003"}}
+            ],
+            "final_state": [],
+        },
+    )
+
+    result = run(task, agent, bank)
+
+    assert result.failures == []
+    assert result.log[1:3] == [
+        "Agent: cancellation offer of ['SUB-LM-001', 'SUB-LM-002', 'SUB-LM-003']"
+        " -> no pick (unscripted)",
+        "Customer: 就退 StreamPlus 吧",
+    ]
 
 
 def test_two_identical_expected_runs_need_two_runs(

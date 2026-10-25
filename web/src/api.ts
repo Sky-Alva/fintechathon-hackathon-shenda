@@ -57,6 +57,8 @@ export type CustomerAction =
   // Accept a reversal offer for these of its steps: the undo comes back as a new Plan card.
   | { action: 'reverse'; plan_id: string; step_ids: string[] }
   | { action: 'ask_for_human' }
+  // The Customer's pick from a cancellation offer (#41): a Plan card comes back.
+  | { action: 'cancel_subscriptions'; offer_id: string; subscription_ids: string[] }
   // The stop button, sent alongside the running Plan's turn: that turn ends with plan_paused.
   // A Plan waiting for verification is paused at once: the stop's own events say so.
   | { action: 'stop'; plan_id: string }

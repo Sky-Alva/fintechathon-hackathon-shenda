@@ -64,31 +64,37 @@ class FinalState(_Strict):
 
 class Approval(_Strict):
     """One scripted answer: to a Plan card's Confirmation, to a verification request, to
-    an offer to undo a failed Plan's completed steps, or to a clarifying question (the
-    option it names, or else words the Customer types)."""
+    an offer to undo a failed Plan's completed steps, (`pick`) to an offer of Subscriptions
+    to cancel, with the IDs to cancel, or to a clarifying question (the option it names, or
+    else words the Customer types)."""
 
     confirmation: Literal["approve", "reject"] | None = None
     verification: Literal["correct_code", "wrong_code", "reject"] | None = None
     reversal: Literal["accept", "decline"] | None = None
+    pick: list[str] | None = None
     clarification: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def exactly_one(self) -> "Approval":
-        given = [self.confirmation, self.verification, self.reversal, self.clarification]
+        given = [self.confirmation, self.verification, self.reversal, self.pick, self.clarification]
         if sum(answer is not None for answer in given) != 1:
             raise ValueError(
-                "each approval is one of `confirmation:`, `verification:`, `reversal:` or"
-                " `clarification:`"
+                "each approval is one of `confirmation:`, `verification:`, `reversal:`,"
+                " `pick:` or `clarification:`"
             )
         return self
 
     @property
-    def kind(self) -> Literal["confirmation", "verification", "reversal", "clarification"]:
+    def kind(
+        self,
+    ) -> Literal["confirmation", "verification", "reversal", "pick", "clarification"]:
         if self.confirmation:
             return "confirmation"
         if self.verification:
             return "verification"
-        return "reversal" if self.reversal else "clarification"
+        if self.reversal:
+            return "reversal"
+        return "pick" if self.pick is not None else "clarification"
 
     @property
     def answer(self) -> str:

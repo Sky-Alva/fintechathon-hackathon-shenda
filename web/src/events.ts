@@ -155,6 +155,31 @@ export type ReversalOffered = {
   text: string
 }
 
+// Emitted since #41: the Subscriptions the Bank flags as possibly unneeded, each the Bank's
+// Subscription unchanged, for the Customer to pick which to cancel. Answered with
+// cancel_subscriptions (a Plan card comes back), or dropped by a new message. Ends the turn.
+export type SubscriptionReason = {
+  reason: 'same_category' | 'price_increase' | 'trial_converted'
+  detail: string
+}
+export type Subscription = {
+  subscription_id: string
+  merchant: string
+  category: string
+  original_amount: string
+  current_amount: string
+  signed_up_on: string
+  status: 'active' | 'cancelled'
+  next_renewal_date: string | null
+  reasons_it_may_not_be_needed: SubscriptionReason[]
+}
+export type CancellationOffered = {
+  type: 'cancellation_offered'
+  offer_id: string
+  candidates: Subscription[]
+  text: string
+}
+
 // Emitted since #39: one short question (which 张伟? how much?). Answered with `choose`
 // and an option's value, or in words. Options never carry a full account or phone number.
 export type ClarificationQuestion = {
@@ -208,6 +233,7 @@ export type ConversationEvent =
   | VerificationRequested
   | StepFailed
   | ReversalOffered
+  | CancellationOffered
   | ClarificationQuestion
   | Refusal
   | InjectionWarning

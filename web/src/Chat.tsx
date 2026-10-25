@@ -9,8 +9,10 @@ import type {
   ConversationEvent,
   PlanStep,
   PlanWarning,
+  Subscription,
   VerificationRequested,
 } from './events'
+import CancellationOffer, { type OfferStatus } from './CancellationOffer'
 import PlanCard, { type PlanCardStatus } from './PlanCard'
 import SimulatedPhone from './SimulatedPhone'
 import SpendingChart from './SpendingChart'
@@ -56,6 +58,13 @@ type Item =
     }
   | { kind: 'paused'; planId: string; text: string; status: PausedStatus }
   | { kind: 'reversal'; planId: string; text: string; stepIds: string[]; status: ReversalStatus }
+  | {
+      kind: 'offer'
+      offerId: string
+      text: string
+      candidates: Subscription[]
+      status: OfferStatus
+    }
   | { kind: 'error'; text: string }
 
 /** A stopped Plan: waiting → resumed | cancelled, or changed by the Customer's next message. */
@@ -186,6 +195,17 @@ function apply(items: Item[], event: ConversationEvent): Item[] {
         ...items,
         { kind: 'question', text: event.text, options: event.options, status: 'waiting' },
       ]
+    case 'cancellation_offered':
+      return [
+        ...items,
+        {
+          kind: 'offer',
+          offerId: event.offer_id,
+          text: event.text,
+          candidates: event.candidates,
+          status: 'offered',
+        },
+      ]
     case 'answer':
     case 'refusal':
     case 'human_requested':
@@ -218,6 +238,7 @@ function replaceWaitingPlans(items: Item[]): Item[] {
     if (item.kind === 'paused' && item.status === 'waiting') return { ...item, status: 'changed' }
     if (item.kind === 'reversal' && item.status === 'offered') return { ...item, status: 'dropped' }
     if (item.kind === 'question' && item.status === 'waiting') return { ...item, status: 'answered' }
+    if (item.kind === 'offer' && item.status === 'offered') return { ...item, status: 'dropped' }
     return item
   })
 }
@@ -388,6 +409,25 @@ export default function Chat({
     await runTurn(accept ? '（撤销已完成的步骤）' : '（不撤销）', (onEvent) =>
       sendAction(conversationId, action, onEvent),
     )
+  }
+
+  /** The Customer's pick from the Subscriptions offered for cancelling: a Plan card comes
+   * back to confirm; none picked keeps them all. */
+  async function answerOffer(offerId: string, subscriptionIds: string[]) {
+    if (busy) return
+    const status: OfferStatus = subscriptionIds.length ? 'picked' : 'kept'
+    setItems((current) =>
+      current.map((item) =>
+        item.kind === 'offer' && item.offerId === offerId ? { ...item, status } : item,
+      ),
+    )
+    const action: CustomerAction = {
+      action: 'cancel_subscriptions',
+      offer_id: offerId,
+      subscription_ids: subscriptionIds,
+    }
+    const label = subscriptionIds.length ? `（选择取消 ${subscriptionIds.length} 个订阅）` : '（都保留）'
+    await runTurn(label, (onEvent) => sendAction(conversationId, action, onEvent))
   }
 
   /** The simulated phone got a verification token from the Bank for the right code: the
@@ -587,6 +627,17 @@ export default function Chat({
                     </div>
                   )}
                 </div>
+              )
+            case 'offer':
+              return (
+                <CancellationOffer
+                  key={i}
+                  text={item.text}
+                  candidates={item.candidates}
+                  status={item.status}
+                  disabled={busy || staffMember !== null}
+                  onPick={(ids) => answerOffer(item.offerId, ids)}
+                />
               )
             case 'staff':
               return (

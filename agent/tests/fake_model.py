@@ -100,3 +100,11 @@ def clarify(question: str, *options: tuple[str, str]) -> ModelReply:
 def ask_for_human() -> ModelReply:
     """The model reads the Customer's message as asking for a human."""
     return ModelReply(tool_calls=[ToolCall(id="call-human", name="ask_for_human", arguments={})])
+
+
+def offer_cancellations() -> ModelReply:
+    """The model reads the Customer's message as asking to cancel the Subscriptions they
+    may not need, without saying which: the Agent lists the Bank's candidates to pick from."""
+    return ModelReply(
+        tool_calls=[ToolCall(id="call-offer", name="offer_cancellations", arguments={})]
+    )
