@@ -7,7 +7,7 @@ at its Plan card instead, and runs only when the Customer confirms it.
 
 import secrets
 import threading
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from dataclasses import asdict, dataclass, field
 from typing import Annotated, Any, Literal
 
@@ -25,6 +25,7 @@ from agent.events import (
     HandedOver,
     HistoryEntry,
     HumanRequested,
+    InjectionWarning,
     PlanPaused,
     PlanProposed,
     PlanStep,
@@ -147,6 +148,9 @@ class Conversation:
     replying, handing back), which the Channel polls for."""
     human_requested: bool = False
     """The Customer asked for a human and no Staff Member has taken over since."""
+    injections_seen: set[str] = field(default_factory=set)
+    """The instruction-like texts found in Bank data so far, quoted: each is warned about
+    and reported once, however often the Bank returns it."""
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def next_plan_id(self) -> str:
@@ -593,6 +597,9 @@ class Conversations:
                 return
             if reviewed_look_ups.green_only:  # the Bank agrees they need no approval
                 yield from execute(reviewed_look_ups, bank, looked_up, language=language)
+                if (lock := (yield from self._screen(conversation, looked_up))) is not None:
+                    yield self._locked(conversation, lock)
+                    return
                 plan = ask(looked_up)
                 if isinstance(plan, planner.Declined):  # not on offer, but just in case
                     yield from self._decline(conversation, plan, catalogue)
@@ -838,25 +845,55 @@ class Conversations:
         text that raised it; nothing else runs."""
         declined = {"reason": "manipulation", **asdict(suspicion)}
         yield trace("intent", {"intent": "", "declined": declined})
+        # Still refused if the report fails: the Customer just isn't told it was reported.
+        reported, lock = self._report(conversation, suspicion)
+        text = guard.warning(reported, customer_language(conversation.history))
+        conversation.history.append({"role": "assistant", "content": text})
+        yield Refusal(reason="manipulation", text=text)
+        if lock is not None:
+            yield self._locked(conversation, lock)
+
+    def _report(
+        self, conversation: Conversation, suspicion: guard.Suspicion
+    ) -> tuple[bool, dict[str, Any] | None]:
+        """Report a suspected attempt to the Bank, quoting the text that raised it: whether
+        the Bank accepted the report, and the Safety Lock it placed if this report locked
+        the session (the second in a session does)."""
         try:
             report = conversation.bank.call(
                 "report_suspected_attempt",
                 {"kind": suspicion.kind, "evidence": suspicion.evidence},
             )
         except (BankRefused, BankUnavailable):
-            report = None  # still refused: the Customer just isn't told it was reported
-        lock = None
-        if report is not None and report["output"]["session_locked"]:
-            # The second report locks the session: the Bank's trail says until when.
-            try:
-                lock = conversation.bank.latest_lock()
-            except (BankRefused, BankUnavailable):
-                lock = None
-        text = guard.warning(report is not None, customer_language(conversation.history))
-        conversation.history.append({"role": "assistant", "content": text})
-        yield Refusal(reason="manipulation", text=text)
-        if lock is not None:
-            yield self._locked(conversation, lock)
+            return False, None
+        if not report["output"]["session_locked"]:
+            return True, None
+        try:  # the Bank's trail says until when
+            return True, conversation.bank.latest_lock()
+        except (BankRefused, BankUnavailable):
+            return True, None
+
+    def _screen(
+        self, conversation: Conversation, results: list[StepResult]
+    ) -> Generator[Event, None, dict[str, Any] | None]:
+        """Look through what the Bank returned for instruction-like text (an injection).
+        It is never followed: the Customer is warned about it and it is reported to the
+        Bank, once per text. Returns the Safety Lock a report placed, if one did."""
+        language = customer_language(conversation.history)
+        for result in results:
+            found = guard.injection(result.output)
+            if found is None or found.suspicion.evidence in conversation.injections_seen:
+                continue
+            conversation.injections_seen.add(found.suspicion.evidence)
+            reported, lock = self._report(conversation, found.suspicion)
+            text = guard.injection_warning(found.field, reported, language)
+            conversation.history.append({"role": "assistant", "content": text})
+            yield InjectionWarning(
+                step_id=result.step_id, operation=result.operation, reported=reported, text=text
+            )
+            if lock is not None:
+                return lock
+        return None
 
     def _ask_for_human(self, conversation: Conversation) -> Iterator[Event]:
         with conversation.lock:
@@ -1009,6 +1046,11 @@ class Conversations:
             plan, conversation.bank, results, tokens, verification_tokens, stop, language
         )
         conversation.running = None
+        if (lock := (yield from self._screen(conversation, results))) is not None:
+            # The report locked the session: answer for what ran; nothing more starts.
+            yield self._answer(conversation, results)
+            yield self._locked(conversation, lock)
+            return
         if halt is None or (halt.why == "failed" and (plan_id is None or card is None)):
             yield from self._finish(conversation, results)
             return

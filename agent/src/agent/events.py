@@ -157,6 +157,19 @@ class Refusal(BaseModel):
     text: str
 
 
+class InjectionWarning(BaseModel):
+    """What the Bank returned for a step holds instruction-like text (a Payee's note that
+    tries to give orders): the Agent doesn't follow it and carries on with what the
+    Customer asked. `reported` says whether the Bank accepted the report of the suspected
+    injection; `text` warns the Customer, in their language."""
+
+    type: Literal["injection_warning"] = "injection_warning"
+    step_id: str
+    operation: str
+    reported: bool
+    text: str
+
+
 class SessionLocked(BaseModel):
     """The Bank has put the session under a Safety Lock: only Green Operations run until
     `locked_until` or until a Staff Member lifts it. `text` tells the Customer so, in
@@ -204,6 +217,7 @@ Event = (
     | StepFailed
     | Answer
     | Refusal
+    | InjectionWarning
     | PlanProposed
     | ConfirmationRequested
     | PlanPaused

@@ -34,6 +34,16 @@ export type Refusal = {
   text: string
 }
 
+// Emitted since #47: a step's Bank result holds instruction-like text (a Payee note giving
+// orders). The Agent ignores it and carries on; `reported` says whether the Bank took the report.
+export type InjectionWarning = {
+  type: 'injection_warning'
+  step_id: string
+  operation: string
+  reported: boolean
+  text: string
+}
+
 // Emitted since #31: the Plan card and each step's outcome.
 // Why a Red step needs Strong Verification, in the Customer's language (#37).
 export type PlanWarning = {
@@ -149,6 +159,7 @@ export type ConversationEvent =
   | ReversalOffered
   | ClarificationQuestion
   | Refusal
+  | InjectionWarning
   | SessionLocked
   | HumanRequested
   | HandedOver

@@ -371,6 +371,21 @@ button.secondary {
   border-radius: 10px;
 }
 
+/* Instructions found in Bank data (a Payee's note): ignored, and the Customer is told. */
+.suspicious-notice {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #7a4b00;
+  background: #fff6e0;
+  border: 1px solid #e0a400;
+  border-radius: 10px;
+}
+
 /* --- The Customer's simulated phone: the SMS the Bank texts codes to --- */
 
 .sms-phone {
