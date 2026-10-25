@@ -520,30 +520,29 @@ class Conversations:
         waiting for an answer, and AlreadyHandedOver while a Staff Member has the
         conversation: the Agent starts no step then.
         """
-        if isinstance(action, AskForHuman):
-            return self._recorded(conversation, self._ask_for_human(conversation))
-        if isinstance(action, StopPlan):
-            return self.stop(conversation, action.plan_id)
+        match action:
+            case AskForHuman():
+                return self._recorded(conversation, self._ask_for_human(conversation))
+            case StopPlan():
+                return self.stop(conversation, action.plan_id)
         with conversation.lock:
             if conversation.handed_over_to is not None:
                 raise AlreadyHandedOver(conversation.handed_over_to)
-            if isinstance(action, ChooseOption):
-                return self._choose(conversation, action.value)
-            if isinstance(action, CancelSubscriptions):
-                return self._answer_offer(conversation, action)
             offer = conversation.reversal
-            if isinstance(action, ReverseSteps) or (
-                isinstance(action, RejectPlan)
-                and offer is not None
-                and offer.plan_id == action.plan_id
-            ):
-                return self._answer_reversal(conversation, action)
+            match action:
+                case ChooseOption():
+                    return self._choose(conversation, action.value)
+                case CancelSubscriptions():
+                    return self._answer_offer(conversation, action)
+                case ReverseSteps():
+                    return self._answer_reversal(conversation, action)
+                case RejectPlan() if offer is not None and offer.plan_id == action.plan_id:
+                    return self._answer_reversal(conversation, action)
             pending = conversation.pending
             if pending is None or not pending.answered_by(action):
                 raise PlanNotPending(action.plan_id)
             removed: set[str] = set()
-            if isinstance(action, RemoveSteps):
-                assert isinstance(pending, PendingPlan)
+            if isinstance(action, RemoveSteps) and isinstance(pending, PendingPlan):
                 card = {step.id for step in pending.plan.steps}
                 if not set(action.step_ids) <= card:
                     raise UnknownStep(sorted(set(action.step_ids) - card))
@@ -557,25 +556,23 @@ class Conversations:
             if isinstance(action, ConfirmPlan | VerifiedStep | ResumePlan):
                 # Running from now: a stop tapped before the first step starts still counts.
                 conversation.running = RunningPlan(action.plan_id)
-        if isinstance(action, RejectPlan):
-            return self._recorded(conversation, self._rejected(conversation))
-        if isinstance(action, CancelPlan):
-            return self._recorded(conversation, self._cancelled(conversation))
-        if isinstance(action, VerifiedStep):
-            assert isinstance(pending, PendingVerification)
-            turn = self._verified(conversation, pending, action.verification_token)
-        elif isinstance(action, WrongCode):
-            assert isinstance(pending, PendingVerification)
-            turn = self._wrong_code(conversation, pending, action.failed_attempts)
-        elif isinstance(action, ResumePlan):
-            assert isinstance(pending, PausedPlan)
-            turn = self._resumed(conversation, pending)
-        elif isinstance(action, RemoveSteps):
-            assert isinstance(pending, PendingPlan)
-            turn = self._edited(conversation, pending, set(action.step_ids), removed)
-        else:
-            assert isinstance(pending, PendingPlan)
-            turn = self._confirmed(conversation, pending)
+        match action, pending:
+            case RejectPlan(), _:
+                return self._recorded(conversation, self._rejected(conversation))
+            case CancelPlan(), _:
+                return self._recorded(conversation, self._cancelled(conversation))
+            case VerifiedStep(), PendingVerification():
+                turn = self._verified(conversation, pending, action.verification_token)
+            case WrongCode(), PendingVerification():
+                turn = self._wrong_code(conversation, pending, action.failed_attempts)
+            case ResumePlan(), PausedPlan():
+                turn = self._resumed(conversation, pending)
+            case RemoveSteps(), PendingPlan():
+                turn = self._edited(conversation, pending, set(action.step_ids), removed)
+            case ConfirmPlan(), PendingPlan():
+                turn = self._confirmed(conversation, pending)
+            case _:
+                raise AssertionError(f"{action.action} answered {type(pending).__name__}")
         return self._recorded(conversation, with_bank_traces(conversation.bank, turn))
 
     def _choose(self, conversation: Conversation, value: str) -> Iterator[Event]:
