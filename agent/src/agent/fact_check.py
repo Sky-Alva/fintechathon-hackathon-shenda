@@ -11,11 +11,34 @@ from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+HAN_CLASS = r"[\u4e00-\u9fff]"
 NUMBER = r"\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?"
 AMOUNT = re.compile(
     rf"(?P<pre>[¥￥]|RMB|CNY|人民币)?\s*(?P<num>{NUMBER})\s*(?P<wan>万)?\s*"
     r"(?P<post>元|块|RMB|CNY|yuan)?",
     re.IGNORECASE,
+)
+
+# A bare number is an amount when the words before it say so ("余额为5000").
+MONEY_WORDS = (
+    r"余额|金额|总额|合计|共计|总计|花了|花费|支出|消费|收入|限额|额度|价格|售价|"
+    r"balance|total|amount|spent|spending|paid|cost|price|limit"
+)
+COUNTERS = r"\s*(?:笔|张|个|次|项|天|日|号|月|年|步|位|%|％|percent|times|cards?|days?)"
+BARE_AMOUNT = re.compile(
+    rf"(?:{MONEY_WORDS})\s*(?:是|为|有|约|大约|共|:|：|is|was|of|about|around)?\s*"
+    rf"(?P<num>\d+)(?!\d|[.,]\d|{COUNTERS}|\s*(?:万|元|块|RMB|CNY|yuan))",
+    re.IGNORECASE,
+)
+
+# Amounts in Chinese numerals: "一千二百元", "人民币两千", "五千块".
+CN_DIGITS = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
+             "六": 6, "七": 7, "八": 8, "九": 9}
+CN_UNITS = {"十": 10, "百": 100, "千": 1000}
+CN_NUMBER = r"[零〇一二两三四五六七八九十][零〇一二两三四五六七八九十百千万亿]*(?:点[零〇一二三四五六七八九]+)?"
+CN_AMOUNT = re.compile(
+    rf"(?:(?:人民币|[¥￥])\s*(?P<pre>{CN_NUMBER})|(?:{MONEY_WORDS})\s*(?:是|为|有|约|大约|共|:|：)?"
+    rf"\s*(?P<ctx>{CN_NUMBER})(?!{COUNTERS})|(?P<post>{CN_NUMBER})\s*(?:元|圆|块钱|块(?!{HAN_CLASS})))"
 )
 
 ISO_DATE = re.compile(r"(\d{4})-(\d{2})-(\d{2})")
@@ -60,6 +83,29 @@ def _decimal(text: str) -> Decimal | None:
         return Decimal(text.replace(",", ""))
     except InvalidOperation:
         return None
+
+
+def chinese_number(text: str) -> Decimal | None:
+    """The value of a number in Chinese numerals ("一千二百" → 1200), or None."""
+    whole, _, fraction = text.partition("点")
+    total = section = digit = 0
+    for char in whole:
+        if char in CN_DIGITS:
+            digit = CN_DIGITS[char]
+        elif char in CN_UNITS:
+            section += (digit or 1) * CN_UNITS[char]
+            digit = 0
+        elif char in ("万", "亿"):
+            total = (total + section + digit) * (10000 if char == "万" else 100_000_000)
+            section = digit = 0
+        else:
+            return None
+    value = Decimal(total + section + digit)
+    if fraction:
+        if any(char not in CN_DIGITS for char in fraction):
+            return None
+        value += Decimal("0." + "".join(str(CN_DIGITS[c]) for c in fraction))
+    return value
 
 
 def _leaves(value: Any) -> Iterable[Any]:
@@ -142,6 +188,13 @@ def unsupported(text: str, facts: Facts) -> list[str]:
             if match.group() not in facts.tokens:
                 found.append(match.group())
         text = pattern.sub(" ", text)
+    for match in CN_AMOUNT.finditer(text):
+        written = match.group("pre") or match.group("ctx") or match.group("post")
+        if chinese_number(written) not in facts.amounts:
+            found.append(match.group().strip())
+    for match in BARE_AMOUNT.finditer(text):
+        if _decimal(match.group("num")) not in facts.amounts:
+            found.append(match.group().strip())
     for match in AMOUNT.finditer(text):
         num = match.group("num")
         is_amount = any(match.group(g) for g in ("pre", "wan", "post")) or "." in num or "," in num
