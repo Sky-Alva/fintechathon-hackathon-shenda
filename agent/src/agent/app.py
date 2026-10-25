@@ -39,6 +39,7 @@ from agent.conversation import (
     PlanNotPending,
     PlanNotRunning,
     UnknownConversation,
+    UnknownOption,
     UnknownStep,
 )
 from agent.events import Event, HandedBack, HandedOver, StaffMessage, Trace
@@ -103,6 +104,10 @@ def create_app(bank: HttpClient, model: ModelClient, staff_key: str) -> FastAPI:
     @app.exception_handler(UnknownStep)
     async def on_unknown_step(_: Request, error: UnknownStep) -> JSONResponse:
         return JSONResponse(status_code=422, content={"error": "unknown_step"})
+
+    @app.exception_handler(UnknownOption)
+    async def on_unknown_option(_: Request, error: UnknownOption) -> JSONResponse:
+        return JSONResponse(status_code=422, content={"error": "unknown_option"})
 
     @app.exception_handler(PlanNotRunning)
     async def on_not_running(_: Request, error: PlanNotRunning) -> JSONResponse:

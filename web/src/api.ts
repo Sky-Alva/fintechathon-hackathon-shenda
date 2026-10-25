@@ -66,6 +66,8 @@ export type CustomerAction =
   | { action: 'verified'; plan_id: string; step_id: string; verification_token: string }
   // The Bank refused the code typed into the phone; the Agent checks the lock itself.
   | { action: 'wrong_code'; plan_id: string; step_id: string; failed_attempts: number }
+  // Tap an option of the clarifying question (#39).
+  | { action: 'choose'; value: string }
 
 /** Send a Customer action; `onEvent` gets each event of the turn as it streams in. */
 export async function sendAction(

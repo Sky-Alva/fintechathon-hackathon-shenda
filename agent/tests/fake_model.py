@@ -86,6 +86,17 @@ def suspect(kind: str) -> ModelReply:
     )
 
 
+def clarify(question: str, *options: tuple[str, str]) -> ModelReply:
+    """The model asks the Customer one clarifying question, with (label, value) options."""
+    arguments = {
+        "question": question,
+        "options": [{"label": label, "value": value} for label, value in options],
+    }
+    return ModelReply(
+        tool_calls=[ToolCall(id="call-clarify", name="ask_clarification", arguments=arguments)]
+    )
+
+
 def ask_for_human() -> ModelReply:
     """The model reads the Customer's message as asking for a human."""
     return ModelReply(tool_calls=[ToolCall(id="call-human", name="ask_for_human", arguments={})])

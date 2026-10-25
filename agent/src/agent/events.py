@@ -53,6 +53,18 @@ class PlanWarning(BaseModel):
     text: str
 
 
+class CardPayee(BaseModel):
+    """Who a step on the Plan card pays, as the Bank's Payee lookup found them:
+    `is_new` when the Customer has never paid them. `phone` is masked by the Bank."""
+
+    step_id: str
+    payee_id: str
+    name: str
+    nickname: str | None
+    phone: str | None
+    is_new: bool
+
+
 class PlanProposed(BaseModel):
     """A Plan card: the Plan has a Yellow or Red step. `steps` are in the order they will
     run, each with the Bank's tier; `refusals` are steps the tier preview says can't run;
@@ -63,6 +75,7 @@ class PlanProposed(BaseModel):
     steps: list[PlanStep]
     refusals: list[StepRefusal]
     warnings: list[PlanWarning] = []
+    payees: list[CardPayee] = []
 
 
 class ConfirmationRequested(BaseModel):
@@ -130,6 +143,24 @@ class PlanPaused(BaseModel):
     ran: list[str]
     not_run: list[str]
     text: str
+
+
+class ClarificationOption(BaseModel):
+    """One answer to a clarifying question: `label` is shown, `value` is sent back with
+    `choose`. Never a full account or phone number."""
+
+    label: str
+    value: str
+
+
+class ClarificationQuestion(BaseModel):
+    """One short question when the request is genuinely ambiguous (which 张伟?) or misses
+    something the Agent needs (how much?). The Customer taps an option (`choose`) or
+    answers in words. Ends the turn."""
+
+    type: Literal["clarification_question"] = "clarification_question"
+    text: str
+    options: list[ClarificationOption] = []
 
 
 class Answer(BaseModel):
@@ -208,6 +239,7 @@ Event = (
     | ConfirmationRequested
     | PlanPaused
     | ReversalOffered
+    | ClarificationQuestion
     | VerificationRequested
     | SessionLocked
     | HumanRequested

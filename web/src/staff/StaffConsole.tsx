@@ -119,6 +119,10 @@ function TraceEntry({ entry }: { entry: Trace }) {
         <>
           <b>理解意图</b> {describeDeclined(entry.data.declined)}
         </>
+      ) : entry.data.clarification ? (
+        <>
+          <b>理解意图</b> 需要澄清：{entry.data.clarification}
+        </>
       ) : (
         <>
           <b>理解意图</b> {entry.data.intent}
@@ -204,6 +208,12 @@ function AgentEntry({ entry }: { entry: HistoryEntry }) {
             <b>客户操作</b> 请求人工客服
           </>
         )
+      if (entry.action === 'choose')
+        return (
+          <>
+            <b>客户操作</b> 选择了澄清问题的一个选项
+          </>
+        )
       if (entry.action === 'verified' || entry.action === 'wrong_code')
         return (
           <>
@@ -248,6 +258,14 @@ function AgentEntry({ entry }: { entry: HistoryEntry }) {
             <summary>内容</summary>
             <pre>{json(entry.steps)}</pre>
           </details>
+        </>
+      )
+    case 'clarification_question':
+      return (
+        <>
+          <b>Agent 提问</b> {entry.text}
+          {entry.options.length > 0 &&
+            `（${entry.options.map((o) => `${o.label} → ${o.value}`).join('；')}）`}
         </>
       )
     case 'refusal':

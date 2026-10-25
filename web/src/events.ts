@@ -41,12 +41,22 @@ export type PlanWarning = {
   reason: 'daily_transfer_total' | 'strong_verification'
   text: string
 }
+// Who a step pays, as the Bank's Payee lookup found them (#39); `is_new`: never paid before.
+export type CardPayee = {
+  step_id: string
+  payee_id: string
+  name: string
+  nickname: string | null
+  phone: string | null
+  is_new: boolean
+}
 export type PlanProposed = {
   type: 'plan_proposed'
   plan_id: string
   steps: PlanStep[]
   refusals: (BankRefusal & { step_id: string })[]
   warnings: PlanWarning[]
+  payees: CardPayee[]
 }
 export type ConfirmationRequested = {
   type: 'confirmation_requested'
@@ -97,7 +107,8 @@ export type ReversalOffered = {
   text: string
 }
 
-// Reserved: proposed payloads, refined by the ticket that first emits each one.
+// Emitted since #39: one short question (which 张伟? how much?). Answered with `choose`
+// and an option's value, or in words. Options never carry a full account or phone number.
 export type ClarificationQuestion = {
   type: 'clarification_question'
   text: string
@@ -129,7 +140,8 @@ export type Trace = { type: 'trace' } & (
       stage: 'intent'
       // `declined`: the Planner (or the manipulation guard) declined the request instead
       // of planning it: what it offered instead, or the suspected attempt it reported.
-      data: { intent: string; declined?: Declined }
+      // `clarification`: the question the Planner asked instead of planning (#39).
+      data: { intent: string; declined?: Declined; clarification?: string }
     }
   | { stage: 'plan'; data: { steps: PlanStep[] } }
   | { stage: 'bank_request'; data: { method: string; path: string; body: unknown } }
