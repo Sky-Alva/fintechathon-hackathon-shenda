@@ -41,6 +41,7 @@ REQUIRED_APPROVAL = {
     Tier.YELLOW: (RefusalReason.NEEDS_CONFIRMATION, "Confirmation"),
     Tier.RED: (RefusalReason.NEEDS_VERIFICATION, "Strong Verification"),
 }
+STRICTNESS = [Tier.GREEN, Tier.YELLOW, Tier.RED]  # each needs more approval than the last
 
 
 class OperationRequest(BaseModel):
@@ -202,6 +203,44 @@ def run(
             safety_lock.record(conn, session.session_id, Signal.RED_OPERATION, now)
     _audit(conn, session, now, Event.OPERATION, call, None, detail)
     _trip_safety_lock(conn, session, now)
+    output_json = output.model_dump(mode="json")
+    return OperationResult(operation=name, tier=resolved.tier, output=output_json)
+
+
+def run_approved(
+    conn: sqlite3.Connection,
+    registry: Registry,
+    session: Session,
+    name: str,
+    input: dict[str, Any],
+    approved: Tier,
+    at: datetime,
+    detail: dict[str, Any],
+) -> OperationResult:
+    """Run an Operation the Customer approved earlier for `approved`, such as a Scheduled
+    Transfer on its run date, or raise a Refusal. Always audited, in the trail of the
+    session that approved it, with `detail` saying why it ran.
+
+    The earlier approval stands in for a token, but only up to its tier: a call that is
+    now stricter is refused with the approval it would need, and a Safety Lock on the
+    session refuses it as it would any call. The gate keeps the Daily Transfer Total of
+    the day of `at`. The call doesn't count toward a `red_operations` Safety Lock: the
+    Operation that approved it already did.
+    """
+    call = _Call(name, input)
+    with _audited(conn, session, at, Event.OPERATION, call):
+        try:
+            resolved = _resolve(call, conn, registry, session, at)
+            if STRICTNESS.index(resolved.tier) > STRICTNESS.index(approved):
+                raise _needs_approval(name, resolved.tier)
+            output = resolved.operation.handler(resolved.ctx, resolved.validated)
+        except Refusal as refusal:
+            refusal.detail = {**detail, **refusal.detail}
+            refusal.audit_detail = {**detail, **refusal.audit_detail}
+            raise
+        if resolved.operation.daily_transfer_amount:
+            limits.record(conn, session.customer_id, name, resolved.daily_transfer_amount(), at)
+    _audit(conn, session, at, Event.OPERATION, call, None, detail)
     output_json = output.model_dump(mode="json")
     return OperationResult(operation=name, tier=resolved.tier, output=output_json)
 
