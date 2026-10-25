@@ -5,7 +5,7 @@ from collections.abc import Generator, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from agent import failures
+from agent import charts, failures
 from agent.bank import BankRefused, BankSession, BankUnavailable
 from agent.events import Event, PlanStep, StepFailed, StepStarted, StepSucceeded
 from agent.language import Language
@@ -102,6 +102,8 @@ def execute(
         yield StepSucceeded(
             step_id=step.id, operation=step.operation, tier=result["tier"], output=result["output"]
         )
+        if (drawn := charts.chart(step.id, step.operation, result["output"], language)) is not None:
+            yield drawn
     return None
 
 

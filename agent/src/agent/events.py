@@ -163,6 +163,23 @@ class ClarificationQuestion(BaseModel):
     options: list[ClarificationOption] = []
 
 
+ChartOperation = Literal["spending_by_category", "monthly_report", "annual_report"]
+"""The Bank Operations whose output the Channel draws as a chart."""
+
+
+class Chart(BaseModel):
+    """A chart of what the Bank returned for one step: a category summary, or a monthly or
+    annual report. `data` is the Bank's output for the step, unchanged: every number the
+    Channel draws is the Bank's. `title` names it in the Customer's language, from the
+    period the Bank's output gives. Follows the step's `step_succeeded`."""
+
+    type: Literal["chart"] = "chart"
+    step_id: str
+    operation: ChartOperation
+    title: str
+    data: dict[str, Any]
+
+
 class Answer(BaseModel):
     type: Literal["answer"] = "answer"
     text: str
@@ -185,6 +202,19 @@ class Refusal(BaseModel):
 
     type: Literal["refusal"] = "refusal"
     reason: Literal["out_of_scope", "manipulation", "secret"]
+    text: str
+
+
+class InjectionWarning(BaseModel):
+    """What the Bank returned for a step holds instruction-like text (a Payee's note that
+    tries to give orders): the Agent doesn't follow it and carries on with what the
+    Customer asked. `reported` says whether the Bank accepted the report of the suspected
+    injection; `text` warns the Customer, in their language."""
+
+    type: Literal["injection_warning"] = "injection_warning"
+    step_id: str
+    operation: str
+    reported: bool
     text: str
 
 
@@ -233,8 +263,10 @@ Event = (
     StepStarted
     | StepSucceeded
     | StepFailed
+    | Chart
     | Answer
     | Refusal
+    | InjectionWarning
     | PlanProposed
     | ConfirmationRequested
     | PlanPaused

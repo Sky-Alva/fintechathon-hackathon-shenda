@@ -204,10 +204,11 @@ def test_a_follow_up_goes_to_the_payee_found_earlier_without_asking_again(
     events = shown(send(agent, conversation, "再给她转两百"))
 
     # The Planner knows who "her" is: the Payee the Bank found, now paid once.
-    payees_seen = [
-        m["content"] for m in model.requests[-1].messages if "PAY-LM-005" in m["content"]
-    ]
-    assert any("陈静" in content for content in payees_seen)
+    # Bank data, so in a marked data block, never in the instructions.
+    payees_seen = [m for m in model.requests[-1].messages if "PAY-LM-005" in m["content"]]
+    assert any("陈静" in m["content"] for m in payees_seen)
+    assert all(m["role"] != "system" for m in payees_seen)
+    assert any(m["content"].startswith("<bank_data>") for m in payees_seen)
     assert event_types(events) == ["plan_proposed", "confirmation_requested"]
     assert [(p["payee_id"], p["is_new"]) for p in events[0]["payees"]] == [
         ("PAY-LM-005", False)
