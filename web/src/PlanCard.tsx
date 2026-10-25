@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { BankRefusal, PlanStep, PlanWarning, Tier } from './events'
+import type { BankRefusal, CardPayee, PlanStep, PlanWarning, Tier } from './events'
 
 /** proposed → awaiting (confirmation_requested) → confirmed | rejected, or replaced when the
  * Customer sends a new message instead of answering. */
@@ -10,6 +10,8 @@ type Props = {
   refusals: (BankRefusal & { step_id: string })[]
   /** Why each Red step needs Strong Verification, e.g. it crosses the ¥1,000 daily line. */
   warnings: PlanWarning[]
+  /** Who each transfer pays, as the Bank's lookup found them; `is_new`: never paid. */
+  payees: CardPayee[]
   confirmIds: string[]
   status: PlanCardStatus
   disabled: boolean
@@ -59,11 +61,18 @@ function shownValue(key: string, value: unknown): string {
   return String(value)
 }
 
-/** Every input of the step, exactly as it will be sent to the Bank. */
-function details(step: PlanStep): [string, string][] {
+/** Every input of the step, exactly as it will be sent to the Bank; a Payee the lookup
+ * found is named, with their nickname and masked phone. */
+function details(step: PlanStep, payee?: CardPayee): [string, string][] {
   return Object.entries(step.input)
     .filter(([, value]) => value !== '' && value !== null && value !== undefined)
-    .map(([key, value]) => [INPUT_LABELS[key] ?? key, shownValue(key, value)])
+    .map(([key, value]) => {
+      if (key === 'payee_id' && payee) {
+        const extra = [payee.nickname, payee.phone].filter(Boolean).join('，')
+        return [INPUT_LABELS[key], extra ? `${payee.name}（${extra}）` : payee.name]
+      }
+      return [INPUT_LABELS[key] ?? key, shownValue(key, value)]
+    })
 }
 
 const STATUS_TEXT: Partial<Record<PlanCardStatus, string>> = {
@@ -79,6 +88,7 @@ export default function PlanCard({
   steps,
   refusals,
   warnings,
+  payees,
   confirmIds,
   status,
   disabled,
@@ -105,6 +115,7 @@ export default function PlanCard({
           ].join(' ')
           // A removal re-tiers the rest, so a warning about the daily line may no longer hold.
           const warning = removed.length ? undefined : warnings.find((w) => w.step_id === step.id)
+          const payee = payees.find((p) => p.step_id === step.id)
           return (
             <li key={step.id} className={classes.trim()}>
               <div className="plan-step-head">
@@ -129,13 +140,18 @@ export default function PlanCard({
                 </span>
               </div>
               <dl>
-                {details(step).map(([label, value]) => (
+                {details(step, payee).map(([label, value]) => (
                   <div key={label}>
                     <dt>{label}</dt>
                     <dd>{value}</dd>
                   </div>
                 ))}
               </dl>
+              {payee?.is_new && (
+                <div className="plan-warning" role="note">
+                  新收款人：您从未向 {payee.name} 转过账，请核对收款人信息
+                </div>
+              )}
               {warning && (
                 <div className="plan-warning" role="note">
                   {warning.text}

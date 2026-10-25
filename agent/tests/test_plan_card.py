@@ -155,7 +155,11 @@ def test_the_model_is_never_shown_a_confirmation_token_nor_given_a_way_to_get_on
         assert "CNF-" not in request.text()  # nor a Confirmation's ID
         tools = [tool["function"]["name"] for tool in request.tools or []]
         assert set(tools) <= {
-            "propose_plan", "decline_request", "ask_for_human", "offer_cancellations"
+            "propose_plan",
+            "decline_request",
+            "ask_for_human",
+            "ask_clarification",
+            "offer_cancellations",
         }
     assert "confirmation_token" not in str(events)
     assert "CNF-" not in str(events)
@@ -235,7 +239,9 @@ def test_the_plan_is_completed_from_the_banks_look_up_results(
     assert "1180.00" not in first.text()
     assert "1180.00" in completing.text()
     assert HALF_TO_MUM in completing.text()
-    assert [tool["function"]["name"] for tool in completing.tools or []] == ["propose_plan"]
+    assert [tool["function"]["name"] for tool in completing.tools or []] == [
+        "propose_plan", "ask_clarification"
+    ]
 
 
 def test_the_answer_after_confirming_draws_on_the_look_up_and_the_transfer(

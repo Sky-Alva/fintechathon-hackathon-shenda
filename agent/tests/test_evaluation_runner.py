@@ -455,6 +455,80 @@ def test_a_task_that_needs_a_clarifying_question_fails_when_the_agent_just_acts(
     ]
 
 
+def which_zhang_wei_task(directory: Path, approvals: list[dict[str, str]], **expect: Any) -> Path:
+    return write_task(
+        directory,
+        category="clarification",
+        turns=["给张伟转50块"],
+        approvals=approvals,
+        expect={"clarifying_question": True, "final_state": [], **expect},
+    )
+
+
+def which_zhang_wei() -> Any:
+    return plan(
+        step("s1", "find_payee", {"query": "张伟"}),
+        step("s2", "transfer", {"amount": "50.00"}, depends_on=["s1"]),
+    )
+
+
+def test_a_scripted_clarification_picks_the_option_it_names_and_the_task_goes_on(
+    agent: TestClient, bank: TestClient, model: FakeModel, tmp_path: Path
+) -> None:
+    model.script(
+        which_zhang_wei(),
+        plan(step("s1", "transfer", {"payee_id": "PAY-LM-004", "amount": "50.00", "note": ""})),
+        say("已向张伟转账 50.00 元。"),
+    )
+    approvals = [{"clarification": "135****4444"}, {"confirmation": "approve"}]
+    task = which_zhang_wei_task(
+        tmp_path,
+        approvals,
+        operations_run=[{"name": "transfer", "input": {"payee_id": "PAY-LM-004"}}],
+    )
+
+    result = run(task, agent, bank)
+
+    assert result.failures == []
+    assert result.log == [
+        "Customer: 给张伟转50块",
+        "Agent: clarification “有 2 位收款人符合“张伟”，您要转给哪一位？” -> choose PAY-LM-004",
+        "Agent: confirmation of ['s1'] -> approve",
+    ]
+
+
+def test_a_scripted_clarification_that_names_no_option_is_answered_in_words(
+    agent: TestClient, bank: TestClient, model: FakeModel, tmp_path: Path
+) -> None:
+    model.script(
+        which_zhang_wei(), plan(step("s1", "query_balance")), say("您的余额为 1180.00 元。")
+    )
+    answer = "算了，先查一下余额"
+    task = which_zhang_wei_task(tmp_path, [{"clarification": answer}])
+
+    result = run(task, agent, bank)
+
+    assert result.failures == []
+    assert result.log[1:] == [
+        f"Agent: clarification “有 2 位收款人符合“张伟”，您要转给哪一位？” -> say {answer}",
+    ]
+    assert answer in model.requests[1].text()
+
+
+def test_an_unscripted_clarification_is_left_unanswered(
+    agent: TestClient, bank: TestClient, model: FakeModel, tmp_path: Path
+) -> None:
+    model.script(which_zhang_wei())
+    task = which_zhang_wei_task(tmp_path, [], operations_run=[])
+
+    result = run(task, agent, bank)
+
+    assert result.failures == []
+    assert result.log[-1] == (
+        "Agent: clarification “有 2 位收款人符合“张伟”，您要转给哪一位？” -> unanswered (unscripted)"
+    )
+
+
 # --- Every task from a reset Bank at its clock; a crash is that task's failure --------
 
 

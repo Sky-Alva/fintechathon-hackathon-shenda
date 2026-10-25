@@ -37,7 +37,7 @@ Handing back resumes the Agent on the Customer's next message, with the whole co
 
 ### Customer actions
 
-The Customer answers a Plan card and the other prompts with `POST /conversations/{id}/actions`. `confirm` and `reject` (#31), `verified` and `wrong_code` (#37), `ask_for_human` (#46), `stop`, `resume` and `cancel` (#38), `reverse` (#42) and `cancel_subscriptions` (#41) are built; the rest are proposed, and the ticket that builds one may refine it and must update this table. An action the Agent doesn't know yet is `422`.
+The Customer answers a Plan card and the other prompts with `POST /conversations/{id}/actions`. `confirm` and `reject` (#31), `verified` and `wrong_code` (#37), `ask_for_human` (#46), `stop`, `resume` and `cancel` (#38), `reverse` (#42), `cancel_subscriptions` (#41) and `choose` (#39) are built; the rest are proposed, and the ticket that builds one may refine it and must update this table. An action the Agent doesn't know yet is `422`.
 
 | `action` | Fields | Answers |
 |----------|--------|---------|
@@ -45,7 +45,7 @@ The Customer answers a Plan card and the other prompts with `POST /conversations
 | `reject` (built, #31, #42) | `plan_id` | `plan_proposed`: nothing runs; the turn is one `answer` acknowledging it. `reversal_offered` (its `plan_id`, the failed Plan's): the offer is declined, the completed steps stay done; the turn is one `answer` saying so, and the Agent calls the Bank for nothing. |
 | `verified` (built, #37) | `plan_id`, `step_id`, `verification_token` | `verification_requested`. The Customer types the code into the simulated phone, which sends it straight to the Bank with the phone token (`POST /verifications/{challenge_id}` `{code}`). Only the resulting verification token reaches the Agent, never the code or the phone token. The Red step runs with it, then the Plan goes on as after `confirm`: the turn ends with `answer`, or with the next Red step's `verification_requested`. |
 | `wrong_code` (built, #37) | `plan_id`, `step_id`, `failed_attempts` | `verification_requested`, when the Bank refused the code typed into the phone (`token_invalid`; `failed_attempts` is from its `detail`). The Agent checks with the Bank (a tier preview of the step) whether the session is now locked. If not, the turn is an `answer` explaining the wrong code, then the same `verification_requested` again: the challenge stays open. If it is (the 3rd wrong code), the turn is the step's `step_failed` (`session_locked`), `answer`, `session_locked`. |
-| `choose` | `value` | `clarification_question` |
+| `choose` (built, #39) | `value` | `clarification_question`: the Customer tapped the option with this `value`. The Planner plans the request again, told which option was chosen (as a note, so the option's label doesn't change the Customer's language); the turn is the new Plan's events as after a message (usually `plan_proposed` and `confirmation_requested`). A question is answered once: `choose` with no question waiting (answered already, or dropped by a new message) is `409 {"error": "plan_not_pending"}`; a `value` that isn't one of its options is `422 {"error": "unknown_option"}` and the question still waits. Answering in words (a new message) works too: the question and its options' values are in the model's context. |
 | `reverse` (built, #42) | `plan_id`, `step_ids` (at least one) | `reversal_offered`: undo these of the offered steps. Nothing is reversed without this, and nothing runs yet: the undo is a new Plan (step IDs `undo_<step_id>`, in the offer's order) that the Bank tiers like any other, and the turn is its `plan_proposed` and `confirmation_requested` (or, under a Safety Lock, `session_locked`). It runs only once the Customer confirms that card, with Strong Verification for a Red step (lifting a Card Lock is Red). It replaces a Plan card still waiting. A step ID the offer doesn't list is `422 {"error": "unknown_step"}`; an offer already answered, or dropped by a new message, is `409 {"error": "plan_not_pending"}`. |
 | `cancel_subscriptions` (built, #41) | `offer_id`, `subscription_ids` | `cancellation_offered`: the Customer's pick of the offered Subscriptions. Nothing is cancelled yet: the pick is one Plan (`s1`…: one `cancel_subscription` per pick, in the offer's order, then a Green `list_subscriptions` that depends on them all, to read back what the Bank shows) that the Bank tiers like any other, and the turn is its `plan_proposed` and `confirmation_requested`; one `confirm` cancels them all. When that Plan has run, the `answer` is written by the Agent from the read-back, not by the model: which of the picked Subscriptions the Bank shows as cancelled, and which are still active. An empty pick cancels nothing: the turn is one `answer` saying so, and the Agent calls the Bank for nothing. An ID the offer doesn't list is `422 {"error": "unknown_step"}` before any event, and the offer still waits; an offer already answered, or dropped by a new message, is `409 {"error": "plan_not_pending"}`. It replaces a Plan card still waiting. |
 | `stop` (built, #38) | `plan_id` | a running Plan (from the `confirm`, `verified` or `resume` tap until its turn ends): pause it. The response has no events; the running turn ends with `plan_paused`. A Plan waiting for `verified` is paused at its Red step, and the response is its `plan_paused`. |
@@ -91,6 +91,8 @@ Status: **emitted** means a slice emits it and tests pin it. **Reserved** payloa
 {"id": "s1", "operation": "query_balance", "input": {}, "depends_on": [],
  "tier": "green"}            // "green" | "yellow" | "red", from the Bank's tier preview; null before it
 ```
+
+**Payees** (#39). The Customer names a Payee as they like (老妈, a name, a phone number, a past transfer note such as 房租). The Planner looks them up with the Bank's `find_payee` (Green) before planning a transfer, so the lookup runs first and the Planner completes the transfer from its result ("老样子" takes the last transfer amount the Bank shows). The Payees found so far in the conversation (ID, name, nickname, masked phone, whether new; never notes or accounts) are given to the Planner on every later turn, as Bank data (a `<bank_data>` block, #47), so a follow-up ("再给她转两百") goes to the same Payee without asking again.
 
 ### `step_started` (emitted, #29)
 
@@ -152,8 +154,11 @@ The Plan needs a Plan card: at least one step that can run is Yellow or Red. A G
 {"type": "plan_proposed", "plan_id": "p1",
  "steps": [/* PlanStep, in the order they will run */],
  "refusals": [{"step_id": "s2", "reason": "insufficient_funds", "message": "…", "detail": {}}],  // steps the Bank's preview says can never run
- "warnings": [{"step_id": "s3", "reason": "daily_transfer_total", "text": "这笔转账会使今日转账累计超过 ¥1,000，执行前需要短信验证。"}]}
+ "warnings": [{"step_id": "s3", "reason": "daily_transfer_total", "text": "这笔转账会使今日转账累计超过 ¥1,000，执行前需要短信验证。"}],
+ "payees": [{"step_id": "s1", "payee_id": "PAY-LM-005", "name": "陈静", "nickname": null, "phone": "134****7777", "is_new": true}]}
 ```
+
+`payees` (#39): who each step with a `payee_id` input pays, for every Payee the Bank's lookup found in this conversation, in card order. `is_new` flags a Payee the Customer has never paid (the lookup's `is_new`; false once a transfer to them ran). `phone` is masked by the Bank. A step whose Payee no lookup found isn't listed.
 
 `warnings` (#37): one per Red step, in the Customer's language, saying why it needs Strong Verification before the Customer confirms. `reason` is `daily_transfer_total` for an Operation that counts toward the Daily Transfer Total (the catalogue's `counts_toward_daily_transfer_total`: Red only because it takes the total above ¥1,000), else `strong_verification`. The tiers are the Bank's: nothing the Customer says ("我是客户经理", "急用，跳过验证") or the model plans changes which steps are Red.
 
@@ -220,12 +225,16 @@ The Customer asked to cancel the Subscriptions they don't use or need without na
  "text": "银行标记了 1 个可能用不上的订阅：\n1. StreamPlus（¥25.00）：免费试用已转为付费\n请选择要取消的订阅。选好后，我会把它们放在一张计划卡片上，您确认一次即可。"}
 ```
 
-### `clarification_question` (reserved, #39)
+### `clarification_question` (emitted, #39)
 
-One short question when the request is genuinely ambiguous (e.g. which 张伟). Options never carry full account details.
+One short question when the request is genuinely ambiguous or misses something the Agent needs. Ends the turn; nothing more runs until the Customer answers, with `choose` and an option's `value`, or in words (a new message). Options never carry a full account, card or phone number.
+
+- **Several Payees match** (the Bank's `find_payee` refuses with `ambiguous_payee`, e.g. two Payees named 张伟): the Agent asks, never the model and never a guess. The lookup's `step_started` and `step_failed` come first; the model isn't asked to complete the Plan. `text` and `options` are the Agent's, in the Customer's language: one option per candidate the Bank returned, `label` its name with nickname and masked phone, `value` its `payee_id`.
+- **The Planner asks** (`ask_clarification {question, options}`), when the request is genuinely ambiguous or misses an input the Bank's results don't give (no past rent to repeat: "how much?"). On offer when planning and when completing a Plan from its look-ups. Model-written, so `text` and `options` are masked like an `answer` (#44). Its `intent` trace is `{"intent": "", "clarification": "<text>"}` (none when asked while completing a Plan, which already had its `intent`). `options` may be empty: the Customer answers in words.
 
 ```json
-{"type": "clarification_question", "text": "您要转给哪位张伟？", "options": [{"label": "张伟（同事）", "value": "PAY-LM-003"}]}
+{"type": "clarification_question", "text": "有 2 位收款人符合“张伟”，您要转给哪一位？",
+ "options": [{"label": "张伟（137****2222）", "value": "PAY-LM-003"}, {"label": "张伟（135****4444）", "value": "PAY-LM-004"}]}
 ```
 
 ### `refusal` (emitted: `out_of_scope` #33, `manipulation` #43, `secret` #44)
@@ -304,6 +313,7 @@ Decision-trace data for the Channel's toggleable panel, hidden by default: what 
 {"type": "trace", "stage": "intent", "data": {"intent": "", "declined": {"reason": "out_of_scope", "can_do": ["query_balance"]}}}  // or why it declined
 {"type": "trace", "stage": "intent", "data": {"intent": "", "declined": {"reason": "manipulation", "kind": "impersonation", "evidence": "警察说…安全账户"}}}  // or the suspected attempt it reports
 {"type": "trace", "stage": "intent", "data": {"intent": "", "ask_for_human": true}}  // or that the Customer asked for a human
+{"type": "trace", "stage": "intent", "data": {"intent": "", "clarification": "您要转多少？"}}  // or the question the Planner asked instead
 {"type": "trace", "stage": "plan", "data": {"steps": [/* PlanStep, in run order, each with the Bank's tier */]}}
 {"type": "trace", "stage": "bank_request", "data": {"method": "POST", "path": "/operations/query_balance", "body": {"input": {}}}}
 {"type": "trace", "stage": "bank_response", "data": {"method": "POST", "path": "/operations/query_balance", "status": 200,
