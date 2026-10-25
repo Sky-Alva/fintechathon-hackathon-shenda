@@ -238,27 +238,24 @@ def order_from_merchant(
             ctx.now.isoformat(),
         ),
     )
-    balance = ctx.conn.execute(
-        "SELECT balance_cents FROM accounts WHERE account_id = ? AND customer_id = ?",
-        (reservation["account_id"], ctx.customer_id),
-    ).fetchone()[0]
+    account = customers.current_account(ctx.conn, ctx.customer_id)  # what Reserved Funds are in
     return OrderFromMerchantOutput(
-        order=_order_view(ctx.conn, order_id),
+        order=_order_view(ctx, order_id),
         reservation=reserved_funds.view(
             reserved_funds.reservation(ctx, input.reservation_id)
         ),
-        balance_after=from_cents(balance),
+        balance_after=from_cents(account["balance_cents"]),
         daily_transfer_total=ctx.daily_transfer_total + input.amount,
     )
 
 
-def _order_view(conn: sqlite3.Connection, order_id: str) -> Order:
-    row = conn.execute(
+def _order_view(ctx: OperationContext, order_id: str) -> Order:
+    row = ctx.conn.execute(
         "SELECT o.*, m.name AS merchant_name, p.name AS product_name FROM merchant_orders o"
         " JOIN merchants m ON m.merchant_id = o.merchant_id"
         " JOIN merchant_products p ON p.product_id = o.product_id"
-        " WHERE o.order_id = ?",
-        (order_id,),
+        " WHERE o.order_id = ? AND o.customer_id = ?",
+        (order_id, ctx.customer_id),
     ).fetchone()
     return Order(
         order_id=row["order_id"],
@@ -292,7 +289,7 @@ def list_merchant_orders(
         "SELECT order_id FROM merchant_orders WHERE customer_id = ? ORDER BY order_id",
         (ctx.customer_id,),
     ).fetchall()
-    return ListMerchantOrdersOutput(orders=[_order_view(ctx.conn, r["order_id"]) for r in ids])
+    return ListMerchantOrdersOutput(orders=[_order_view(ctx, r["order_id"]) for r in ids])
 
 
 MODULE = BankModule(

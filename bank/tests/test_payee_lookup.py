@@ -91,11 +91,13 @@ def test_a_payee_is_found_by_a_past_transfer_note(client: TestClient) -> None:
 def test_the_landlord_is_found_by_the_rent_note_with_the_last_rent_paid(
     client: TestClient,
 ) -> None:
-    payee = found(client, login(client, "liming"), "房租")
+    headers = login(client, "liming")
 
-    assert (payee["payee_id"], payee["matched_by"]) == (LANDLORD, "note")
-    assert payee["matched_note"] == "10月房租"  # the newest note that matched
-    assert payee["last_transfer_amount"] == "800.00"
+    for query in ["房东", "房租"]:
+        payee = found(client, headers, query)
+        assert (payee["payee_id"], payee["matched_by"]) == (LANDLORD, "note"), query
+        assert payee["matched_note"] == "交房东10月房租", query  # the newest that matched
+        assert payee["last_transfer_amount"] == "800.00", query
 
 
 def test_a_phone_number_picks_one_of_two_payees_with_the_same_name(client: TestClient) -> None:

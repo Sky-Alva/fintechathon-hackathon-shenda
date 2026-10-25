@@ -1,24 +1,22 @@
 """Smart Transfers: Scheduled Transfers (#11).
 
 A Customer schedules a transfer for a future Bank-clock date and can cancel it before it
-runs. It is tiered when created, against the Daily Transfer Total of its *run day* (money
-already sent that day plus this amount), and re-checked when it runs: the Bank runs every
-due Scheduled Transfer whenever the Bank clock is set or advanced (`run_due`, called by the
-admin clock endpoints).
+runs. It is tiered when created against the projected Daily Transfer Total of its *run day*:
+money already sent that day, plus the Customer's other Scheduled Transfers waiting to run on
+it, plus this amount. It runs at 09:00 on its run date and is re-checked then: the Bank runs
+every due Scheduled Transfer whenever the Bank clock is set or advanced (`run_due`, called by
+the admin clock endpoints).
 
 A run goes through the policy gate as a `transfer` the Customer approved when scheduling it,
-in the trail of the session that scheduled it. A transfer that has become Red (it was Yellow
-when scheduled), or whose session is under a Safety Lock, is *held*: neither sent nor
-dropped. It shows as awaiting verification until the Customer passes Strong
+in the trail of the session that scheduled it, at its run time (also when the clock reaches
+it late). A transfer that has become Red (it was Yellow when scheduled, and the Customer has
+sent more on the run day since), or whose session is under a Safety Lock at its run time, is
+*held*: neither sent nor dropped. It shows as awaiting verification until the Customer passes Strong
 Verification for `send_held_transfer`, or cancels it. A transfer that can't be paid (not
 enough money) is marked failed, never silently dropped.
-
-Pending Scheduled Transfers don't count toward another one's tier at creation, because they
-can still be cancelled; the run-time re-check is what catches their sum.
 """
 
 import sqlite3
-from dataclasses import replace
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Annotated, Literal
@@ -64,6 +62,7 @@ CREATE TABLE scheduled_transfers (
 """
 
 MAX_DAYS_AHEAD = 365
+RUN_TIME = time(9, 0)  # Bank-clock time a Scheduled Transfer runs on its run date
 # A run refused for one of these is held for the Customer: it has become Red since it was
 # scheduled, or the scheduling session is under a Safety Lock. Anything else fails it.
 WAITS_FOR_CUSTOMER = (RefusalReason.NEEDS_VERIFICATION, RefusalReason.SESSION_LOCKED)
@@ -92,7 +91,8 @@ class ScheduledTransfer(BaseModel):
 
 def _view(conn: sqlite3.Connection, row: sqlite3.Row) -> ScheduledTransfer:
     payee = conn.execute(
-        "SELECT name FROM payees WHERE payee_id = ?", (row["payee_id"],)
+        "SELECT name FROM payees WHERE payee_id = ? AND customer_id = ?",
+        (row["payee_id"], row["customer_id"]),
     ).fetchone()
     return ScheduledTransfer(
         scheduled_transfer_id=row["scheduled_transfer_id"],
@@ -145,13 +145,21 @@ def _check_run_date(ctx: OperationContext, run_date: date) -> None:
         )
 
 
+def _run_at(run_date: date) -> datetime:
+    return datetime.combine(run_date, RUN_TIME, clock.BANK_TZ)
+
+
 def _tier_on_run_day(ctx: OperationContext, amount: Decimal, run_date: date) -> Tier:
-    """Yellow if what the Customer has sent on the run day, plus `amount`, stays within the
-    Daily Transfer Total limit; otherwise Red."""
-    on_run_day = replace(
-        ctx, daily_transfer_total=limits.daily_transfer_total(ctx.conn, ctx.customer_id, run_date)
-    )
-    return limits.tier_for_outgoing(amount, on_run_day)
+    """Yellow if the run day's projected Daily Transfer Total, plus `amount`, stays within
+    the limit; otherwise Red. The projection is what the Customer has already sent that day
+    plus their Scheduled Transfers still waiting to run on it."""
+    pending_cents = ctx.conn.execute(
+        "SELECT COALESCE(SUM(amount_cents), 0) FROM scheduled_transfers"
+        " WHERE customer_id = ? AND run_date = ? AND status = 'scheduled'",
+        (ctx.customer_id, run_date.isoformat()),
+    ).fetchone()[0]
+    sent = limits.daily_transfer_total(ctx.conn, ctx.customer_id, run_date)
+    return limits.tier_for_day_total(sent + from_cents(pending_cents), amount)
 
 
 # --- Schedule a transfer ------------------------------------------------------------
@@ -329,26 +337,26 @@ def send_held_transfer(
 
 
 def run_due(conn: sqlite3.Connection, registry: Registry) -> None:
-    """Run every Scheduled Transfer whose run date the Bank clock has reached, oldest first.
+    """Run every Scheduled Transfer whose run time the Bank clock has reached, oldest first.
 
     Each one runs through the policy gate as a `transfer` approved when it was scheduled,
-    at the start of its run day, so it counts toward that day's Daily Transfer Total and
-    is tiered again there. Called inside the transaction that sets or advances the Bank
-    clock.
+    at its run time, so it counts toward its run day's Daily Transfer Total and is tiered
+    again there. Called inside the transaction that sets or advances the Bank clock.
     """
     now = clock.now(conn)
-    due = conn.execute(
+    on_or_before_today = conn.execute(
         "SELECT * FROM scheduled_transfers WHERE status = 'scheduled' AND run_date <= ?"
         " ORDER BY run_date, scheduled_transfer_id",
         (now.date().isoformat(),),
     ).fetchall()
-    for row in due:
-        _run(conn, registry, row, now)
+    for row in on_or_before_today:
+        if _run_at(date.fromisoformat(row["run_date"])) <= now:
+            _run(conn, registry, row, now)
 
 
 def _run(conn: sqlite3.Connection, registry: Registry, row: sqlite3.Row, now: datetime) -> None:
     scheduled_transfer_id = row["scheduled_transfer_id"]
-    run_at = datetime.combine(date.fromisoformat(row["run_date"]), time(0, 0), clock.BANK_TZ)
+    run_at = _run_at(date.fromisoformat(row["run_date"]))
     transfer = {
         "payee_id": row["payee_id"],
         "amount": str(from_cents(row["amount_cents"])),
@@ -362,7 +370,7 @@ def _run(conn: sqlite3.Connection, registry: Registry, row: sqlite3.Row, now: da
             "transfer",
             transfer,
             approved=Tier(row["created_tier"]),
-            at=run_at,
+            at=run_at,  # also the time its Safety Lock and Daily Transfer Total are read
             detail={"scheduled_transfer_id": scheduled_transfer_id, "run_date": row["run_date"]},
         )
     except Refusal as refusal:
@@ -370,20 +378,20 @@ def _run(conn: sqlite3.Connection, registry: Registry, row: sqlite3.Row, now: da
             # Neither sent nor dropped: it waits for the Customer to verify or cancel it.
             conn.execute(
                 "UPDATE scheduled_transfers SET status = 'held', held_at = ?"
-                " WHERE scheduled_transfer_id = ?",
-                (now.isoformat(), scheduled_transfer_id),
+                " WHERE scheduled_transfer_id = ? AND customer_id = ?",
+                (now.isoformat(), scheduled_transfer_id, row["customer_id"]),
             )
         else:
             conn.execute(
                 "UPDATE scheduled_transfers SET status = 'failed', failure_reason = ?"
-                " WHERE scheduled_transfer_id = ?",
-                (refusal.reason.value, scheduled_transfer_id),
+                " WHERE scheduled_transfer_id = ? AND customer_id = ?",
+                (refusal.reason.value, scheduled_transfer_id, row["customer_id"]),
             )
         return
     conn.execute(
         "UPDATE scheduled_transfers SET status = 'executed', executed_at = ?, transfer_id = ?"
-        " WHERE scheduled_transfer_id = ?",
-        (now.isoformat(), sent.output["transfer_id"], scheduled_transfer_id),
+        " WHERE scheduled_transfer_id = ? AND customer_id = ?",
+        (now.isoformat(), sent.output["transfer_id"], scheduled_transfer_id, row["customer_id"]),
     )
 
 
@@ -394,20 +402,26 @@ MODULE = BankModule(
         Operation(
             name="schedule_transfer",
             description_zh=(
-                "预约一笔未来日期的转账；创建时按执行当日的累计转账额定级，到期执行时会再次检查。"
+                "预约一笔未来日期的转账，于执行当日9:00执行；创建时按执行当日预计的累计转账额"
+                "（含当日其他待执行的预约转账）定级，到期执行时会再次检查。"
             ),
             description_en=(
-                "Schedule a transfer to a Payee for a future Bank date; it is tiered when"
-                " created against the Daily Transfer Total of its run day and checked again"
-                " when it runs."
+                "Schedule a transfer to a Payee for a future Bank date, run at 09:00 that day;"
+                " it is tiered when created against the projected Daily Transfer Total of its"
+                " run day (including the Customer's other Scheduled Transfers for that day)"
+                " and checked again when it runs."
             ),
             input_model=ScheduleTransferInput,
             output_model=ScheduleTransferOutput,
             tier=TierRule(
-                description_zh="执行当日累计转账额（含本笔）≤ ¥1,000 为黄色，否则为红色。",
+                description_zh=(
+                    "执行当日预计累计转账额（已转出 + 当日其他待执行的预约转账 + 本笔）"
+                    "≤ ¥1,000 为黄色，否则为红色。"
+                ),
                 description_en=(
-                    "Yellow if the Daily Transfer Total of the run day, including this"
-                    " transfer, stays at or below ¥1,000, otherwise Red."
+                    "Yellow if the run day's projected Daily Transfer Total (already sent,"
+                    " plus other Scheduled Transfers for that day, plus this one) stays at or"
+                    " below ¥1,000, otherwise Red."
                 ),
                 resolve=schedule_transfer_tier,
             ),

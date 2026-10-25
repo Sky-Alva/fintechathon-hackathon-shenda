@@ -26,7 +26,7 @@ ACCOUNT = "ACC-LM-001"  # 李明's current account, ¥1,180.00 at the seed
 TOMORROW = "2026-10-21"
 RUN_DAY = "2026-10-22"
 RUN_DAY_9AM = "2026-10-22T09:00:00+08:00"
-RUN_DAY_START = "2026-10-22T00:00:00+08:00"
+RUN_DAY_8AM = "2026-10-22T08:00:00+08:00"  # the run day, before Scheduled Transfers run
 
 
 def refusal(response: httpx.Response) -> Any:
@@ -160,6 +160,36 @@ def test_the_tier_follows_the_run_day_not_today(client: TestClient) -> None:
     assert tier_of(client, headers, "schedule_transfer", scheduled("300.00", TOMORROW)) == "yellow"
 
 
+def test_the_tier_counts_other_scheduled_transfers_waiting_for_the_same_day(
+    client: TestClient,
+) -> None:
+    headers = login(client, "liming")
+    schedule(client, headers, scheduled("600.00"))
+    cancelled = schedule(client, headers, scheduled("300.00"))
+    confirmed_call(
+        client, headers, "cancel_scheduled_transfer", {"scheduled_transfer_id": cancelled}
+    )
+    schedule(client, headers, scheduled("700.00", TOMORROW))  # another day: not counted
+
+    # ¥600 is set to leave on the run day, so ¥400 more stays Yellow and ¥450 is Red.
+    assert tier_of(client, headers, "schedule_transfer", scheduled("400.00")) == "yellow"
+    assert tier_of(client, headers, "schedule_transfer", scheduled("450.00")) == "red"
+
+
+def test_the_second_of_two_scheduled_transfers_over_1000_needs_strong_verification(
+    client: TestClient,
+) -> None:
+    headers = login(client, "liming")
+    schedule(client, headers, scheduled("600.00"))
+
+    second = scheduled("450.00")
+    bare = call(client, headers, "schedule_transfer", second)
+    confirmation = request_confirmations(client, headers, ("schedule_transfer", second))
+
+    assert refusal(bare)["reason"] == "needs_verification"
+    assert refusal(confirmation)["reason"] == "needs_verification"
+
+
 def test_a_scheduled_transfer_does_not_count_toward_the_day_it_was_scheduled(
     client: TestClient,
 ) -> None:
@@ -276,11 +306,11 @@ def test_a_customer_sees_only_their_own_scheduled_transfers(client: TestClient) 
 # --- Running when the Bank clock reaches the run date -----------------------------------
 
 
-def test_it_does_not_run_before_its_run_date(client: TestClient) -> None:
+def test_it_does_not_run_before_09_00_on_its_run_date(client: TestClient) -> None:
     headers = login(client, "liming")
     scheduled_id = schedule(client, headers, scheduled("300.00"))
 
-    set_clock(client, "2026-10-21T23:59:00+08:00")
+    set_clock(client, "2026-10-22T08:59:00+08:00")
 
     assert listed(client, headers)[scheduled_id]["status"] == "scheduled"
     assert balance(client, headers, ACCOUNT) == "1180.00"
@@ -359,29 +389,27 @@ def test_a_red_scheduled_transfer_verified_when_created_is_not_held_again(
 # --- Held when Red at run time --------------------------------------------------------
 
 
-def two_that_are_yellow_alone_but_red_together(
-    client: TestClient, headers: dict[str, str]
-) -> tuple[str, str]:
-    """¥600 then ¥450 for the same day: each is Yellow when scheduled, ¥1,050 in all."""
-    return (
-        schedule(client, headers, scheduled("600.00")),
-        schedule(client, headers, scheduled("450.00")),
-    )
+def red_by_its_run_time(client: TestClient, headers: dict[str, str]) -> str:
+    """¥450 scheduled, Yellow; then ¥600 sent on the run day before it runs at 09:00, so
+    running it would make ¥1,050."""
+    scheduled_id = schedule(client, headers, scheduled("450.00"))
+    set_clock(client, RUN_DAY_8AM)
+    pay_mum(client, headers, "600.00")
+    return scheduled_id
 
 
 def test_a_scheduled_transfer_that_is_red_at_run_time_is_held_not_sent_or_dropped(
     client: TestClient,
 ) -> None:
     headers = login(client, "liming")
-    first, second = two_that_are_yellow_alone_but_red_together(client, headers)
+    held = red_by_its_run_time(client, headers)
 
     set_clock(client, RUN_DAY_9AM)
 
-    found = listed(client, headers)
-    assert found[first]["status"] == "executed"
-    assert (found[second]["status"], found[second]["awaiting_verification"]) == ("held", True)
-    assert found[second]["transfer_id"] is None
-    assert balance(client, headers, ACCOUNT) == "580.00"  # only the first was sent
+    found = listed(client, headers)[held]
+    assert (found["status"], found["awaiting_verification"]) == ("held", True)
+    assert found["transfer_id"] is None
+    assert balance(client, headers, ACCOUNT) == "580.00"  # only the ¥600 was sent
 
 
 def test_a_scheduled_transfer_whose_session_is_under_a_safety_lock_is_held(
@@ -389,10 +417,10 @@ def test_a_scheduled_transfer_whose_session_is_under_a_safety_lock_is_held(
 ) -> None:
     headers = login(client, "liming")
     scheduled_transfer_id = schedule(client, headers, scheduled("200.00"))
-    set_clock(client, "2026-10-21T23:50:00+08:00")
+    set_clock(client, "2026-10-22T08:50:00+08:00")
     evidence = {"kind": "impersonation", "evidence": "我是银行安全中心的，马上转账"}
     call(client, headers, "report_suspected_attempt", evidence)
-    call(client, headers, "report_suspected_attempt", evidence)  # locked until 00:20
+    call(client, headers, "report_suspected_attempt", evidence)  # locked until 09:20
 
     set_clock(client, RUN_DAY_9AM)
 
@@ -402,16 +430,16 @@ def test_a_scheduled_transfer_whose_session_is_under_a_safety_lock_is_held(
 
 def test_held_transfers_can_be_listed_by_status(client: TestClient) -> None:
     headers = login(client, "liming")
-    _, second = two_that_are_yellow_alone_but_red_together(client, headers)
+    held = red_by_its_run_time(client, headers)
     set_clock(client, RUN_DAY_9AM)
 
-    assert list(listed(client, headers, "held")) == [second]
+    assert list(listed(client, headers, "held")) == [held]
     assert list(listed(client, headers, "scheduled")) == []
 
 
 def test_a_held_transfer_is_sent_after_strong_verification(client: TestClient) -> None:
     headers, phone = login_with_phone(client, "liming")
-    _, held = two_that_are_yellow_alone_but_red_together(client, headers)
+    held = red_by_its_run_time(client, headers)
     set_clock(client, RUN_DAY_9AM)
     send = {"scheduled_transfer_id": held, "amount": "450.00"}
 
@@ -429,7 +457,7 @@ def test_a_held_transfer_is_sent_after_strong_verification(client: TestClient) -
 
 def test_a_held_transfer_is_not_sent_without_strong_verification(client: TestClient) -> None:
     headers = login(client, "liming")
-    _, held = two_that_are_yellow_alone_but_red_together(client, headers)
+    held = red_by_its_run_time(client, headers)
     set_clock(client, RUN_DAY_9AM)
     send = {"scheduled_transfer_id": held, "amount": "450.00"}
 
@@ -444,7 +472,7 @@ def test_a_held_transfer_is_not_sent_without_strong_verification(client: TestCli
 
 def test_a_held_transfer_is_sent_only_for_its_own_amount(client: TestClient) -> None:
     headers = login(client, "liming")
-    _, held = two_that_are_yellow_alone_but_red_together(client, headers)
+    held = red_by_its_run_time(client, headers)
     set_clock(client, RUN_DAY_9AM)
 
     send = {"scheduled_transfer_id": held, "amount": "100.00"}
@@ -470,7 +498,7 @@ def test_only_a_held_transfer_can_be_sent(client: TestClient) -> None:
 
 def test_a_held_transfer_can_be_cancelled(client: TestClient) -> None:
     headers = login(client, "liming")
-    _, held = two_that_are_yellow_alone_but_red_together(client, headers)
+    held = red_by_its_run_time(client, headers)
     set_clock(client, RUN_DAY_9AM)
     cancel = {"scheduled_transfer_id": held}
 
@@ -506,7 +534,10 @@ def test_urgency_does_not_get_a_red_scheduled_transfer_without_the_real_code(
 
 def test_runs_are_audited_in_the_session_that_scheduled_them(client: TestClient) -> None:
     session_id, headers = login_session(client, "liming")
-    two_that_are_yellow_alone_but_red_together(client, headers)
+    schedule(client, headers, scheduled("300.00"))
+    schedule(client, headers, scheduled("450.00"))  # ¥750 projected: both Yellow
+    set_clock(client, RUN_DAY_8AM)
+    pay_mum(client, headers, "400.00")  # ¥300 still fits at 09:00, ¥450 more does not
     set_clock(client, RUN_DAY_9AM)
 
     entries = admin(client, "get", f"/admin/sessions/{session_id}/audit")["entries"]
@@ -516,7 +547,7 @@ def test_runs_are_audited_in_the_session_that_scheduled_them(client: TestClient)
         ("transfer", "yellow", "ok", None),
         ("transfer", "red", "refused", "needs_verification"),  # held: never counts as run
     ]
-    assert all(e["at"] == RUN_DAY_START for e in runs)  # each runs as its run day starts
+    assert all(e["at"] == RUN_DAY_9AM for e in runs)  # each runs at 09:00 on its run day
     assert all(e["detail"]["run_date"] == RUN_DAY for e in runs)
     own = call(client, headers, "read_audit_trail").json()["output"]["entries"]
     own_runs = [e for e in own if "scheduled_transfer_id" in (e["detail"] or {})]

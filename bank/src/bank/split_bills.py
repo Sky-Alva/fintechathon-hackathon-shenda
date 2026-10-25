@@ -71,9 +71,9 @@ class SplitBillRequest(BaseModel):
 def _view(conn: sqlite3.Connection, request: sqlite3.Row) -> SplitBillRequest:
     rows = conn.execute(
         "SELECT s.payee_id, p.name, s.amount_cents FROM split_bill_shares s"
-        " JOIN payees p ON p.payee_id = s.payee_id"
+        " JOIN payees p ON p.payee_id = s.payee_id AND p.customer_id = ?"
         " WHERE s.split_bill_id = ? ORDER BY s.position",
-        (request["split_bill_id"],),
+        (request["customer_id"], request["split_bill_id"]),
     ).fetchall()
     return SplitBillRequest(
         split_bill_id=request["split_bill_id"],
@@ -151,7 +151,8 @@ def request_split_bill(
         ],
     )
     request = ctx.conn.execute(
-        "SELECT * FROM split_bill_requests WHERE split_bill_id = ?", (split_bill_id,)
+        "SELECT * FROM split_bill_requests WHERE split_bill_id = ? AND customer_id = ?",
+        (split_bill_id, ctx.customer_id),
     ).fetchone()
     return RequestSplitBillOutput(split_bill_request=_view(ctx.conn, request))
 
