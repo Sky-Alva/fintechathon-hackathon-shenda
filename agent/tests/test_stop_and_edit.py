@@ -5,7 +5,6 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
-from agent.model import ModelReply
 from conftest import (
     BankLink,
     act,
@@ -21,7 +20,7 @@ from conftest import (
     traces,
     type_code,
 )
-from fake_model import FakeModel, plan, say, step
+from fake_model import FakeModel, ModelReply, plan, say, step
 from test_plan_card import transfer_directly
 
 TWO_TRANSFERS = "给老妈转200，再给老婆转300"

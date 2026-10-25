@@ -12,7 +12,6 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from agent.model import ModelReply
 from conftest import (
     Login,
     act,
@@ -29,7 +28,7 @@ from conftest import (
     traces,
     type_code,
 )
-from fake_model import FakeModel, plan, say, step
+from fake_model import FakeModel, ModelReply, plan, say, step
 
 TWO_600S = "给老公转两笔600"
 TO_HUSBAND = {"payee_id": "PAY-HM-001", "amount": "600.00", "note": ""}

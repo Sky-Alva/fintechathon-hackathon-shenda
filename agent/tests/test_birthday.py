@@ -9,7 +9,6 @@ from typing import Any, NamedTuple
 
 from fastapi.testclient import TestClient
 
-from agent.model import ModelReply, ToolCall
 from conftest import (
     ADMIN_KEY,
     Login,
@@ -23,7 +22,7 @@ from conftest import (
     updates,
 )
 from evaluation import load_task, run_task
-from fake_model import FakeModel, plan, say, step
+from fake_model import FakeModel, ModelReply, plan, say, step
 
 SHORTLY_BEFORE = "2026-10-24T10:00:00+08:00"  # 韩梅梅's birthday is 10-28
 TWO_DAYS_BEFORE = "2026-10-26T09:00:00+08:00"
@@ -49,12 +48,7 @@ NOTICED = "韩梅梅的生日是 10月28日；去年 2025-10-26 您在 Bloom & C
 
 
 def plan_with_note(*steps: dict[str, Any], note: str | None = None) -> ModelReply:
-    arguments: dict[str, Any] = {"intent": "为韩梅梅的生日做准备", "steps": list(steps)}
-    if note is not None:
-        arguments["note"] = note
-    return ModelReply(
-        tool_calls=[ToolCall(id="call-plan", name="propose_plan", arguments=arguments)]
-    )
+    return plan(*steps, intent="为韩梅梅的生日做准备", note=note)
 
 
 def birthday_plan(note: str | None = NOTICED) -> list[ModelReply]:
