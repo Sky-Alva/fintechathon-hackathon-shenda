@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { fetchAuditTrail } from './api'
-import { describeDeclined } from './declined'
 import type { AuditEntry, PlanStep, Trace } from './events'
+import { describeIntent, json } from './traceText'
 
 /** One Customer turn and the `trace` events it streamed, in order. */
 export type TraceTurn = { text: string; traces: Trace[] }
@@ -81,15 +81,7 @@ function TraceItem({ trace }: { trace: Trace }) {
       return (
         <div className="trace-item">
           <span className="trace-label">意图 Intent</span>
-          <span>
-            {trace.data.declined
-              ? describeDeclined(trace.data.declined)
-              : trace.data.clarification
-                ? `追问 Asked: ${trace.data.clarification}`
-                : trace.data.ask_for_human
-                  ? '转人工 Asked for a human'
-                  : trace.data.intent || '（未说明）'}
-          </span>
+          <span>{describeIntent(trace.data)}</span>
         </div>
       )
     case 'plan':
@@ -176,6 +168,3 @@ function isRefusal(body: unknown): boolean {
   return typeof body === 'object' && body !== null && 'refusal' in body
 }
 
-function json(value: unknown): string {
-  return JSON.stringify(value, null, 2)
-}

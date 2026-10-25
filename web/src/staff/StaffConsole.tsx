@@ -3,8 +3,8 @@
 // conversation over from the Agent, replying and handing it back. It only displays what the
 // Agent and the Bank return, so it is checked by hand.
 import { type FormEvent, useCallback, useEffect, useState } from 'react'
-import { describeDeclined } from '../declined'
 import type { HistoryEntry, Trace } from '../events'
+import { describeIntent, json } from '../traceText'
 import {
   type AuditEntry,
   type SafetyLock,
@@ -44,10 +44,6 @@ function usePolling(poll: () => Promise<void>) {
 
 function time(iso: string): string {
   return new Date(iso).toLocaleString('zh-CN', { hour12: false })
-}
-
-function json(value: unknown): string {
-  return JSON.stringify(value, null, 2)
 }
 
 function Tier({ tier }: { tier: string | null | undefined }) {
@@ -115,17 +111,9 @@ function KeysForm({ onSubmit }: { onSubmit: (keys: StaffKeys) => void }) {
 function TraceEntry({ entry }: { entry: Trace }) {
   switch (entry.stage) {
     case 'intent':
-      return entry.data.declined ? (
+      return (
         <>
-          <b>理解意图</b> {describeDeclined(entry.data.declined)}
-        </>
-      ) : entry.data.clarification ? (
-        <>
-          <b>理解意图</b> 需要澄清：{entry.data.clarification}
-        </>
-      ) : (
-        <>
-          <b>理解意图</b> {entry.data.intent}
+          <b>理解意图</b> {describeIntent(entry.data)}
         </>
       )
     case 'plan':
