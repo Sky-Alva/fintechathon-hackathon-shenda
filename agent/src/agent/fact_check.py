@@ -70,7 +70,13 @@ HAN = r"[\u4e00-\u9fff]"
 PAYEES = [
     re.compile(rf"(?:转给|转账给|汇给|付给|打给|收款人|收款方)\s*(?:是|为|[:：])?\s*(?P<name>{HAN}{{2,6}})"),
     re.compile(rf"向(?P<name>{HAN}{{2,6}}?)(?:转账|转|汇款|汇|付款|付)"),
+    re.compile(rf"给(?P<name>{HAN}{{2,8}}?)(?:转账|转|汇款|汇|付款|付|打款|打钱)"),
     re.compile(rf"\b(?:to|payee:?)\s+(?P<name>{HAN}{{2,6}})", re.IGNORECASE),
+]
+# A Payee's name in Latin letters ("to Zhao Qiang"): a full name, two capitalised words or
+# more, which the Bank's data must contain.
+LATIN_PAYEES = [
+    re.compile(r"\b(?:[Tt]o|[Pp]ayee:?)\s+(?P<name>[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)"),
 ]
 
 
@@ -129,9 +135,16 @@ class Facts:
     names: set[str] = field(default_factory=set)
     """Every run of Chinese text: names and nicknames among them."""
 
+    latin: set[str] = field(default_factory=set)
+    """Every text the Bank returned, lower-cased: names in Latin letters among them."""
+
     def has_name(self, mention: str) -> bool:
         """Whether `mention` starts with a name the Bank returned ("韩梅梅吗" does)."""
         return any(mention.startswith(name) for name in self.names)
+
+    def has_latin_name(self, mention: str) -> bool:
+        """Whether a Bank text contains this name in Latin letters."""
+        return any(mention.lower() in text for text in self.latin)
 
     def has_date(self, year: int | None, month: int, day: int) -> bool:
         return any(
@@ -150,6 +163,7 @@ class Facts:
                     facts.amounts.add(Decimal(str(leaf)))
                 elif isinstance(leaf, str):
                     facts.names.update(re.findall(rf"{HAN}{{2,}}", leaf))
+                    facts.latin.add(leaf.lower())
                     facts.last4.update(MASKED.findall(leaf))
                     for number in LONG_NUMBER.findall(leaf):
                         facts.tokens.add(number)
@@ -169,6 +183,10 @@ def unsupported(text: str, facts: Facts) -> list[str]:
     for pattern in PAYEES:
         for match in pattern.finditer(text):
             if not facts.has_name(match.group("name")):
+                found.append(match.group().strip())
+    for pattern in LATIN_PAYEES:
+        for match in pattern.finditer(text):
+            if not facts.has_latin_name(match.group("name")):
                 found.append(match.group().strip())
     for pattern in DATES:
         for match in pattern.finditer(text):

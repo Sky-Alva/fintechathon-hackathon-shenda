@@ -420,6 +420,7 @@ def test_an_invented_card_is_not_sent(
         "要转给韩梅梅吗？",
         "收款人：韩梅梅。",
         "Shall I send it to 韩梅梅?",
+        "要给韩梅梅转账吗？",
     ],
 )
 def test_a_payee_the_bank_returned_is_sent(
@@ -440,6 +441,10 @@ def test_a_payee_the_bank_returned_is_sent(
         "收款人：张伟。",
         "收款人是王秀英。",  # 李明's Payee, but in no Bank result of this conversation
         "I've sent it to 张伟.",
+        "已给赵强转了钱。",
+        "要给王芳转账吗？",
+        "I've sent it to Zhao Qiang.",
+        "Shall I transfer it to Wang Fang?",
     ],
 )
 def test_an_invented_payee_is_not_sent(
