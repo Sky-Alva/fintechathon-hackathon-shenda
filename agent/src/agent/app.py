@@ -30,11 +30,11 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent.bank import BankRefused, BankUnavailable, HttpClient
+from agent.actions import CustomerAction
 from agent.conversation import (
     AlreadyHandedOver,
     Conversation,
     Conversations,
-    CustomerAction,
     NotHandedOver,
     PlanNotPending,
     PlanNotRunning,
