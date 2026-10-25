@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { type CustomerAction, fetchUpdates, sendAction, sendMessage } from './api'
 import type {
   BankRefusal,
+  Chart,
   ConversationEvent,
   PlanStep,
   PlanWarning,
@@ -12,6 +13,7 @@ import type {
 import CancellationOffer, { type OfferStatus } from './CancellationOffer'
 import PlanCard, { type PlanCardStatus } from './PlanCard'
 import SimulatedPhone from './SimulatedPhone'
+import SpendingChart from './SpendingChart'
 import TracePanel, { type TraceTurn } from './TracePanel'
 
 /** One step's progress line: running, then done or failed (with the Bank's message). */
@@ -30,7 +32,11 @@ type Item =
   | { kind: 'notice'; text: string }
   // The Safety Lock notice: only queries work until it is lifted or expires.
   | { kind: 'locked'; text: string }
+  // Bank data held instruction-like text (#47): the Agent ignored it and says so.
+  | { kind: 'suspicious'; text: string }
   | StepItem
+  // A spending chart, drawn from the Bank's output only (#40).
+  | { kind: 'chart'; chart: Chart }
   | {
       kind: 'plan'
       planId: string
@@ -114,6 +120,8 @@ function apply(items: Item[], event: ConversationEvent): Item[] {
       ]
     case 'step_succeeded':
       return settle(items, event.step_id, { status: 'done' })
+    case 'chart':
+      return [...items, { kind: 'chart', chart: event }]
     case 'step_failed': {
       // The Agent's plain words for the Bank's reason (#42), else the Bank's own message.
       const failure = event.text ?? event.message
@@ -189,6 +197,8 @@ function apply(items: Item[], event: ConversationEvent): Item[] {
       ]
     case 'session_locked':
       return [...items, { kind: 'locked', text: event.text }]
+    case 'injection_warning':
+      return [...items, { kind: 'suspicious', text: event.text }]
     case 'handed_over':
       return [...items, { kind: 'notice', text: `人工客服 ${event.staff} 已接入对话` }]
     case 'staff_message':
@@ -578,10 +588,19 @@ export default function Chat({
                   {item.text}
                 </div>
               )
+            case 'chart':
+              return <SpendingChart key={i} chart={item.chart} />
             case 'locked':
               return (
                 <div key={i} className="locked-notice" role="alert">
                   <strong>会话已安全锁定</strong>
+                  {item.text}
+                </div>
+              )
+            case 'suspicious':
+              return (
+                <div key={i} className="suspicious-notice" role="alert">
+                  <strong>发现可疑信息</strong>
                   {item.text}
                 </div>
               )

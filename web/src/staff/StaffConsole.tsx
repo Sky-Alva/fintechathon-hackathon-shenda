@@ -281,6 +281,13 @@ function AgentEntry({ entry }: { entry: HistoryEntry }) {
           <code>{entry.challenge_id}</code>）
         </>
       )
+    case 'injection_warning':
+      return (
+        <>
+          <b className="locked">银行数据含可疑指令</b> <code>{entry.step_id}</code> {entry.operation}
+          （{entry.reported ? '已报告银行' : '未能报告'}）：{entry.text}
+        </>
+      )
     case 'session_locked':
       return (
         <>
@@ -326,6 +333,16 @@ function AgentEntry({ entry }: { entry: HistoryEntry }) {
           <details>
             <summary>银行返回</summary>
             <pre>{json(entry.output)}</pre>
+          </details>
+        </>
+      )
+    case 'chart':
+      return (
+        <>
+          <b>图表</b> <code>{entry.step_id}</code> {entry.title}（银行返回，未改动）
+          <details>
+            <summary>图表数据</summary>
+            <pre>{json(entry.data)}</pre>
           </details>
         </>
       )
