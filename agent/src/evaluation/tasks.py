@@ -62,27 +62,32 @@ class FinalState(_Strict):
 
 
 class Approval(_Strict):
-    """One scripted answer: to a Plan card's Confirmation, to a verification request, or
-    to an offer to undo a failed Plan's completed steps."""
+    """One scripted answer: to a Plan card's Confirmation, to a verification request, to
+    an offer to undo a failed Plan's completed steps, or (`pick`) to an offer of
+    Subscriptions to cancel, with the IDs to cancel."""
 
     confirmation: Literal["approve", "reject"] | None = None
     verification: Literal["correct_code", "wrong_code", "reject"] | None = None
     reversal: Literal["accept", "decline"] | None = None
+    pick: list[str] | None = None
 
     @model_validator(mode="after")
     def exactly_one(self) -> "Approval":
-        given = [self.confirmation, self.verification, self.reversal]
+        given = [self.confirmation, self.verification, self.reversal, self.pick]
         if sum(answer is not None for answer in given) != 1:
             raise ValueError(
-                "each approval is one of `confirmation:`, `verification:` or `reversal:`"
+                "each approval is one of `confirmation:`, `verification:`, `reversal:`"
+                " or `pick:`"
             )
         return self
 
     @property
-    def kind(self) -> Literal["confirmation", "verification", "reversal"]:
+    def kind(self) -> Literal["confirmation", "verification", "reversal", "pick"]:
         if self.confirmation:
             return "confirmation"
-        return "verification" if self.verification else "reversal"
+        if self.verification:
+            return "verification"
+        return "reversal" if self.reversal else "pick"
 
     @property
     def answer(self) -> str:
