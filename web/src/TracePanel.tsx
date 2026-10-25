@@ -84,7 +84,11 @@ function TraceItem({ trace }: { trace: Trace }) {
           <span>
             {trace.data.declined
               ? describeDeclined(trace.data.declined)
-              : trace.data.intent || '（未说明）'}
+              : trace.data.clarification
+                ? `追问 Asked: ${trace.data.clarification}`
+                : trace.data.ask_for_human
+                  ? '转人工 Asked for a human'
+                  : trace.data.intent || '（未说明）'}
           </span>
         </div>
       )
