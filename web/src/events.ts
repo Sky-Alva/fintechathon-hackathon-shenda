@@ -27,6 +27,44 @@ export type StepSucceeded = {
   output: Record<string, unknown>
 }
 export type Answer = { type: 'answer'; text: string }
+
+// Emitted since #40, after the step_succeeded of a chartable step: `data` is the Bank's
+// output for the step, unchanged (amounts are the Bank's decimal strings), and the Channel
+// draws only those numbers. `title` is in the Customer's language.
+export type CategoryTotal = { category: string; amount: string; transaction_count: number }
+export type ReportSeries = { category: string; values: string[] }
+export type SpendingByCategory = {
+  start_date: string | null
+  end_date: string | null
+  total_spending: string
+  categories: CategoryTotal[]
+}
+export type MonthlyReport = {
+  year: number
+  month: number
+  labels: string[]
+  categories: CategoryTotal[]
+  total_income: string
+  total_spending: string
+  net: string
+  series: ReportSeries[]
+}
+export type AnnualReport = {
+  year: number
+  labels: string[]
+  monthly_income: string[]
+  monthly_spending: string[]
+  monthly_net: string[]
+  series: ReportSeries[]
+  total_income: string
+  total_spending: string
+  net: string
+}
+export type Chart = { type: 'chart'; step_id: string; title: string } & (
+  | { operation: 'spending_by_category'; data: SpendingByCategory }
+  | { operation: 'monthly_report'; data: MonthlyReport }
+  | { operation: 'annual_report'; data: AnnualReport }
+)
 // Emitted for 'out_of_scope' since #33, 'manipulation' since #43 and 'secret' since #44.
 export type Refusal = {
   type: 'refusal'
@@ -140,6 +178,7 @@ export type Trace = { type: 'trace' } & (
 export type ConversationEvent =
   | StepStarted
   | StepSucceeded
+  | Chart
   | Answer
   | PlanProposed
   | ConfirmationRequested
