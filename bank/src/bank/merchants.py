@@ -3,6 +3,9 @@
 Simulated businesses inside the Bank: a flower shop and a cake shop. A Customer orders goods
 for a delivery date and pays from Reserved Funds, so an order only works with a reservation
 that allows that kind of Merchant and has enough left once its other pending orders are paid.
+An order may leave its Reserved Funds unnamed: then it is paid from the Customer's oldest
+active ones that qualify, found when the order is placed, so one Plan (and one approval)
+can reserve the money and place the orders paid from it.
 
 An order is accepted now and paid at 09:00 on its delivery date, like a Scheduled Transfer:
 nothing is debited and no Reserved Funds are spent before then. It is tiered when ordered like
@@ -169,7 +172,14 @@ class OrderFromMerchantInput(BaseModel):
     delivery_date: date = Field(
         description="The Bank-clock date it is delivered and paid, at 09:00; after today."
     )
-    reservation_id: ReservationId  # the Reserved Funds to pay from
+    reservation_id: ReservationId | None = Field(
+        default=None,
+        description=(
+            "The Reserved Funds to pay from. Left out, the Customer's oldest active Reserved"
+            " Funds that may pay this kind of Merchant and have enough left, found when the"
+            " order is placed: so a Plan can reserve them in an earlier step."
+        ),
+    )
     note: str = Field(default="", max_length=100)
 
 
@@ -232,15 +242,54 @@ def _validate(
             "The amount is not the listed price times the quantity",
             {"amount": str(input.amount), "price_total": str(from_cents(price_cents))},
         )
-    reservation = reserved_funds.active_reservation(ctx, input.reservation_id)
-    # It must also cover the orders already waiting to be paid from it.
-    committed = ctx.conn.execute(
+    return merchant, product
+
+
+def _committed(ctx: OperationContext, reservation_id: str) -> int:
+    """What the orders waiting to be paid from these Reserved Funds will take."""
+    committed: int = ctx.conn.execute(
         "SELECT COALESCE(SUM(amount_cents), 0) FROM merchant_orders"
         " WHERE reservation_id = ? AND status = 'pending'",
-        (input.reservation_id,),
+        (reservation_id,),
     ).fetchone()[0]
-    reserved_funds.check_can_pay(reservation, merchant["category"], price_cents + committed)
-    return merchant, product
+    return committed
+
+
+def _reservation_for(
+    ctx: OperationContext, input: OrderFromMerchantInput, category: str
+) -> sqlite3.Row:
+    """The Reserved Funds the order will be paid from: the ones it names, or else the
+    Customer's oldest active ones that may pay this kind of Merchant and have enough left,
+    once the orders already waiting on them are paid."""
+    cents = to_cents(input.amount)
+    if input.reservation_id is not None:
+        reservation = reserved_funds.active_reservation(ctx, input.reservation_id)
+        committed = _committed(ctx, input.reservation_id)
+        reserved_funds.check_can_pay(reservation, category, cents + committed)
+        return reservation
+    active = ctx.conn.execute(
+        "SELECT * FROM reserved_funds WHERE customer_id = ? AND status = 'active'"
+        " ORDER BY reservation_id",
+        (ctx.customer_id,),
+    ).fetchall()
+    allowed: list[sqlite3.Row] = [
+        row for row in active if category in reserved_funds.categories_of(row)
+    ]
+    if not allowed:
+        raise Refusal(
+            RefusalReason.INVALID_INPUT,
+            "No Reserved Funds may be spent at this kind of Merchant",
+            {"merchant_category": category},
+        )
+    for row in allowed:
+        left = row["amount_cents"] - row["spent_cents"] - _committed(ctx, row["reservation_id"])
+        if left >= cents:
+            return row
+    raise Refusal(
+        RefusalReason.INSUFFICIENT_FUNDS,
+        "Not enough left in the Reserved Funds for this kind of Merchant",
+        {"merchant_category": category},
+    )
 
 
 def _tier_on_delivery_day(ctx: OperationContext, input: OrderFromMerchantInput) -> Tier:
@@ -252,7 +301,11 @@ def _tier_on_delivery_day(ctx: OperationContext, input: OrderFromMerchantInput) 
 
 
 def order_from_merchant_tier(input: OrderFromMerchantInput, ctx: OperationContext) -> Tier:
-    _validate(ctx, input)
+    merchant, _ = _validate(ctx, input)
+    if input.reservation_id is not None:
+        # Named Reserved Funds must exist already. Without a name, a Plan may reserve them
+        # in an earlier step, so they are found only when the order is placed.
+        _reservation_for(ctx, input, merchant["category"])
     return _tier_on_delivery_day(ctx, input)
 
 
@@ -260,6 +313,7 @@ def order_from_merchant(
     ctx: OperationContext, input: OrderFromMerchantInput
 ) -> OrderFromMerchantOutput:
     merchant, product = _validate(ctx, input)
+    reservation = _reservation_for(ctx, input, merchant["category"])
     tier = _tier_on_delivery_day(ctx, input)
     count = ctx.conn.execute("SELECT COUNT(*) FROM merchant_orders").fetchone()[0]
     order_id = f"ORD-{count + 1:06d}"  # Bank-wide, like transfer IDs
@@ -275,7 +329,7 @@ def order_from_merchant(
             input.quantity,
             to_cents(input.amount),
             input.delivery_date.isoformat(),
-            input.reservation_id,
+            reservation["reservation_id"],
             input.note,
             tier.value,
             ctx.session_id,
@@ -284,7 +338,9 @@ def order_from_merchant(
     )
     return OrderFromMerchantOutput(
         order=_order_view(ctx.conn, order_id),
-        reservation=reserved_funds.view(reserved_funds.reservation(ctx, input.reservation_id)),
+        reservation=reserved_funds.view(
+            reserved_funds.reservation(ctx, reservation["reservation_id"])
+        ),
     )
 
 

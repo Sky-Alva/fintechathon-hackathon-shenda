@@ -470,6 +470,52 @@ def test_a_payment_that_stays_within_1000_for_the_day_is_yellow(client: TestClie
 BIRTHDAY_9AM = "2026-10-26T09:00:00+08:00"
 
 
+def without_reservation(input: dict[str, Any]) -> dict[str, Any]:
+    """The order as a Plan proposes it before its Reserved Funds exist: paid from whichever
+    of the Customer's Reserved Funds may pay that kind of Merchant."""
+    return {key: value for key, value in input.items() if key != "reservation_id"}
+
+
+def test_one_approval_covers_a_reservation_and_the_orders_paid_from_it(
+    client: TestClient,
+) -> None:
+    headers = login(client, "liming")
+    gift = {"amount": "1000.00", "purpose": "给韩梅梅的生日礼物", "merchant_categories": GIFT}
+    flowers = without_reservation(order_input("unused"))
+    cake = without_reservation(order_input("unused", CAKE_8, "388.00", CAKE_SHOP))
+    plan = [("reserve_funds", gift), ("order_from_merchant", flowers), ("order_from_merchant", cake)]
+
+    preview = preview_tiers(client, headers, *plan)
+    confirmations = request_confirmations(client, headers, *plan)
+
+    assert [step["tier"] for step in preview.json()["steps"]] == ["yellow", "yellow", "yellow"]
+    assert confirmations.status_code == 200, confirmations.text
+    tokens = [c["confirmation_token"] for c in confirmations.json()["confirmations"]]
+    for (operation, input), token in zip(plan, tokens, strict=True):
+        response = call(client, headers, operation, input, token)
+        assert response.status_code == 200, response.text
+    assert [o["reservation_id"] for o in orders(client, headers)] == ["RSV-000001", "RSV-000001"]
+    set_clock(client, "2026-10-26T09:00:00+08:00")
+    assert reservations(client, headers)["RSV-000001"]["remaining"] == "313.00"
+
+
+def test_an_order_without_reserved_funds_named_needs_some_that_may_pay_for_it(
+    client: TestClient,
+) -> None:
+    headers = login(client, "liming")
+    roses = without_reservation(order_input("unused"))
+    no_reservation = order(client, headers, roses)
+    reserve(client, headers, "1000.00", ["cake"], purpose="蛋糕")
+    cake_only = order(client, headers, roses)
+    reserve(client, headers, "100.00", ["flowers"], purpose="小花")
+    too_small = order(client, headers, roses)
+
+    assert reasons(no_reservation) == "invalid_input"
+    assert reasons(cake_only) == "invalid_input"
+    assert reasons(too_small) == "insufficient_funds"
+    assert orders(client, headers) == []
+
+
 def test_an_order_is_tiered_against_its_delivery_days_projected_total(
     client: TestClient,
 ) -> None:
