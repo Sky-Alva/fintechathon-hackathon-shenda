@@ -15,7 +15,7 @@ docker compose up --build # Channel: http://localhost:8080 · Agent: :8001 · Ba
 
 ## Conversation interface
 
-`POST /conversations {session_token}`, then `POST /conversations/{id}/messages {text}`, which streams the turn's events as NDJSON. A Plan with a Yellow step stops at its Plan card; the Customer answers it with `POST /conversations/{id}/actions {action: confirm | reject, plan_id}`. A confirmed Plan pauses at each Red step for Strong Verification: the Channel's simulated phone sends the SMS code straight to the Bank and hands the Agent only the verification token (`{action: verified, ...}`, or `{action: wrong_code, ...}`); a Safety Lock gets a `session_locked` notice. The Customer can ask for a human at any time (`{action: ask_for_human}`, or in words). Staff Members read the active sessions and each conversation's history, and take a conversation over, reply and hand it back, at `/staff/...` with the Agent's own staff key (`AGENT_STAFF_KEY`, header `X-Staff-Key`), never the Bank's admin key. The event contract shared with the Channel, the staff console and the tests is [docs/conversation-events.md](../docs/conversation-events.md).
+`POST /conversations {session_token}`, then `POST /conversations/{id}/messages {text}`, which streams the turn's events as NDJSON. A Plan with a Yellow step stops at its Plan card; the Customer answers it with `POST /conversations/{id}/actions {action: confirm | reject, plan_id}`, or takes steps off it first (`{action: remove_steps, ...}`), which brings back a new, re-tiered Plan card to confirm. A confirmed Plan pauses at each Red step for Strong Verification: the Channel's simulated phone sends the SMS code straight to the Bank and hands the Agent only the verification token (`{action: verified, ...}`, or `{action: wrong_code, ...}`); a Safety Lock gets a `session_locked` notice. The Customer can ask for a human at any time (`{action: ask_for_human}`, or in words). Staff Members read the active sessions and each conversation's history, and take a conversation over, reply and hand it back, at `/staff/...` with the Agent's own staff key (`AGENT_STAFF_KEY`, header `X-Staff-Key`), never the Bank's admin key. The event contract shared with the Channel, the staff console and the tests is [docs/conversation-events.md](../docs/conversation-events.md).
 
 ## Modules
 
@@ -23,6 +23,9 @@ docker compose up --build # Channel: http://localhost:8080 · Agent: :8001 · Ba
 |--------|-----|
 | `app.py` | The HTTP conversation interface, and the staff views. |
 | `conversation.py` | Conversation service: owns conversations and history (including what Staff Members read), runs a turn (plan → review → execute → answer). |
+| `actions.py` | The Customer's actions: their answers to the Agent's prompts. |
+| `prompts.py` | The prompts waiting for the Customer's answer (a Plan card, a verification, a stopped Plan, a question, the offers), each saying which actions answer it. |
+| `notices.py` | The texts the Agent writes itself, not the model: Red-step warnings, the Safety Lock, a pause, a rejection, the offer to undo. |
 | `planner.py` | Conversation + the Bank's Operation catalogue → a Plan (a dependency graph of steps). Always plans, even for one step, unless it declines an out-of-scope request. |
 | `refusals.py` | The `refusal` texts: an out-of-scope refusal lists what the Agent can do, from the catalogue. |
 | `language.py` | The Customer's language: Chinese by default, English when they write in English. |
