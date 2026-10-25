@@ -30,6 +30,8 @@ type Item =
   | { kind: 'notice'; text: string }
   // The Safety Lock notice: only queries work until it is lifted or expires.
   | { kind: 'locked'; text: string }
+  // Bank data held instruction-like text (#47): the Agent ignored it and says so.
+  | { kind: 'suspicious'; text: string }
   | StepItem
   // A spending chart, drawn from the Bank's output only (#40).
   | { kind: 'chart'; chart: Chart }
@@ -175,6 +177,8 @@ function apply(items: Item[], event: ConversationEvent): Item[] {
       ]
     case 'session_locked':
       return [...items, { kind: 'locked', text: event.text }]
+    case 'injection_warning':
+      return [...items, { kind: 'suspicious', text: event.text }]
     case 'handed_over':
       return [...items, { kind: 'notice', text: `人工客服 ${event.staff} 已接入对话` }]
     case 'staff_message':
@@ -539,6 +543,13 @@ export default function Chat({
               return (
                 <div key={i} className="locked-notice" role="alert">
                   <strong>会话已安全锁定</strong>
+                  {item.text}
+                </div>
+              )
+            case 'suspicious':
+              return (
+                <div key={i} className="suspicious-notice" role="alert">
+                  <strong>发现可疑信息</strong>
                   {item.text}
                 </div>
               )
