@@ -204,6 +204,12 @@ function AgentEntry({ entry }: { entry: HistoryEntry }) {
             <b>客户操作</b> 请求人工客服
           </>
         )
+      if (entry.action === 'cancel_subscriptions')
+        return (
+          <>
+            <b>客户操作</b> 选择要取消的订阅（见随后的计划）
+          </>
+        )
       if (entry.action === 'verified' || entry.action === 'wrong_code')
         return (
           <>
@@ -250,6 +256,18 @@ function AgentEntry({ entry }: { entry: HistoryEntry }) {
           </details>
         </>
       )
+    case 'cancellation_offered':
+      return (
+        <>
+          <b>可取消的订阅</b> <code>{entry.offer_id}</code>：
+          {entry.candidates
+            .map(
+              (c) =>
+                `${c.merchant}（${c.reasons_it_may_not_be_needed.map((r) => r.reason).join('、')}）`,
+            )
+            .join('，')}
+        </>
+      )
     case 'refusal':
       return (
         <>
@@ -261,6 +279,13 @@ function AgentEntry({ entry }: { entry: HistoryEntry }) {
         <>
           <b>短信验证</b> <code>{entry.step_id}</code> 验证码已发送至 {entry.sent_to}（
           <code>{entry.challenge_id}</code>）
+        </>
+      )
+    case 'injection_warning':
+      return (
+        <>
+          <b className="locked">银行数据含可疑指令</b> <code>{entry.step_id}</code> {entry.operation}
+          （{entry.reported ? '已报告银行' : '未能报告'}）：{entry.text}
         </>
       )
     case 'session_locked':
@@ -308,6 +333,16 @@ function AgentEntry({ entry }: { entry: HistoryEntry }) {
           <details>
             <summary>银行返回</summary>
             <pre>{json(entry.output)}</pre>
+          </details>
+        </>
+      )
+    case 'chart':
+      return (
+        <>
+          <b>图表</b> <code>{entry.step_id}</code> {entry.title}（银行返回，未改动）
+          <details>
+            <summary>图表数据</summary>
+            <pre>{json(entry.data)}</pre>
           </details>
         </>
       )

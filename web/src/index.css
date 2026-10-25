@@ -371,6 +371,21 @@ button.secondary {
   border-radius: 10px;
 }
 
+/* Instructions found in Bank data (a Payee's note): ignored, and the Customer is told. */
+.suspicious-notice {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #7a4b00;
+  background: #fff6e0;
+  border: 1px solid #e0a400;
+  border-radius: 10px;
+}
+
 /* --- The Customer's simulated phone: the SMS the Bank texts codes to --- */
 
 .sms-phone {
@@ -492,6 +507,26 @@ button.secondary {
   border-radius: 14px;
   padding: 14px;
   border: 1px solid var(--border);
+}
+
+/* Subscriptions offered for cancelling: the Agent's list, then a box per candidate. */
+.offer-text {
+  white-space: pre-line;
+}
+
+.offer-candidates {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.offer-candidates label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .stop-plan {
@@ -732,4 +767,150 @@ table.audit td {
   text-align: left;
   padding: 4px 6px;
   border-bottom: 1px solid #343842;
+}
+
+/* Spending charts (#40): every figure is the Bank's own string; bars are scaled from it. */
+.chart {
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  align-self: stretch;
+  margin: 0;
+  background: var(--surface);
+  border-radius: 14px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.chart figcaption {
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.chart-totals {
+  display: flex;
+  gap: 16px;
+  margin: 0 0 10px;
+}
+
+.chart-totals dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.chart-totals dd {
+  margin: 0;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-bars {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.chart-bars li {
+  display: grid;
+  grid-template-columns: 4.5em 1fr auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.chart-label {
+  color: var(--muted);
+}
+
+.chart-track {
+  height: 10px;
+}
+
+.chart-bar {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  background: var(--series-1);
+  border-radius: 0 4px 4px 0;
+}
+
+.chart-value {
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-empty {
+  color: var(--muted);
+  margin: 0;
+}
+
+.chart-legend {
+  display: flex;
+  gap: 12px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.chart-legend i {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  vertical-align: -1px;
+}
+
+.chart-legend i.chart-income {
+  background: var(--series-1);
+}
+
+.chart-legend i.chart-spending {
+  background: var(--series-2);
+}
+
+.chart-svg .chart-income {
+  fill: var(--series-1);
+}
+
+.chart-svg .chart-spending {
+  fill: var(--series-2);
+}
+
+.chart-svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.chart-axis {
+  stroke: var(--border);
+}
+
+.chart-tick {
+  fill: var(--muted);
+  font-size: 9px;
+  text-anchor: middle;
+}
+
+.chart-table {
+  margin-top: 8px;
+  color: var(--muted);
+}
+
+.chart-table table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.chart-table th,
+.chart-table td {
+  text-align: right;
+  padding: 2px 4px;
+}
+
+.chart-table th:first-child,
+.chart-table td:first-child {
+  text-align: left;
 }

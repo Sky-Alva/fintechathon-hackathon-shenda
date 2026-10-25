@@ -3,13 +3,17 @@ import { createPortal } from 'react-dom'
 import { type CustomerAction, fetchUpdates, sendAction, sendMessage } from './api'
 import type {
   BankRefusal,
+  Chart,
   ConversationEvent,
   PlanStep,
   PlanWarning,
+  Subscription,
   VerificationRequested,
 } from './events'
+import CancellationOffer, { type OfferStatus } from './CancellationOffer'
 import PlanCard, { type PlanCardStatus } from './PlanCard'
 import SimulatedPhone from './SimulatedPhone'
+import SpendingChart from './SpendingChart'
 import TracePanel, { type TraceTurn } from './TracePanel'
 
 /** One step's progress line: running, then done or failed (with the Bank's message). */
@@ -28,7 +32,11 @@ type Item =
   | { kind: 'notice'; text: string }
   // The Safety Lock notice: only queries work until it is lifted or expires.
   | { kind: 'locked'; text: string }
+  // Bank data held instruction-like text (#47): the Agent ignored it and says so.
+  | { kind: 'suspicious'; text: string }
   | StepItem
+  // A spending chart, drawn from the Bank's output only (#40).
+  | { kind: 'chart'; chart: Chart }
   | {
       kind: 'plan'
       planId: string
@@ -40,6 +48,13 @@ type Item =
     }
   | { kind: 'paused'; planId: string; text: string; status: PausedStatus }
   | { kind: 'reversal'; planId: string; text: string; stepIds: string[]; status: ReversalStatus }
+  | {
+      kind: 'offer'
+      offerId: string
+      text: string
+      candidates: Subscription[]
+      status: OfferStatus
+    }
   | { kind: 'error'; text: string }
 
 /** A stopped Plan: waiting → resumed | cancelled, or changed by the Customer's next message. */
@@ -105,6 +120,8 @@ function apply(items: Item[], event: ConversationEvent): Item[] {
       ]
     case 'step_succeeded':
       return settle(items, event.step_id, { status: 'done' })
+    case 'chart':
+      return [...items, { kind: 'chart', chart: event }]
     case 'step_failed': {
       // The Agent's plain words for the Bank's reason (#42), else the Bank's own message.
       const failure = event.text ?? event.message
@@ -158,6 +175,17 @@ function apply(items: Item[], event: ConversationEvent): Item[] {
           status: 'offered',
         },
       ]
+    case 'cancellation_offered':
+      return [
+        ...items,
+        {
+          kind: 'offer',
+          offerId: event.offer_id,
+          text: event.text,
+          candidates: event.candidates,
+          status: 'offered',
+        },
+      ]
     case 'answer':
     case 'refusal':
     case 'human_requested':
@@ -169,6 +197,8 @@ function apply(items: Item[], event: ConversationEvent): Item[] {
       ]
     case 'session_locked':
       return [...items, { kind: 'locked', text: event.text }]
+    case 'injection_warning':
+      return [...items, { kind: 'suspicious', text: event.text }]
     case 'handed_over':
       return [...items, { kind: 'notice', text: `人工客服 ${event.staff} 已接入对话` }]
     case 'staff_message':
@@ -187,6 +217,7 @@ function replaceWaitingPlans(items: Item[]): Item[] {
     if (item.kind === 'plan' && item.status === 'awaiting') return { ...item, status: 'replaced' }
     if (item.kind === 'paused' && item.status === 'waiting') return { ...item, status: 'changed' }
     if (item.kind === 'reversal' && item.status === 'offered') return { ...item, status: 'dropped' }
+    if (item.kind === 'offer' && item.status === 'offered') return { ...item, status: 'dropped' }
     return item
   })
 }
@@ -361,6 +392,25 @@ export default function Chat({
     )
   }
 
+  /** The Customer's pick from the Subscriptions offered for cancelling: a Plan card comes
+   * back to confirm; none picked keeps them all. */
+  async function answerOffer(offerId: string, subscriptionIds: string[]) {
+    if (busy) return
+    const status: OfferStatus = subscriptionIds.length ? 'picked' : 'kept'
+    setItems((current) =>
+      current.map((item) =>
+        item.kind === 'offer' && item.offerId === offerId ? { ...item, status } : item,
+      ),
+    )
+    const action: CustomerAction = {
+      action: 'cancel_subscriptions',
+      offer_id: offerId,
+      subscription_ids: subscriptionIds,
+    }
+    const label = subscriptionIds.length ? `（选择取消 ${subscriptionIds.length} 个订阅）` : '（都保留）'
+    await runTurn(label, (onEvent) => sendAction(conversationId, action, onEvent))
+  }
+
   /** The simulated phone got a verification token from the Bank for the right code: the
    * Plan runs on from its Red step, and can be stopped. */
   async function verified(waiting: VerificationRequested, token: string) {
@@ -522,6 +572,17 @@ export default function Chat({
                   )}
                 </div>
               )
+            case 'offer':
+              return (
+                <CancellationOffer
+                  key={i}
+                  text={item.text}
+                  candidates={item.candidates}
+                  status={item.status}
+                  disabled={busy || staffMember !== null}
+                  onPick={(ids) => answerOffer(item.offerId, ids)}
+                />
+              )
             case 'staff':
               return (
                 <div key={i} className="bubble staff">
@@ -529,10 +590,19 @@ export default function Chat({
                   {item.text}
                 </div>
               )
+            case 'chart':
+              return <SpendingChart key={i} chart={item.chart} />
             case 'locked':
               return (
                 <div key={i} className="locked-notice" role="alert">
                   <strong>会话已安全锁定</strong>
+                  {item.text}
+                </div>
+              )
+            case 'suspicious':
+              return (
+                <div key={i} className="suspicious-notice" role="alert">
+                  <strong>发现可疑信息</strong>
                   {item.text}
                 </div>
               )

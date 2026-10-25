@@ -154,7 +154,9 @@ def test_the_model_is_never_shown_a_confirmation_token_nor_given_a_way_to_get_on
         assert "confirmation_token" not in request.text()
         assert "CNF-" not in request.text()  # nor a Confirmation's ID
         tools = [tool["function"]["name"] for tool in request.tools or []]
-        assert set(tools) <= {"propose_plan", "decline_request", "ask_for_human"}
+        assert set(tools) <= {
+            "propose_plan", "decline_request", "ask_for_human", "offer_cancellations"
+        }
     assert "confirmation_token" not in str(events)
     assert "CNF-" not in str(events)
 
