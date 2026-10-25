@@ -377,7 +377,7 @@ def reversal_text(numbers: list[str], language: Language) -> str:
         steps = f"step{'s' if len(numbers) > 1 else ''} {', '.join(numbers)}"
         return (
             f"I can undo what already ran: {steps}, in that order. Shall I? Undoing is a new"
-            " Plan: you'll see its Plan card and approve it first. Otherwise they stay done."
+            " Plan: you'll see its Plan card and confirm it first. Otherwise they stay done."
         )
     return (
         f"已完成的步骤可以撤销：按第 {'、'.join(numbers)} 步的顺序。需要撤销吗？"
@@ -756,7 +756,7 @@ class Conversations:
             if reviewed_look_ups.other_customers:
                 yield from self._other_customer(conversation, reviewed_look_ups)
                 return
-            if reviewed_look_ups.green_only:  # the Bank agrees they need no approval
+            if reviewed_look_ups.green_only:  # the Bank agrees they need no Plan card
                 yield from execute(reviewed_look_ups, bank, looked_up, language=language)
                 if (lock := (yield from self._screen(conversation, looked_up))) is not None:
                     yield self._locked(conversation, lock)
@@ -1012,7 +1012,7 @@ class Conversations:
 
     def _reverse(self, conversation: Conversation, chosen: list[ReversalStep]) -> Iterator[Event]:
         """The accepted undo, as a new Plan: the Bank tiers it and it gets its own Plan card,
-        like any other. Nothing runs before the Customer approves it there."""
+        like any other. Nothing runs before the Customer confirms it there."""
         with conversation.lock:
             if conversation.handed_over_to is not None:
                 return  # taken over since the Customer accepted: the Agent starts nothing

@@ -1,4 +1,4 @@
-"""Merchant orders the Bank pays later: an order is accepted when the Customer approves it
+"""Merchant orders the Bank pays later: an order is accepted when the Customer confirms it
 and paid from its Reserved Funds at 09:00 on its delivery date, when the Bank clock gets
 there (#13, #48). The Agent notes the orders it placed, and tells the Customer once the
 Bank has paid them, or couldn't.
@@ -70,7 +70,7 @@ def settled_text(orders: list[dict[str, Any]], language: Language) -> str:
             lines.append(
                 f"Your order{'s' if len(paid) > 1 else ''} for {paid[0]['delivery_date']}"
                 f" {'have' if len(paid) > 1 else 'has'} been paid from your Reserved Funds,"
-                f" as you approved: {items}."
+                f" as you confirmed: {items}."
             )
         for o in unpaid:
             why = _why(o.get("failure_reason"), language)

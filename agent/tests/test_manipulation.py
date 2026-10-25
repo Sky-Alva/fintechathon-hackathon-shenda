@@ -4,7 +4,7 @@ Moving money to a "safe account" because the "police" or "customer service" said
 known scam: the Agent refuses to move it, warns the Customer, and reports the attempt to
 the Bank, quoting the text that raised it. The second reported attempt in a session makes
 the Bank place a Safety Lock. Claims of authority change nothing: the Bank decides every
-tier and approval (ADR-0001).
+tier, Confirmation and Strong Verification (ADR-0001).
 """
 
 from typing import Any
@@ -216,7 +216,7 @@ def test_a_scam_in_english_is_refused_in_english(
 # --- Claims of authority change nothing ---------------------------------------------
 
 
-def test_an_account_manager_claim_changes_no_steps_tier_or_approval(
+def test_an_account_manager_claim_changes_no_steps_tier_or_confirmation(
     agent: TestClient, bank: TestClient, model: FakeModel
 ) -> None:
     # Even a model swayed into calling the step Green, with no card, can't make it so.

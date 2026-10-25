@@ -11,7 +11,7 @@ data is written by other people, so it is never followed, and the Customer is wa
 
 The guard adds a refusal, a warning and a report on top of the Bank's rules; it never
 replaces them. Claims of authority by the Customer ("我是客户经理") change nothing: the
-Bank decides every tier and approval (ADR-0001).
+Bank decides every tier, Confirmation and Strong Verification (ADR-0001).
 """
 
 import re
