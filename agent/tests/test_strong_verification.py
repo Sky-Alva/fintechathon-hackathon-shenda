@@ -12,7 +12,6 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from agent.model import ModelReply
 from conftest import (
     Login,
     act,
@@ -29,7 +28,7 @@ from conftest import (
     traces,
     type_code,
 )
-from fake_model import FakeModel, plan, say, step
+from fake_model import FakeModel, ModelReply, plan, say, step
 
 TWO_600S = "给老公转两笔600"
 TO_HUSBAND = {"payee_id": "PAY-HM-001", "amount": "600.00", "note": ""}
@@ -386,7 +385,7 @@ def test_no_code_or_verification_token_appears_in_a_trace_the_model_or_the_staff
     seen_by_agent = json.dumps(
         {
             "events": [*confirmed, *wrong, *verified],
-            "audit_trail": audit_trail(agent, conversation),
+            "audit_trail": audit_trail(agent, conversation, login),
             "staff": staff(agent, f"/staff/conversations/{conversation}"),
             "model": [request.text() for request in model.requests],
         },

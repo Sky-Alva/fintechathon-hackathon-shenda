@@ -10,7 +10,7 @@ can reserve the money and place the orders paid from it.
 An order is accepted now and paid at 09:00 on its delivery date, like a Scheduled Transfer:
 nothing is debited and no Reserved Funds are spent before then. It is tiered when ordered like
 a transfer of the same amount on its delivery day, against that day's *projected* Daily
-Transfer Total (`scheduled_transfers.projected_total`), so one that takes it above ¥1,000 is
+Transfer Total (`limits.projected_total`), so one that takes it above ¥1,000 is
 Red. The Bank pays every due order whenever the Bank clock is set or advanced (`run_due`,
 called by the admin clock endpoints), through the policy gate as the payment the Customer
 approved when ordering: the Safety Lock, the tier and the Reserved Funds are checked again
@@ -28,7 +28,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from bank import clock, customers, limits, policy, reserved_funds, scheduled_transfers, sessions
+from bank import clock, customers, limits, policy, reserved_funds, sessions
 from bank.money import Amount, from_cents, to_cents
 from bank.registry import (
     BankModule,
@@ -294,10 +294,19 @@ def _reservation_for(
 
 def _tier_on_delivery_day(ctx: OperationContext, input: OrderFromMerchantInput) -> Tier:
     """Tiered like a transfer of the same amount on the day it will be paid."""
-    projected = scheduled_transfers.projected_total(
-        ctx.conn, ctx.customer_id, input.delivery_date
-    )
+    projected = limits.projected_total(ctx.conn, ctx.customer_id, input.delivery_date)
     return limits.tier_for_day_total(projected, input.amount)
+
+
+@limits.counts_as_pending
+def pending_total(conn: sqlite3.Connection, customer_id: str, day: date) -> Decimal:
+    """The Customer's Merchant orders still to be paid on `day`."""
+    cents = conn.execute(
+        "SELECT COALESCE(SUM(amount_cents), 0) FROM merchant_orders"
+        " WHERE customer_id = ? AND delivery_date = ? AND status = 'pending'",
+        (customer_id, day.isoformat()),
+    ).fetchone()[0]
+    return from_cents(cents)
 
 
 def order_from_merchant_tier(input: OrderFromMerchantInput, ctx: OperationContext) -> Tier:

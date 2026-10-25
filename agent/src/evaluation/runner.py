@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
 
-from evaluation.tasks import Approval, ExpectedOperation, Task
+from evaluation.tasks import ExpectedOperation, ScriptedAnswer, Task
 
 SEED_PASSWORD = "demo1234"
 MAX_PROMPTS_PER_TURN = 20
@@ -79,7 +79,7 @@ class _Run:
         self.bank = bank
         self.admin_headers = {"X-Admin-Key": admin_key}
         self.result = result
-        self.approvals: deque[Approval] = deque(task.approvals)
+        self.answers: deque[ScriptedAnswer] = deque(task.approvals)
         self.events: list[dict[str, Any]] = []
 
     # --- Bank and Channel -------------------------------------------------------------
@@ -158,13 +158,13 @@ class _Run:
 
     def take(self, kind: str) -> str | None:
         """The next scripted answer if it is to this kind of request; else none (reject)."""
-        if self.approvals and self.approvals[0].kind == kind:
-            return self.approvals.popleft().answer
+        if self.answers and self.answers[0].kind == kind:
+            return self.answers.popleft().answer
         return None
 
     def answer_card(self, prompt: dict[str, Any]) -> list[dict[str, Any]]:
         plan_id = prompt["plan_id"]
-        if not prompt["step_ids"] and self.approvals and self.approvals[0].kind == "verification":
+        if not prompt["step_ids"] and self.answers and self.answers[0].kind == "verification":
             # No Yellow step: the card asks for no Confirmation, only the tap that gets to
             # the Red steps' verification, which the script answers next.
             self.log("Agent: Plan card with no Yellow step -> confirm")
@@ -205,10 +205,10 @@ class _Run:
         """Pick the scripted Subscriptions to cancel. Unscripted, the offer is left
         unanswered: the Customer may pick in words in the next turn."""
         offered = [candidate["subscription_id"] for candidate in prompt["candidates"]]
-        if not self.approvals or self.approvals[0].kind != "pick":
+        if not self.answers or self.answers[0].kind != "pick":
             self.log(f"Agent: cancellation offer of {offered} -> no pick (unscripted)")
             return []
-        picked = self.approvals.popleft().pick or []
+        picked = self.answers.popleft().pick or []
         self.log(f"Agent: cancellation offer of {offered} -> pick {picked}")
         return self.act(
             "cancel_subscriptions", offer_id=prompt["offer_id"], subscription_ids=picked

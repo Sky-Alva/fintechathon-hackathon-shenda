@@ -1,5 +1,6 @@
 import { type FormEvent, useEffect, useState } from 'react'
 import type { VerificationRequested } from './events'
+import { type Texts, useLanguage } from './language'
 
 /* The Customer's simulated phone: the SMS the Bank texts verification codes to.
  *
@@ -83,6 +84,9 @@ export default function SimulatedPhone({
     if (verification) void readMessages(phoneToken).then(setMessages, () => {})
   }, [verification, phoneToken])
 
+  const language = useLanguage()
+  const say = (texts: Texts) => texts[language]
+
   async function submit(event: FormEvent) {
     event.preventDefault()
     if (!verification || !code.trim() || sending) return
@@ -97,23 +101,23 @@ export default function SimulatedPhone({
         result.refusal.reason === 'token_invalid' &&
         typeof result.refusal.detail.failed_attempts === 'number'
       ) {
-        setError('验证码不正确')
+        setError(say({ zh: '验证码不正确', en: "That code isn't right" }))
         onWrongCode(verification, result.refusal.detail.failed_attempts)
       } else {
         setError(result.refusal.message)
       }
     } catch {
-      setError('无法连接银行，请重试')
+      setError(say({ zh: '无法连接银行，请重试', en: "Couldn't reach the Bank. Please try again" }))
     } finally {
       setSending(false)
     }
   }
 
   return (
-    <aside className="sms-phone" aria-label="模拟手机">
-      <div className="sms-badge">模拟手机 · 短信</div>
+    <aside className="sms-phone" aria-label={say({ zh: '模拟手机', en: 'Simulated phone' })}>
+      <div className="sms-badge">{say({ zh: '模拟手机 · 短信', en: 'Simulated phone · SMS' })}</div>
       <ol className="sms-list">
-        {messages.length === 0 && <li className="sms-empty">暂无短信</li>}
+        {messages.length === 0 && <li className="sms-empty">{say({ zh: '暂无短信', en: 'No messages' })}</li>}
         {messages.map((sms) => (
           <li key={sms.message_id}>
             <div className="sms-meta">
@@ -125,7 +129,9 @@ export default function SimulatedPhone({
       </ol>
       {verification && (
         <form className="sms-code" onSubmit={submit}>
-          <label htmlFor="sms-code">输入短信验证码</label>
+          <label htmlFor="sms-code">
+            {say({ zh: '输入短信验证码', en: 'Type the code from the SMS' })}
+          </label>
           <div>
             <input
               id="sms-code"
@@ -141,7 +147,7 @@ export default function SimulatedPhone({
               className="primary"
               disabled={disabled || sending || code.length === 0}
             >
-              验证
+              {say({ zh: '验证', en: 'Verify' })}
             </button>
           </div>
           {error && <div className="sms-error">{error}</div>}

@@ -1,9 +1,16 @@
 import { useState } from 'react'
 import type { BankRefusal, CardPayee, PlanStep, PlanWarning, Tier } from './events'
+import { type Language, useLanguage } from './language'
 
-/** proposed → awaiting (confirmation_requested) → confirmed | rejected, or replaced when the
- * Customer sends a new message instead of answering. */
-export type PlanCardStatus = 'proposed' | 'awaiting' | 'confirmed' | 'rejected' | 'replaced'
+/** proposed → awaiting (confirmation_requested) → confirmed | rejected | edited (steps taken
+ * off: a new card follows), or replaced when the Customer sends a new message instead. */
+export type PlanCardStatus =
+  | 'proposed'
+  | 'awaiting'
+  | 'confirmed'
+  | 'rejected'
+  | 'edited'
+  | 'replaced'
 
 type Props = {
   steps: PlanStep[]
@@ -15,70 +22,141 @@ type Props = {
   confirmIds: string[]
   status: PlanCardStatus
   disabled: boolean
-  /** `removedIds`: the steps the Customer took off the card; the Bank re-tiers the rest. */
-  onConfirm: (removedIds: string[]) => void
+  onConfirm: () => void
+  /** The steps the Customer took off the card: the Bank re-tiers the rest, as a new card. */
+  onRemove: (removedIds: string[]) => void
   onReject: () => void
 }
 
-const OPERATION_LABELS: Record<string, string> = {
-  transfer: '转账',
-  add_card_lock: '添加卡锁',
-  lower_card_limit: '调低卡限额',
-  apply_virtual_card: '申请虚拟卡',
-  reserve_funds: '预留资金',
-  order_from_merchant: '向商户下单（送达日从预留资金付款）',
+const OPERATION_LABELS: Record<Language, Record<string, string>> = {
+  zh: {
+    transfer: '转账',
+    add_card_lock: '添加卡锁',
+    lower_card_limit: '调低卡限额',
+    apply_virtual_card: '申请虚拟卡',
+    reserve_funds: '预留资金',
+    order_from_merchant: '向商户下单（送达日从预留资金付款）',
+    cancel_subscription: '取消订阅',
+  },
+  en: {
+    transfer: 'Transfer',
+    add_card_lock: 'Add a Card Lock',
+    lower_card_limit: 'Lower the Card Limit',
+    apply_virtual_card: 'Apply for a virtual card',
+    reserve_funds: 'Reserve funds',
+    order_from_merchant: 'Order from a Merchant (paid from Reserved Funds on delivery)',
+    cancel_subscription: 'Cancel a Subscription',
+  },
 }
 
-const TIER_LABELS: Record<Tier, string> = {
-  green: '绿色 · 自动执行',
-  yellow: '黄色 · 需确认',
-  red: '红色 · 需短信验证',
+const TIER_LABELS: Record<Language, Record<Tier, string>> = {
+  zh: { green: '绿色 · 自动执行', yellow: '黄色 · 需确认', red: '红色 · 需短信验证' },
+  en: { green: 'Green · runs by itself', yellow: 'Yellow · needs your Confirmation', red: 'Red · needs an SMS code' },
 }
 
-const INPUT_LABELS: Record<string, string> = {
-  payee_id: '收款人',
-  amount: '金额',
-  note: '附言',
-  card_id: '卡',
-  scope: '范围',
-  new_limit: '新限额',
-  name: '名称',
-  purpose: '用途',
-  merchant_categories: '可付款商户',
-  merchant_id: '商户',
-  product_id: '商品',
-  quantity: '数量',
-  delivery_date: '送达日期',
-  reservation_id: '预留资金',
+const INPUT_LABELS: Record<Language, Record<string, string>> = {
+  zh: {
+    payee_id: '收款人',
+    amount: '金额',
+    note: '附言',
+    card_id: '卡',
+    scope: '范围',
+    new_limit: '新限额',
+    name: '名称',
+    purpose: '用途',
+    merchant_categories: '可付款商户',
+    merchant_id: '商户',
+    product_id: '商品',
+    quantity: '数量',
+    delivery_date: '送达日期',
+    reservation_id: '预留资金',
+    subscription_id: '订阅',
+  },
+  en: {
+    payee_id: 'Payee',
+    amount: 'Amount',
+    note: 'Note',
+    card_id: 'Card',
+    scope: 'Scope',
+    new_limit: 'New limit',
+    name: 'Name',
+    purpose: 'Purpose',
+    merchant_categories: 'Can pay',
+    merchant_id: 'Merchant',
+    product_id: 'Product',
+    quantity: 'Quantity',
+    delivery_date: 'Delivery date',
+    reservation_id: 'Reserved Funds',
+    subscription_id: 'Subscription',
+  },
 }
 
-const CATEGORY_LABELS: Record<string, string> = { flowers: '鲜花店', cake: '蛋糕店' }
+const CATEGORY_LABELS: Record<Language, Record<string, string>> = {
+  zh: { flowers: '鲜花店', cake: '蛋糕店' },
+  en: { flowers: 'flower shops', cake: 'cake shops' },
+}
 
-function shownValue(key: string, value: unknown): string {
+const WORDS = {
+  zh: {
+    title: '请确认以下计划',
+    restore: '恢复',
+    remove: '移除',
+    newPayee: (name: string) => `新收款人：您从未向 ${name} 转过账，请核对收款人信息`,
+    refused: (message: string) => `银行提示无法执行：${message}`,
+    reTier: '银行将按新的顺序重新评估剩余步骤，您再确认一次',
+    reject: '取消',
+    update: '更新计划',
+    confirm: (n: number) => `一键确认${n > 1 ? `（${n} 项）` : ''}`,
+    separator: '、',
+    payee: (name: string, extra: string[]) => (extra.length ? `${name}（${extra.join('，')}）` : name),
+  },
+  en: {
+    title: 'Please confirm this Plan',
+    restore: 'Restore',
+    remove: 'Remove',
+    newPayee: (name: string) => `New Payee: you've never sent money to ${name}. Please check.`,
+    refused: (message: string) => `The Bank says this can't run: ${message}`,
+    reTier: 'The Bank re-tiers the rest in their new order; you confirm once more',
+    reject: 'Cancel',
+    update: 'Update the Plan',
+    confirm: (n: number) => `Confirm${n > 1 ? ` (${n})` : ''}`,
+    separator: ', ',
+    payee: (name: string, extra: string[]) => (extra.length ? `${name} (${extra.join(', ')})` : name),
+  },
+}
+
+const STATUS_TEXT: Record<Language, Partial<Record<PlanCardStatus, string>>> = {
+  zh: { confirmed: '已确认', rejected: '已取消', edited: '已修改，请确认新的计划', replaced: '已作废' },
+  en: {
+    confirmed: 'Confirmed',
+    rejected: 'Cancelled',
+    edited: 'Changed: please confirm the new Plan',
+    replaced: 'Replaced',
+  },
+}
+
+function shownValue(key: string, value: unknown, language: Language): string {
   if (key === 'amount' || key === 'new_limit') return `¥${value}`
   if (key === 'merchant_categories' && Array.isArray(value))
-    return value.map((category) => CATEGORY_LABELS[category] ?? String(category)).join('、')
+    return value
+      .map((category) => CATEGORY_LABELS[language][category] ?? String(category))
+      .join(WORDS[language].separator)
   return String(value)
 }
 
 /** Every input of the step, exactly as it will be sent to the Bank; a Payee the lookup
  * found is named, with their nickname and masked phone. */
-function details(step: PlanStep, payee?: CardPayee): [string, string][] {
+function details(step: PlanStep, language: Language, payee?: CardPayee): [string, string][] {
+  const labels = INPUT_LABELS[language]
   return Object.entries(step.input)
     .filter(([, value]) => value !== '' && value !== null && value !== undefined)
     .map(([key, value]) => {
       if (key === 'payee_id' && payee) {
-        const extra = [payee.nickname, payee.phone].filter(Boolean).join('，')
-        return [INPUT_LABELS[key], extra ? `${payee.name}（${extra}）` : payee.name]
+        const extra = [payee.nickname, payee.phone].filter((part): part is string => !!part)
+        return [labels[key], WORDS[language].payee(payee.name, extra)]
       }
-      return [INPUT_LABELS[key] ?? key, shownValue(key, value)]
+      return [labels[key] ?? key, shownValue(key, value, language)]
     })
-}
-
-const STATUS_TEXT: Partial<Record<PlanCardStatus, string>> = {
-  confirmed: '已确认',
-  rejected: '已取消',
-  replaced: '已作废',
 }
 
 /** One Plan card: every step that will run, with its exact details and the Bank's tier.
@@ -93,18 +171,22 @@ export default function PlanCard({
   status,
   disabled,
   onConfirm,
+  onRemove,
   onReject,
 }: Props) {
   const [removed, setRemoved] = useState<string[]>([])
+  const language = useLanguage()
+  const w = WORDS[language]
   const refusalOf = (id: string) => refusals.find((refusal) => refusal.step_id === id)
   const awaiting = status === 'awaiting'
   const toggle = (id: string) =>
     setRemoved((ids) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]))
   const left = steps.filter((step) => !removed.includes(step.id))
   const confirming = confirmIds.filter((id) => !removed.includes(id)).length
+  const statusText = STATUS_TEXT[language][status]
   return (
     <div className="plan-card">
-      <div className="plan-title">请确认以下计划</div>
+      <div className="plan-title">{w.title}</div>
       <ol>
         {steps.map((step, index) => {
           const refusal = refusalOf(step.id)
@@ -120,12 +202,14 @@ export default function PlanCard({
             <li key={step.id} className={classes.trim()}>
               <div className="plan-step-head">
                 <span>
-                  {index + 1}. {OPERATION_LABELS[step.operation] ?? step.operation}
+                  {index + 1}. {OPERATION_LABELS[language][step.operation] ?? step.operation}
                 </span>
                 <span>
                   {/* Tiers depend on order: after a removal the Bank re-tiers the rest. */}
                   {step.tier && !isRemoved && (
-                    <span className={`tier ${step.tier}`}>{TIER_LABELS[step.tier]}</span>
+                    <span className={`tier ${step.tier}`}>
+                      {TIER_LABELS[language][step.tier]}
+                    </span>
                   )}
                   {awaiting && steps.length > 1 && (
                     <button
@@ -134,13 +218,13 @@ export default function PlanCard({
                       disabled={disabled}
                       onClick={() => toggle(step.id)}
                     >
-                      {isRemoved ? '恢复' : '移除'}
+                      {isRemoved ? w.restore : w.remove}
                     </button>
                   )}
                 </span>
               </div>
               <dl>
-                {details(step, payee).map(([label, value]) => (
+                {details(step, language, payee).map(([label, value]) => (
                   <div key={label}>
                     <dt>{label}</dt>
                     <dd>{value}</dd>
@@ -149,7 +233,7 @@ export default function PlanCard({
               </dl>
               {payee?.is_new && (
                 <div className="plan-warning" role="note">
-                  新收款人：您从未向 {payee.name} 转过账，请核对收款人信息
+                  {w.newPayee(payee.name)}
                 </div>
               )}
               {warning && (
@@ -157,30 +241,28 @@ export default function PlanCard({
                   {warning.text}
                 </div>
               )}
-              {refusal && <div className="plan-refusal">银行提示无法执行：{refusal.message}</div>}
+              {refusal && <div className="plan-refusal">{w.refused(refusal.message)}</div>}
             </li>
           )
         })}
       </ol>
       {awaiting ? (
         <div className="plan-actions">
-          {removed.length > 0 && left.length > 0 && (
-            <span className="plan-note">银行将按新的顺序重新评估剩余步骤的级别</span>
-          )}
+          {removed.length > 0 && left.length > 0 && <span className="plan-note">{w.reTier}</span>}
           <button type="button" className="secondary" disabled={disabled} onClick={onReject}>
-            取消
+            {w.reject}
           </button>
           <button
             type="button"
             className="primary"
             disabled={disabled || left.length === 0}
-            onClick={() => onConfirm(removed)}
+            onClick={() => (removed.length ? onRemove(removed) : onConfirm())}
           >
-            一键确认{confirming > 1 ? `（${confirming} 项）` : ''}
+            {removed.length ? w.update : w.confirm(confirming)}
           </button>
         </div>
       ) : (
-        STATUS_TEXT[status] && <div className="plan-status">{STATUS_TEXT[status]}</div>
+        statusText && <div className="plan-status">{statusText}</div>
       )}
     </div>
   )

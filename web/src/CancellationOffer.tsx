@@ -1,14 +1,15 @@
 import { useState } from 'react'
 import type { Subscription } from './events'
+import { type Texts, useLanguage } from './language'
 
 /** An offer of Subscriptions to cancel: offered → picked | kept (none picked), or dropped
  * by the Customer's next message. */
 export type OfferStatus = 'offered' | 'picked' | 'kept' | 'dropped'
 
-const STATUS_TEXT: Record<Exclude<OfferStatus, 'offered'>, string> = {
-  picked: '已选择，请查看计划卡片',
-  kept: '都保留，没有取消',
-  dropped: '未选择',
+const STATUS_TEXT: Record<Exclude<OfferStatus, 'offered'>, Texts> = {
+  picked: { zh: '已选择，请查看计划卡片', en: 'Picked: see the Plan card' },
+  kept: { zh: '都保留，没有取消', en: 'All kept: nothing cancelled' },
+  dropped: { zh: '未选择', en: 'Not picked' },
 }
 
 type Props = {
@@ -24,6 +25,7 @@ type Props = {
  * cancelled here: the pick comes back as a Plan card to confirm. */
 export default function CancellationOffer({ text, candidates, status, disabled, onPick }: Props) {
   const [picked, setPicked] = useState<string[]>([])
+  const language = useLanguage()
 
   function toggle(id: string) {
     setPicked((current) =>
@@ -46,7 +48,10 @@ export default function CancellationOffer({ text, candidates, status, disabled, 
                     disabled={disabled}
                     onChange={() => toggle(candidate.subscription_id)}
                   />
-                  {i + 1}. {candidate.merchant}（¥{candidate.current_amount}）
+                  {i + 1}. {candidate.merchant}
+                  {language === 'en'
+                    ? ` (¥${candidate.current_amount})`
+                    : `（¥${candidate.current_amount}）`}
                 </label>
               </li>
             ))}
@@ -58,7 +63,7 @@ export default function CancellationOffer({ text, candidates, status, disabled, 
               disabled={disabled}
               onClick={() => onPick([])}
             >
-              都保留
+              {language === 'en' ? 'Keep all' : '都保留'}
             </button>
             <button
               type="button"
@@ -66,12 +71,14 @@ export default function CancellationOffer({ text, candidates, status, disabled, 
               disabled={disabled || picked.length === 0}
               onClick={() => onPick(picked)}
             >
-              取消所选（{picked.length}）
+              {language === 'en'
+                ? `Cancel selected (${picked.length})`
+                : `取消所选（${picked.length}）`}
             </button>
           </div>
         </>
       ) : (
-        <div className="plan-status">{STATUS_TEXT[status]}</div>
+        <div className="plan-status">{STATUS_TEXT[status][language]}</div>
       )}
     </div>
   )

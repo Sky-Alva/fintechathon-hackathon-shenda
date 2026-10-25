@@ -215,7 +215,8 @@ export type Trace = { type: 'trace' } & (
       // `declined`: the Planner (or the manipulation guard) declined the request instead
       // of planning it: what it offered instead, or the suspected attempt it reported.
       // `clarification`: the question the Planner asked instead of planning (#39).
-      data: { intent: string; declined?: Declined; clarification?: string }
+      // `ask_for_human`: the Customer asked in words for a human (#46).
+      data: { intent: string; declined?: Declined; clarification?: string; ask_for_human?: true }
     }
   | { stage: 'plan'; data: { steps: PlanStep[] } }
   | { stage: 'bank_request'; data: { method: string; path: string; body: unknown } }

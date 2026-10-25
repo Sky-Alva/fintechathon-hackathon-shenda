@@ -10,6 +10,9 @@ from typing import Any
 
 from agent.model import ModelReply, ToolCall
 
+__all__ = ["FakeModel", "ModelReply", "ModelRequest"]
+"""`ModelReply` is what a scripted reply is, for type hints: tests import it from here."""
+
 
 @dataclass
 class ModelRequest:
@@ -43,12 +46,16 @@ def step(
     return {"id": id, "operation": operation, "input": input or {}, "depends_on": depends_on or []}
 
 
-def plan(*steps: dict[str, Any], intent: str | None = None) -> ModelReply:
+def plan(
+    *steps: dict[str, Any], intent: str | None = None, note: str | None = None
+) -> ModelReply:
     """The model proposes a Plan with these steps, saying what it understood the Customer
-    wants (`intent`) when given."""
+    wants (`intent`) and what it noticed in the look-ups (`note`) when given."""
     arguments: dict[str, Any] = {"steps": list(steps)}
     if intent is not None:
         arguments["intent"] = intent
+    if note is not None:
+        arguments["note"] = note
     return ModelReply(
         tool_calls=[ToolCall(id="call-plan", name="propose_plan", arguments=arguments)]
     )

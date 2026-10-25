@@ -149,24 +149,21 @@ def _run_at(run_date: date) -> datetime:
     return datetime.combine(run_date, RUN_TIME, clock.BANK_TZ)
 
 
-def projected_total(conn: sqlite3.Connection, customer_id: str, day: date) -> Decimal:
-    """The Customer's projected Daily Transfer Total for `day`: what they have already sent
-    that day, plus their Scheduled Transfers and Merchant orders (merchants.py) still waiting
-    to be paid on it."""
-    pending_cents = conn.execute(
-        "SELECT (SELECT COALESCE(SUM(amount_cents), 0) FROM scheduled_transfers"
-        "        WHERE customer_id = ? AND run_date = ? AND status = 'scheduled')"
-        "     + (SELECT COALESCE(SUM(amount_cents), 0) FROM merchant_orders"
-        "        WHERE customer_id = ? AND delivery_date = ? AND status = 'pending')",
-        (customer_id, day.isoformat(), customer_id, day.isoformat()),
+@limits.counts_as_pending
+def pending_total(conn: sqlite3.Connection, customer_id: str, day: date) -> Decimal:
+    """The Customer's Scheduled Transfers still to run on `day`."""
+    cents = conn.execute(
+        "SELECT COALESCE(SUM(amount_cents), 0) FROM scheduled_transfers"
+        " WHERE customer_id = ? AND run_date = ? AND status = 'scheduled'",
+        (customer_id, day.isoformat()),
     ).fetchone()[0]
-    return limits.daily_transfer_total(conn, customer_id, day) + from_cents(pending_cents)
+    return from_cents(cents)
 
 
 def _tier_on_run_day(ctx: OperationContext, amount: Decimal, run_date: date) -> Tier:
     """Yellow if the run day's projected Daily Transfer Total, plus `amount`, stays within
     the limit; otherwise Red."""
-    projected = projected_total(ctx.conn, ctx.customer_id, run_date)
+    projected = limits.projected_total(ctx.conn, ctx.customer_id, run_date)
     return limits.tier_for_day_total(projected, amount)
 
 

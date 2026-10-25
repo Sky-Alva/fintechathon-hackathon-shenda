@@ -62,7 +62,7 @@ class FinalState(_Strict):
         return _no_floats(value, str(info.field_name))
 
 
-class Approval(_Strict):
+class ScriptedAnswer(_Strict):
     """One scripted answer: to a Plan card's Confirmation, to a verification request, to
     an offer to undo a failed Plan's completed steps, (`pick`) to an offer of Subscriptions
     to cancel, with the IDs to cancel, or to a clarifying question (the option it names, or
@@ -75,11 +75,11 @@ class Approval(_Strict):
     clarification: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
-    def exactly_one(self) -> "Approval":
+    def exactly_one(self) -> "ScriptedAnswer":
         given = [self.confirmation, self.verification, self.reversal, self.pick, self.clarification]
         if sum(answer is not None for answer in given) != 1:
             raise ValueError(
-                "each approval is one of `confirmation:`, `verification:`, `reversal:`,"
+                "each answer is one of `confirmation:`, `verification:`, `reversal:`,"
                 " `pick:` or `clarification:`"
             )
         return self
@@ -117,7 +117,8 @@ class Task(_Strict):
     customer: str
     clock: str
     turns: list[str]
-    approvals: list[Approval]
+    approvals: list[ScriptedAnswer]
+    """The simulated Customer's answers, in the order the Agent asks (the file format's key)."""
     expect: Expect
     scenario: str = ""
     """The directory the task is in (tasks/<scenario>/), filled in on loading."""

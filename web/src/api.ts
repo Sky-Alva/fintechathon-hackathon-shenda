@@ -31,9 +31,15 @@ export async function startConversation(login: BankLogin): Promise<string> {
   return (await response.json()).conversation_id
 }
 
-/** The session's audit trail as the Bank recorded it, for the decision trace panel. */
-export async function fetchAuditTrail(conversationId: string): Promise<AuditEntry[]> {
-  const response = await fetch(`/agent/conversations/${conversationId}/audit-trail`)
+/** The session's audit trail as the Bank recorded it, for the decision trace panel: the
+ * Agent shows it only to the conversation's own session. */
+export async function fetchAuditTrail(
+  conversationId: string,
+  sessionToken: string,
+): Promise<AuditEntry[]> {
+  const response = await fetch(`/agent/conversations/${conversationId}/audit-trail`, {
+    headers: { Authorization: `Bearer ${sessionToken}` },
+  })
   if (!response.ok) throw new Error('无法读取审计记录')
   const event = await response.json()
   return event.data.entries
@@ -50,8 +56,9 @@ export async function sendMessage(
 
 /** The Customer's answer to a prompt, e.g. a tap on a Plan card. */
 export type CustomerAction =
-  // `removed_step_ids`: steps the Customer took off the card; the Bank re-tiers the rest.
-  | { action: 'confirm'; plan_id: string; removed_step_ids?: string[] }
+  | { action: 'confirm'; plan_id: string }
+  // Take steps off the card: the Bank re-tiers the rest, which come back as a new Plan card.
+  | { action: 'remove_steps'; plan_id: string; step_ids: string[] }
   // `reject` also declines a reversal offer, by the failed Plan's ID (#42).
   | { action: 'reject'; plan_id: string }
   // Accept a reversal offer for these of its steps: the undo comes back as a new Plan card.

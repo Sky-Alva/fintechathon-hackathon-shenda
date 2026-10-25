@@ -153,15 +153,26 @@ def create_app(db_path: Path, admin_key: str) -> FastAPI:
                 pending = refusal
         raise pending
 
+    def whose(session: sessions.Session) -> dict[str, Any]:
+        """Which session and Customer this is."""
+        return {
+            "session_id": session.session_id,
+            "customer": {"customer_id": session.customer_id, "name": session.customer_name},
+        }
+
+    def run_due_payments(conn: sqlite3.Connection) -> None:
+        """Pay what the Bank clock has reached: Scheduled Transfers and Merchant orders."""
+        scheduled_transfers.run_due(conn, registry)
+        merchants.run_due(conn)
+
     @app.post("/sessions")
     def log_in(body: LoginRequest) -> dict[str, Any]:
         with db.transaction(db_path) as conn:
             session = sessions.login(conn, body.username, body.password)
         return {
-            "session_id": session.session_id,
+            **whose(session),
             "session_token": session.session_token,
             "phone_token": session.phone_token,
-            "customer": {"customer_id": session.customer_id, "name": session.customer_name},
         }
 
     @app.get("/sessions/current")
@@ -169,10 +180,7 @@ def create_app(db_path: Path, admin_key: str) -> FastAPI:
         """Which session and Customer a session token is. Not an Operation: not audited."""
         with db.transaction(db_path) as conn:
             session = sessions.authenticate(conn, bearer_token(authorization))
-        return {
-            "session_id": session.session_id,
-            "customer": {"customer_id": session.customer_id, "name": session.customer_name},
-        }
+        return whose(session)
 
     @app.get("/clock")
     def read_clock() -> dict[str, str]:
@@ -254,16 +262,14 @@ def create_app(db_path: Path, admin_key: str) -> FastAPI:
     def set_clock(body: SetClockRequest) -> dict[str, str]:
         with db.transaction(db_path) as conn:
             now = clock.set_now(conn, body.now)
-            scheduled_transfers.run_due(conn, registry)
-            merchants.run_due(conn)
+            run_due_payments(conn)
             return {"now": now.isoformat()}
 
     @admin.post("/clock/advance")
     def advance_clock(body: AdvanceClockRequest) -> dict[str, str]:
         with db.transaction(db_path) as conn:
             now = clock.advance(conn, timedelta(minutes=body.minutes))
-            scheduled_transfers.run_due(conn, registry)
-            merchants.run_due(conn)
+            run_due_payments(conn)
             return {"now": now.isoformat()}
 
     @admin.get("/sessions/{session_id}/audit")

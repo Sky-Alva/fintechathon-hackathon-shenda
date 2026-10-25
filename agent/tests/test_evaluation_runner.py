@@ -106,7 +106,7 @@ def transfer_task(directory: Path, approvals: list[dict[str, str]], **expect: An
     )
 
 
-def test_an_approved_plan_card_runs_and_money_matches_however_the_agent_wrote_it(
+def test_a_confirmed_plan_card_runs_and_money_matches_however_the_agent_wrote_it(
     agent: TestClient, bank: TestClient, model: FakeModel, tmp_path: Path
 ) -> None:
     model.script(

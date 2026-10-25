@@ -156,6 +156,49 @@ def test_an_amount_close_to_the_banks_but_different_is_not_sent(
     assert answer_text(events) == "您的余额为 1180.00 元。"
 
 
+@pytest.mark.parametrize(
+    "invented",
+    [
+        "您的余额为5000",
+        "您的活期余额是 5000。",
+        "Your balance is 5000.",
+        "您的余额为一千二百元。",
+        "您还有五千块。",
+        "您的余额为人民币两千。",
+    ],
+)
+def test_an_invented_amount_without_a_currency_or_in_chinese_numerals_is_not_sent(
+    agent: TestClient, bank: TestClient, model: FakeModel, invented: str
+) -> None:
+    model.script(
+        plan(step("s1", "query_balance")), say(invented), say("您的余额为 1180.00 元。")
+    )
+
+    events = send(agent, start_conversation(agent, log_in(bank, "liming")), BALANCE_QUESTION)
+
+    assert answer_text(events) == "您的余额为 1180.00 元。"
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "您的余额为1180",
+        "Your balance is 1180.",
+        "您的余额为一千一百八十元。",
+        "您的余额为一千一百八十块钱，可以买一块蛋糕。",
+        "您有 1 个活期账户，余额 1180。",
+    ],
+)
+def test_an_amount_the_bank_returned_matches_without_a_currency_or_in_chinese_numerals(
+    agent: TestClient, bank: TestClient, model: FakeModel, reply: str
+) -> None:
+    model.script(plan(step("s1", "query_balance")), say(reply))
+
+    events = send(agent, start_conversation(agent, log_in(bank, "liming")), BALANCE_QUESTION)
+
+    assert answer_text(events) == reply
+
+
 # --- Dates, cards and Payees are checked too -----------------------------------------
 
 BIRTHDAY_QUESTION = "我老婆生日是哪天？"
@@ -377,6 +420,7 @@ def test_an_invented_card_is_not_sent(
         "要转给韩梅梅吗？",
         "收款人：韩梅梅。",
         "Shall I send it to 韩梅梅?",
+        "要给韩梅梅转账吗？",
     ],
 )
 def test_a_payee_the_bank_returned_is_sent(
@@ -397,6 +441,10 @@ def test_a_payee_the_bank_returned_is_sent(
         "收款人：张伟。",
         "收款人是王秀英。",  # 李明's Payee, but in no Bank result of this conversation
         "I've sent it to 张伟.",
+        "已给赵强转了钱。",
+        "要给王芳转账吗？",
+        "I've sent it to Zhao Qiang.",
+        "Shall I transfer it to Wang Fang?",
     ],
 )
 def test_an_invented_payee_is_not_sent(

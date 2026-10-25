@@ -9,11 +9,10 @@ import secrets
 import threading
 from collections.abc import Generator, Iterator
 from dataclasses import asdict, dataclass, field
-from typing import Annotated, Any, Literal
-
-from pydantic import BaseModel, ConfigDict, Field
+from typing import Any
 
 from agent import (
+    birthday,
     guard,
     notices,
     orders,
@@ -24,10 +23,27 @@ from agent import (
     reviewer,
     secrets_guard,
     subscriptions,
+    untrusted,
+)
+from agent.actions import (
+    AskForHuman,
+    CancelPlan,
+    CancelSubscriptions,
+    ChooseOption,
+    ConfirmPlan,
+    CustomerAction,
+    RejectPlan,
+    RemoveSteps,
+    ResumePlan,
+    ReverseSteps,
+    StopPlan,
+    VerifiedStep,
+    WrongCode,
 )
 from agent.bank import BankRefused, BankSession, BankUnavailable, HttpClient
 from agent.events import (
     Answer,
+    BankRefusal,
     CancellationOffered,
     ClarificationQuestion,
     ConfirmationRequested,
@@ -47,108 +63,28 @@ from agent.events import (
     ReversalStep,
     SessionLocked,
     StaffMessage,
+    Subscription,
     Trace,
     VerificationRequested,
 )
 from agent.executor import BANK_UNAVAILABLE, StepResult, execute, failed
 from agent.fact_check import Facts
-from agent.language import Language, customer_language
+from agent.language import customer_language
 from agent.model import ModelClient
+from agent.prompts import (
+    CancellationOffer,
+    PausedPlan,
+    PendingClarification,
+    PendingPlan,
+    PendingVerification,
+    Prompt,
+    ReversalOffer,
+    RunningPlan,
+    interruption,
+    without,
+)
 from agent.reviewer import ReviewedPlan
 from agent.trace import trace, with_bank_traces
-
-HANDED_BACK_NOTE = (
-    "人工客服 {staff} 接管过这段对话，现在交还给你（Agent）。标有 [Staff Member {staff}] 的消息是"
-    "人工客服写的，不是你写的。\n"
-    "The Staff Member {staff} took this conversation over and has handed it back to you (the"
-    " Agent). Messages marked [Staff Member {staff}] were written by them, not by you."
-)
-
-CHOSEN_NOTE = (
-    "客户对上面的问题选择了：{label}（{value}）。\n"
-    "The Customer answered the question above by choosing: {label} ({value})."
-)
-
-
-@dataclass
-class PendingPlan:
-    """A Plan card waiting for the Customer's answer."""
-
-    plan_id: str
-    plan: ReviewedPlan
-    looked_up: list[StepResult]
-    """What the Plan's Green look-ups returned before the card was shown."""
-
-
-@dataclass
-class PendingVerification:
-    """A confirmed Plan paused at a Red step, waiting for its Strong Verification."""
-
-    plan_id: str
-    plan: ReviewedPlan
-    """The steps still to run, the Red step first."""
-    results: list[StepResult]
-    """What the Bank returned for the Plan so far, look-ups included."""
-    confirmation_tokens: dict[str, str]
-    """The Customer's Confirmations of the Yellow steps still to run."""
-    requested: VerificationRequested
-    card: list[str]
-    """The Plan card's step IDs, in order: the Customer knows each step by its number."""
-
-
-@dataclass
-class PendingClarification:
-    """A clarifying question waiting for the Customer's answer: a tap on one of its
-    options (`choose`), or a new message."""
-
-    question: ClarificationQuestion
-
-
-@dataclass
-class RunningPlan:
-    """A confirmed Plan whose steps are running: the Customer can stop it."""
-
-    plan_id: str
-    stop: threading.Event = field(default_factory=threading.Event)
-
-
-@dataclass
-class PausedPlan:
-    """A confirmed Plan the Customer stopped: waiting to be resumed, changed (by a new
-    message) or cancelled."""
-
-    plan_id: str
-    card: list[str]
-    """The Plan card's step IDs, in order: the Customer knows each step by its number."""
-    plan: ReviewedPlan
-    """The steps still to run, as the Bank tiered them."""
-    confirmation_tokens: dict[str, str]
-    """The Customer's Confirmations of the Yellow steps still to run. Never used for
-    another Plan."""
-    results: list[StepResult]
-    """What the Bank returned for the Plan so far, look-ups included."""
-
-
-@dataclass
-class ReversalOffer:
-    """A failed Plan's completed reversible steps, offered for undoing, waiting for the
-    Customer's answer."""
-
-    plan_id: str
-    """The Plan that failed."""
-    steps: list[ReversalStep]
-    """In the order they would be undone: the reverse of the order they ran."""
-
-
-@dataclass
-class CancellationOffer:
-    """The Subscriptions the Bank flagged as possibly unneeded, offered for the Customer to
-    pick which to cancel, until they answer or send a new message."""
-
-    offer_id: str
-    candidates: list[dict[str, Any]]
-    """The Bank's Subscriptions, as `list_subscriptions` returned them."""
-
 
 @dataclass
 class Conversation:
@@ -160,7 +96,7 @@ class Conversation:
     """`{customer_id, name}`, as the Bank told it."""
     history: list[dict[str, Any]] = field(default_factory=list)
     """The Customer's messages and the Agent's answers, in the model's chat format."""
-    pending: PendingPlan | PendingVerification | PausedPlan | PendingClarification | None = None
+    pending: Prompt | None = None
     """The prompt waiting for the Customer's answer: a Plan card, a Red step's
     verification, a stopped Plan, or a clarifying question."""
     reversal: ReversalOffer | None = None
@@ -193,6 +129,10 @@ class Conversation:
     """The Merchant orders placed in this conversation that the Bank will pay on their
     delivery date, by order ID: the Customer is told when the Bank has paid them (or
     couldn't)."""
+    birthday_checked_on: str | None = None
+    """The Bank date the spouse's birthday was last checked on, between turns."""
+    birthday_reminded: bool = False
+    """The Agent has brought the spouse's coming birthday up: once per conversation."""
     injections_seen: set[str] = field(default_factory=set)
     """The instruction-like texts found in Bank data so far, quoted: each is warned about
     and reported once, however often the Bank returns it."""
@@ -207,164 +147,10 @@ class Conversation:
         return f"o{self.offers_made}"
 
 
-class ConfirmPlan(BaseModel):
-    """One tap on the Plan card: confirm every Yellow step on it."""
-
-    model_config = ConfigDict(extra="forbid")
-    action: Literal["confirm"]
-    plan_id: str
-    removed_step_ids: list[str] = []
-    """Steps the Customer took off the card first: the rest are re-tiered by the Bank."""
-
-
-class RejectPlan(BaseModel):
-    """Reject the Plan card: nothing on it runs."""
-
-    model_config = ConfigDict(extra="forbid")
-    action: Literal["reject"]
-    plan_id: str
-
-
-class AskForHuman(BaseModel):
-    """The Customer wants a Staff Member: at any time, whatever else is going on."""
-
-    model_config = ConfigDict(extra="forbid")
-    action: Literal["ask_for_human"]
-
-
-class VerifiedStep(BaseModel):
-    """The Customer typed the right code into the simulated phone, which sent it straight
-    to the Bank and hands the Agent only the verification token it got back."""
-
-    model_config = ConfigDict(extra="forbid")
-    action: Literal["verified"]
-    plan_id: str
-    step_id: str
-    verification_token: str = Field(min_length=1)
-
-
-class WrongCode(BaseModel):
-    """The Bank refused the code the Customer typed into the simulated phone
-    (`token_invalid`); `failed_attempts` is the Bank's count of wrong codes this session.
-    The Agent asks the Bank itself whether that locked the session."""
-
-    model_config = ConfigDict(extra="forbid")
-    action: Literal["wrong_code"]
-    plan_id: str
-    step_id: str
-    failed_attempts: int = Field(ge=1)
-
-
-class ReverseSteps(BaseModel):
-    """Accept the reversal offer, for these of its steps: the undo becomes a new Plan
-    card."""
-
-    model_config = ConfigDict(extra="forbid")
-    action: Literal["reverse"]
-    plan_id: str
-    step_ids: list[str] = Field(min_length=1)
-
-
-class ChooseOption(BaseModel):
-    """The Customer tapped one of the clarifying question's options."""
-
-    model_config = ConfigDict(extra="forbid")
-    action: Literal["choose"]
-    value: str
-
-
-class StopPlan(BaseModel):
-    """The stop button: no further step of the Plan starts."""
-
-    model_config = ConfigDict(extra="forbid")
-    action: Literal["stop"]
-    plan_id: str
-
-
-class ResumePlan(BaseModel):
-    """Run the rest of a stopped Plan, as confirmed."""
-
-    model_config = ConfigDict(extra="forbid")
-    action: Literal["resume"]
-    plan_id: str
-
-
-class CancelPlan(BaseModel):
-    """Drop the rest of a stopped Plan: nothing more of it runs."""
-
-    model_config = ConfigDict(extra="forbid")
-    action: Literal["cancel"]
-    plan_id: str
-
-
-class CancelSubscriptions(BaseModel):
-    """The Customer's pick from the Subscriptions offered for cancelling: these become
-    one Plan card, one cancellation each. None picked cancels nothing."""
-
-    model_config = ConfigDict(extra="forbid")
-    action: Literal["cancel_subscriptions"]
-    offer_id: str
-    subscription_ids: list[str]
-
-
-CustomerAction = Annotated[
-    ConfirmPlan
-    | CancelSubscriptions
-    | RejectPlan
-    | AskForHuman
-    | VerifiedStep
-    | WrongCode
-    | ReverseSteps
-    | StopPlan
-    | ResumePlan
-    | CancelPlan
-    | ChooseOption,
-    Field(discriminator="action"),
-]
-
-HUMAN_REQUESTED: dict[Language, str] = {
-    "zh": "已为您呼叫人工客服，请稍候。",
-    "en": "I've asked for a Staff Member to join you. Please wait a moment.",
-}
-
-REJECTED: dict[Language, str] = {
-    "zh": "好的，已取消这个计划，没有执行任何操作。",
-    "en": "OK, I've cancelled that Plan. Nothing was done.",
-}
-"""The Agent's acknowledgement of a rejected Plan card: nothing ran, so nothing to report."""
-
-CANCELLED: dict[Language, str] = {
-    "zh": "好的，已取消剩下的步骤，不会再执行。已执行的步骤不受影响。",
-    "en": "OK, I've cancelled the rest of the Plan; nothing more will run. The steps that"
-    " already ran stay done.",
-}
-"""The Agent's acknowledgement of a cancelled stopped Plan: the pause already said what ran."""
-
-NOT_REVERSED: dict[Language, str] = {
-    "zh": "好的，不撤销，已完成的步骤保持不变。",
-    "en": "OK, I won't undo anything: the steps that ran stay as they are.",
-}
-"""The Agent's acknowledgement of a declined reversal offer."""
-
 NO_CLEAN_UP = {"session_locked", "not_authenticated", "forbidden_other_customer"}
 """Refusals after which nothing more is offered: under a Safety Lock only Green Operations
 run (the lock notice says so), a session the Bank no longer knows runs nothing, and another
 Customer's information is never looked for another way (#44)."""
-
-
-def reversal_text(numbers: list[str], language: Language) -> str:
-    """The offer to undo the card's steps with these numbers, in the order they'd be
-    undone."""
-    if language == "en":
-        steps = f"step{'s' if len(numbers) > 1 else ''} {', '.join(numbers)}"
-        return (
-            f"I can undo what already ran: {steps}, in that order. Shall I? Undoing is a new"
-            " Plan: you'll see its Plan card and approve it first. Otherwise they stay done."
-        )
-    return (
-        f"已完成的步骤可以撤销：按第 {'、'.join(numbers)} 步的顺序。需要撤销吗？"
-        "撤销是一个新的计划，会先给您看计划卡片并请您确认；不撤销则保持不变。"
-    )
 
 
 def asked(clarification: planner.Clarification) -> ClarificationQuestion:
@@ -393,69 +179,6 @@ def plan_data(plan: ReviewedPlan, look_ups: bool = False) -> dict[str, Any]:
     if plan.refusals:
         data["refusals"] = [refusal.model_dump(mode="json") for refusal in plan.card_refusals]
     return data
-
-
-def answers(
-    action: ConfirmPlan | RejectPlan | VerifiedStep | WrongCode | ResumePlan | CancelPlan,
-    pending: PendingPlan | PendingVerification | PausedPlan | PendingClarification | None,
-) -> bool:
-    """Whether the action answers the prompt waiting for an answer: confirm and reject
-    answer a Plan card, a verification answers its own Red step, resume and cancel answer
-    a stopped Plan."""
-    if pending is None or isinstance(pending, PendingClarification):
-        return False
-    if pending.plan_id != action.plan_id:
-        return False
-    if isinstance(action, VerifiedStep | WrongCode):
-        return isinstance(pending, PendingVerification) and (
-            pending.requested.step_id == action.step_id
-        )
-    if isinstance(action, ResumePlan | CancelPlan):
-        return isinstance(pending, PausedPlan)
-    return isinstance(pending, PendingPlan)
-
-
-def paused_text(paused: PausedPlan, language: Language) -> str:
-    """Which of the card's steps ran and which didn't, by their number on the card."""
-
-    def numbers(ids: list[str]) -> list[str]:
-        return [str(paused.card.index(id) + 1) for id in ids if id in paused.card]
-
-    done = numbers(ran_steps(paused))
-    not_run = numbers([step.id for step in paused.plan.steps])
-    if language == "en":
-        parts = ["Paused: no further step will run."]
-        if done:
-            parts.append(f"Done: step{'s' if len(done) > 1 else ''} {', '.join(done)}.")
-        parts.append(f"Not done: step{'s' if len(not_run) > 1 else ''} {', '.join(not_run)}.")
-        parts.append("You can resume, change or cancel the rest.")
-        return " ".join(parts)
-    parts = ["已暂停，后面的步骤不会执行。"]
-    if done:
-        parts.append(f"已执行：第 {'、'.join(done)} 步。")
-    parts.append(f"未执行：第 {'、'.join(not_run)} 步。")
-    parts.append("您可以继续、修改或取消剩下的步骤。")
-    return "".join(parts)
-
-
-def ran_steps(paused: PausedPlan) -> list[str]:
-    """The card's steps the Bank has run, in card order."""
-    ran = {result.step_id for result in paused.results if result.output is not None}
-    return [id for id in paused.card if id in ran]
-
-
-def interruption(
-    pending: PendingPlan | PendingVerification | PausedPlan | PendingClarification | None,
-) -> dict[str, Any] | None:
-    """Where a confirmed Plan stopped (by the Customer, or at a Red step waiting for its
-    verification), for the Planner: what the Bank returned for the steps that ran, and the
-    steps that didn't."""
-    if not isinstance(pending, PausedPlan | PendingVerification):
-        return None
-    return {
-        "ran": [asdict(result) for result in pending.results],
-        "not_run": [step.model_dump(mode="json", exclude={"tier"}) for step in pending.plan.steps],
-    }
 
 
 class UnknownConversation(Exception):
@@ -579,14 +302,15 @@ class Conversations:
             if staff is None:
                 raise NotHandedOver()
             conversation.handed_over_to = None
-            note = HANDED_BACK_NOTE.format(staff=staff)
+            note = notices.HANDED_BACK_NOTE.format(staff=staff)
             conversation.history.append({"role": "system", "content": note})
             return self._push(conversation, HandedBack())
 
     def updates(self, conversation: Conversation, after: int) -> list[Event]:
         """What the Customer was sent outside their own turns, from the `after`-th on:
-        a Staff Member's takeover, replies and hand-back, and the Merchant orders the Bank
-        has paid on the Bank clock."""
+        a Staff Member's takeover, replies and hand-back, the spouse's coming birthday, and
+        the Merchant orders the Bank has paid on the Bank clock."""
+        self.check_birthday(conversation)
         self.check_orders(conversation)
         return conversation.updates[after:]
 
@@ -667,7 +391,7 @@ class Conversations:
                 self.model,
                 conversation.history,
                 catalogue,
-                [asdict(result) for result in looked_up] if looked_up else None,
+                [result.as_data() for result in looked_up] if looked_up else None,
                 interrupted=interrupted,
                 failed=failed_context,
                 now=now,
@@ -715,7 +439,7 @@ class Conversations:
             if reviewed_look_ups.other_customers:
                 yield from self._other_customer(conversation, reviewed_look_ups)
                 return
-            if reviewed_look_ups.green_only:  # the Bank agrees they need no approval
+            if reviewed_look_ups.green_only:  # the Bank agrees they need no Plan card
                 yield from execute(reviewed_look_ups, bank, looked_up, language=language)
                 if (lock := (yield from self._screen(conversation, looked_up))) is not None:
                     yield self._locked(conversation, lock)
@@ -796,34 +520,33 @@ class Conversations:
         waiting for an answer, and AlreadyHandedOver while a Staff Member has the
         conversation: the Agent starts no step then.
         """
-        if isinstance(action, AskForHuman):
-            return self._recorded(conversation, self._ask_for_human(conversation))
-        if isinstance(action, StopPlan):
-            return self.stop(conversation, action.plan_id)
+        match action:
+            case AskForHuman():
+                return self._recorded(conversation, self._ask_for_human(conversation))
+            case StopPlan():
+                return self.stop(conversation, action.plan_id)
         with conversation.lock:
             if conversation.handed_over_to is not None:
                 raise AlreadyHandedOver(conversation.handed_over_to)
-            if isinstance(action, ChooseOption):
-                return self._choose(conversation, action.value)
-            if isinstance(action, CancelSubscriptions):
-                return self._answer_offer(conversation, action)
             offer = conversation.reversal
-            if isinstance(action, ReverseSteps) or (
-                isinstance(action, RejectPlan)
-                and offer is not None
-                and offer.plan_id == action.plan_id
-            ):
-                return self._answer_reversal(conversation, action)
+            match action:
+                case ChooseOption():
+                    return self._choose(conversation, action.value)
+                case CancelSubscriptions():
+                    return self._answer_offer(conversation, action)
+                case ReverseSteps():
+                    return self._answer_reversal(conversation, action)
+                case RejectPlan() if offer is not None and offer.plan_id == action.plan_id:
+                    return self._answer_reversal(conversation, action)
             pending = conversation.pending
-            if not answers(action, pending):
+            if pending is None or not pending.answered_by(action):
                 raise PlanNotPending(action.plan_id)
             removed: set[str] = set()
-            if isinstance(action, ConfirmPlan):
-                assert isinstance(pending, PendingPlan)
-                removed = set(action.removed_step_ids)
+            if isinstance(action, RemoveSteps) and isinstance(pending, PendingPlan):
                 card = {step.id for step in pending.plan.steps}
-                if not removed <= card:
-                    raise UnknownStep(sorted(removed - card))
+                if not set(action.step_ids) <= card:
+                    raise UnknownStep(sorted(set(action.step_ids) - card))
+                removed = without(pending.plan, set(action.step_ids))
                 if removed == card:  # nothing left to confirm: as good as a reject
                     action = RejectPlan(action="reject", plan_id=action.plan_id)
             conversation.pending = None  # a prompt is answered once
@@ -833,22 +556,23 @@ class Conversations:
             if isinstance(action, ConfirmPlan | VerifiedStep | ResumePlan):
                 # Running from now: a stop tapped before the first step starts still counts.
                 conversation.running = RunningPlan(action.plan_id)
-        if isinstance(action, RejectPlan):
-            return self._recorded(conversation, self._rejected(conversation))
-        if isinstance(action, CancelPlan):
-            return self._recorded(conversation, self._cancelled(conversation))
-        if isinstance(action, VerifiedStep):
-            assert isinstance(pending, PendingVerification)
-            turn = self._verified(conversation, pending, action.verification_token)
-        elif isinstance(action, WrongCode):
-            assert isinstance(pending, PendingVerification)
-            turn = self._wrong_code(conversation, pending, action.failed_attempts)
-        elif isinstance(action, ResumePlan):
-            assert isinstance(pending, PausedPlan)
-            turn = self._resumed(conversation, pending)
-        else:
-            assert isinstance(pending, PendingPlan)
-            turn = self._confirmed(conversation, pending, removed)
+        match action, pending:
+            case RejectPlan(), _:
+                return self._recorded(conversation, self._rejected(conversation))
+            case CancelPlan(), _:
+                return self._recorded(conversation, self._cancelled(conversation))
+            case VerifiedStep(), PendingVerification():
+                turn = self._verified(conversation, pending, action.verification_token)
+            case WrongCode(), PendingVerification():
+                turn = self._wrong_code(conversation, pending, action.failed_attempts)
+            case ResumePlan(), PausedPlan():
+                turn = self._resumed(conversation, pending)
+            case RemoveSteps(), PendingPlan():
+                turn = self._edited(conversation, pending, set(action.step_ids), removed)
+            case ConfirmPlan(), PendingPlan():
+                turn = self._confirmed(conversation, pending)
+            case _:
+                raise AssertionError(f"{action.action} answered {type(pending).__name__}")
         return self._recorded(conversation, with_bank_traces(conversation.bank, turn))
 
     def _choose(self, conversation: Conversation, value: str) -> Iterator[Event]:
@@ -858,17 +582,16 @@ class Conversations:
         pending = conversation.pending
         if not isinstance(pending, PendingClarification):
             raise PlanNotPending("")
-        chosen = next((o for o in pending.question.options if o.value == value), None)
-        if chosen is None:
+        values = [option.value for option in pending.question.options]
+        if value not in values:
             raise UnknownOption(value)
         conversation.pending = None  # a question is answered once
         conversation.reversal = None  # moving on drops the other offers, as a message does
         conversation.offer = None
         conversation.record.append(CustomerActionEntry(action="choose", plan_id=None))
         # A note, not a Customer message: the option's label mustn't change the language.
-        conversation.history.append(
-            {"role": "system", "content": CHOSEN_NOTE.format(label=chosen.label, value=value)}
-        )
+        note = notices.CHOSEN_NOTE.format(number=values.index(value) + 1, value=value)
+        conversation.history.append({"role": "system", "content": note})
         turn = self._replan(conversation)
         return self._recorded(conversation, with_bank_traces(conversation.bank, turn))
 
@@ -914,7 +637,7 @@ class Conversations:
         offer = conversation.offer
         if offer is None or offer.offer_id != action.offer_id:
             raise PlanNotPending(action.offer_id)
-        offered = [candidate["subscription_id"] for candidate in offer.candidates]
+        offered = [candidate.subscription_id for candidate in offer.candidates]
         if not set(action.subscription_ids) <= set(offered):
             raise UnknownStep(sorted(set(action.subscription_ids) - set(offered)))
         conversation.offer = None  # an offer is answered once
@@ -963,13 +686,13 @@ class Conversations:
 
     def _not_reversed(self, conversation: Conversation) -> Iterator[Event]:
         with conversation.lock:
-            text = NOT_REVERSED[customer_language(conversation.history)]
+            text = notices.NOT_REVERSED[customer_language(conversation.history)]
             conversation.history.append({"role": "assistant", "content": text})
             yield Answer(text=text)
 
     def _reverse(self, conversation: Conversation, chosen: list[ReversalStep]) -> Iterator[Event]:
         """The accepted undo, as a new Plan: the Bank tiers it and it gets its own Plan card,
-        like any other. Nothing runs before the Customer approves it there."""
+        like any other. Nothing runs before the Customer confirms it there."""
         with conversation.lock:
             if conversation.handed_over_to is not None:
                 return  # taken over since the Customer accepted: the Agent starts nothing
@@ -1071,7 +794,7 @@ class Conversations:
         listed = "".join(
             f"\n- {option.label} [{option.value}]" for option in question.options
         )
-        conversation.history.append({"role": "assistant", "content": question.text + listed})
+        conversation.history.append(untrusted.shown(question.text + listed))
         return question
 
     def _code_in_chat(self, conversation: Conversation) -> Answer:
@@ -1146,7 +869,7 @@ class Conversations:
 
     def _human_requested(self, conversation: Conversation) -> HumanRequested:
         conversation.human_requested = True
-        text = HUMAN_REQUESTED[customer_language(conversation.history)]
+        text = notices.HUMAN_REQUESTED[customer_language(conversation.history)]
         conversation.history.append({"role": "assistant", "content": text})
         return HumanRequested(text=text)
 
@@ -1184,28 +907,57 @@ class Conversations:
             conversation.history.append({"role": "assistant", "content": text})
             yield Answer(text=text)
             return
-        offer = CancellationOffer(conversation.next_offer_id(), offered)
+        offer = CancellationOffer(
+            conversation.next_offer_id(), [Subscription.model_validate(c) for c in offered]
+        )
         conversation.offer = offer
         text = subscriptions.offer_text(offered, listed["subscriptions"], language)
-        conversation.history.append({"role": "assistant", "content": text})
-        yield CancellationOffered(offer_id=offer.offer_id, candidates=offered, text=text)
+        conversation.history.append(untrusted.shown(text))
+        yield CancellationOffered(offer_id=offer.offer_id, candidates=offer.candidates, text=text)
 
     def _rejected(self, conversation: Conversation) -> Iterator[Event]:
         with conversation.lock:
-            text = REJECTED[customer_language(conversation.history)]
+            text = notices.REJECTED[customer_language(conversation.history)]
             conversation.history.append({"role": "assistant", "content": text})
             yield Answer(text=text)
 
     def _cancelled(self, conversation: Conversation) -> Iterator[Event]:
         with conversation.lock:
-            text = CANCELLED[customer_language(conversation.history)]
+            text = notices.CANCELLED[customer_language(conversation.history)]
             conversation.history.append({"role": "assistant", "content": text})
             yield Answer(text=text)
 
-    def _confirmed(
-        self, conversation: Conversation, pending: PendingPlan, removed: set[str]
+    def _edited(
+        self,
+        conversation: Conversation,
+        pending: PendingPlan,
+        asked: set[str],
+        removed: set[str],
     ) -> Iterator[Event]:
-        """The Customer tapped confirm, with `removed` steps taken off the card first."""
+        """The Customer took the `asked` steps off the Plan card (`removed` adds the steps
+        left waiting on nothing): the rest are a new Plan card, to confirm again."""
+        with conversation.lock:
+            if conversation.handed_over_to is not None:
+                return  # taken over since the Customer tapped: the Agent starts nothing
+            card = [step.id for step in pending.plan.steps]
+            # Tiers depend on order (an earlier transfer counts toward the Daily Transfer
+            # Total), so the Bank tiers the rest afresh, as they will now run: removing an
+            # earlier transfer can turn a Red step Yellow.
+            rest = [step for step in pending.plan.steps if step.id not in removed]
+            try:
+                catalogue = conversation.bank.catalogue()
+                reviewed = reviewer.review(planner.Plan(steps=rest), conversation.bank)
+            except (BankRefused, BankUnavailable):
+                yield self._not_retrieved(conversation)
+                return
+            if waiting := [str(card.index(id) + 1) for id in card if id in removed - asked]:
+                text = notices.removed_with(waiting, customer_language(conversation.history))
+                conversation.history.append({"role": "assistant", "content": text})
+                yield Answer(text=text)
+            yield from self._propose(conversation, reviewed, pending.looked_up, catalogue)
+
+    def _confirmed(self, conversation: Conversation, pending: PendingPlan) -> Iterator[Event]:
+        """The Customer tapped confirm: every Yellow step on the card is confirmed."""
         with conversation.lock:
             if conversation.handed_over_to is not None:
                 # Taken over since the Customer confirmed: the Agent starts nothing.
@@ -1213,18 +965,6 @@ class Conversations:
                 return
             card = [step.id for step in pending.plan.steps]
             plan = pending.plan
-            if removed:
-                # Tiers depend on order (an earlier transfer counts toward the Daily Transfer
-                # Total), so the Bank tiers the rest afresh, as they will now run: removing
-                # an earlier transfer can turn a Red step Yellow.
-                rest = [step for step in plan.steps if step.id not in removed]
-                try:
-                    plan = reviewer.review(planner.Plan(steps=rest), conversation.bank)
-                except (BankRefused, BankUnavailable):
-                    conversation.running = None
-                    yield self._not_retrieved(conversation)
-                    return
-                yield trace("plan", plan_data(plan))
             try:
                 tokens = reviewer.collect_confirmations(plan, conversation.bank)
             except reviewer.ConfirmationRefused as refused:
@@ -1297,7 +1037,7 @@ class Conversations:
                 preview = {}
             if (refusal := preview.get("refusal")) is not None:
                 language = customer_language(conversation.history)
-                yield failed(step, refusal, pending.results, language)
+                yield failed(step, BankRefusal.model_validate(refusal), pending.results, language)
                 yield from self._finish(conversation, pending.results)
                 return
             text = notices.wrong_code(failed_attempts, customer_language(conversation.history))
@@ -1389,7 +1129,7 @@ class Conversations:
         failed_step = results[-1]
         refusal = failed_step.refusal
         assert refusal is not None, "the failed step is the last result"
-        if refusal["reason"] in NO_CLEAN_UP:
+        if refusal.reason in NO_CLEAN_UP:
             return
         # The card's completed steps that can be undone, the last to run first.
         done = [
@@ -1399,22 +1139,22 @@ class Conversations:
         ]
         if done:
             offer = ReversalOffer(
-                plan_id, [ReversalStep(step_id=id, **reversal) for id, reversal in done]
+                plan_id, [ReversalStep(step_id=id, **reversal.model_dump()) for id, reversal in done]
             )
             conversation.reversal = offer
             numbers = [str(card.index(id) + 1) for id, _ in done]
-            text = reversal_text(numbers, customer_language(conversation.history))
+            text = notices.reversal_text(numbers, customer_language(conversation.history))
             conversation.history.append({"role": "assistant", "content": text})
             yield ReversalOffered(plan_id=plan_id, steps=offer.steps, text=text)
-        if refusal["reason"] == "bank_unavailable":
+        if refusal.reason == "bank_unavailable":
             return  # nothing to re-plan around: the Bank can't be reached
         try:
             catalogue = conversation.bank.catalogue()
         except (BankRefused, BankUnavailable):
             return
         context = {
-            "ran": [asdict(result) for result in results[:-1] if result.output is not None],
-            "failed": asdict(failed_step),
+            "ran": [result.as_data() for result in results[:-1] if result.output is not None],
+            "failed": failed_step.as_data(),
             "not_run": [step.model_dump(mode="json", exclude={"tier"}) for step in not_run],
         }
         yield from self._plan(conversation, catalogue, failed=failed_step, failed_context=context)
@@ -1423,12 +1163,15 @@ class Conversations:
         """The Plan is stopped: tell the Customer which steps ran and which didn't, and
         wait for resume, cancel or a change."""
         conversation.pending = paused
-        text = paused_text(paused, customer_language(conversation.history))
+        text = notices.paused_text(
+            paused.card, paused.ran, [step.id for step in paused.plan.steps],
+            customer_language(conversation.history),
+        )
         self._remember(conversation, paused.results)
         conversation.history.append({"role": "assistant", "content": text})
         return PlanPaused(
             plan_id=paused.plan_id,
-            ran=ran_steps(paused),
+            ran=paused.ran,
             not_run=[step.id for step in paused.plan.steps],
             text=text,
         )
@@ -1438,8 +1181,8 @@ class Conversations:
         step because the session is under a Safety Lock, the notice of what still works."""
         yield self._answer(conversation, results)
         for result in results:
-            if result.refusal is not None and result.refusal["reason"] == "session_locked":
-                yield self._locked(conversation, result.refusal["detail"])
+            if result.refusal is not None and result.refusal.reason == "session_locked":
+                yield self._locked(conversation, result.refusal.detail)
                 return
 
     def _locked(self, conversation: Conversation, lock: dict[str, Any]) -> SessionLocked:
@@ -1452,16 +1195,22 @@ class Conversations:
 
     def _answer(self, conversation: Conversation, results: list[StepResult]) -> Answer:
         """The answer from this Plan's Bank results (and earlier ones in the conversation)."""
-        text = subscriptions.report(results, customer_language(conversation.history))
-        if text is None:
-            text = responder.answer(
+        reported = subscriptions.report(results, customer_language(conversation.history))
+        if reported is not None:
+            written = responder.Written(reported, quotes_bank=True)
+        else:
+            written = responder.answer(
                 self.model, conversation.history, results, conversation.bank_results
             )
         # The outgoing check: nothing that looks like a full card number or a code goes
         # out, even when a Bank result contained it.
-        text = secrets_guard.mask(text)
+        text = secrets_guard.mask(written.text)
         self._remember(conversation, results)
-        conversation.history.append({"role": "assistant", "content": text})
+        conversation.history.append(
+            untrusted.shown(text)
+            if written.quotes_bank
+            else {"role": "assistant", "content": text}
+        )
         return Answer(text=text)
 
     def _noticed(
@@ -1486,6 +1235,48 @@ class Conversations:
             result for result in results if result not in conversation.bank_results
         )
         conversation.awaiting_orders.update(orders.placed(results))
+
+    def check_birthday(self, conversation: Conversation) -> None:
+        """Bring the spouse's birthday up, unprompted, once it is a week away or less on the
+        Bank clock: from the profile and last year's gift purchase, both Green look-ups.
+        Checked once per Bank date and told once, between turns; skipped while a turn is
+        under way or a Staff Member has the conversation."""
+        if conversation.birthday_reminded or not conversation.lock.acquire(blocking=False):
+            return
+        try:
+            if conversation.handed_over_to is not None:
+                return
+            bank = conversation.bank
+            try:
+                now = bank.clock()
+                if now[:10] == conversation.birthday_checked_on:
+                    return
+                conversation.birthday_checked_on = now[:10]
+                profile = bank.call(birthday.PROFILE, {})["output"]
+                coming = birthday.coming(profile, now)
+                if coming is None:
+                    bank.take_exchanges()  # nothing to tell: nothing for the trace either
+                    return
+                query = birthday.gifts_query(coming)
+                gifts = bank.call(birthday.TRANSACTIONS, query)["output"]
+            except (BankRefused, BankUnavailable):
+                bank.take_exchanges()
+                return  # try again on the next Bank date
+            conversation.birthday_reminded = True
+            language = customer_language(conversation.history)
+            text = birthday.reminder(profile, coming, birthday.last_gift(gifts), now, language)
+            self._remember(
+                conversation,
+                [
+                    StepResult("birthday_profile", birthday.PROFILE, {}, profile),
+                    StepResult("birthday_gifts", birthday.TRANSACTIONS, query, gifts),
+                ],
+            )
+            conversation.history.append(untrusted.shown(text))
+            for event in with_bank_traces(bank, iter([Answer(text=text)])):
+                self._push(conversation, event)
+        finally:
+            conversation.lock.release()
 
     def check_orders(self, conversation: Conversation) -> None:
         """Tell the Customer, between their turns, about the orders placed in this
@@ -1515,7 +1306,7 @@ class Conversations:
                 del conversation.awaiting_orders[order["order_id"]]
             text = orders.settled_text(settled, customer_language(conversation.history))
             self._remember(conversation, [result])
-            conversation.history.append({"role": "assistant", "content": text})
+            conversation.history.append(untrusted.shown(text))
             for event in with_bank_traces(bank, iter([Answer(text=text)])):
                 self._push(conversation, event)
         finally:

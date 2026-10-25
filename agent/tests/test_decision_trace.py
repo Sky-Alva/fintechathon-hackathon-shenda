@@ -6,7 +6,7 @@ import re
 
 from fastapi.testclient import TestClient
 
-from conftest import Login, audit_trail, log_in, send, start_conversation, traces
+from conftest import Login, audit_trail, log_in, send, staff, start_conversation, traces
 from fake_model import FakeModel, decline, plan, say, step
 
 BALANCE_QUESTION = "我卡里还有多少钱？"
@@ -130,7 +130,7 @@ def test_the_trace_shows_the_sessions_audit_trail_as_the_bank_recorded_it(
     conversation = start_conversation(agent, login)
     send(agent, conversation, BALANCE_QUESTION)
 
-    event = audit_trail(agent, conversation)
+    event = audit_trail(agent, conversation, login)
 
     assert (event["type"], event["stage"]) == ("trace", "audit_trail")
     assert event["data"]["session_id"] == login.session_id
@@ -140,6 +140,31 @@ def test_the_trace_shows_the_sessions_audit_trail_as_the_bank_recorded_it(
         ("tier_preview", None, "green", "ok"),
         ("operation", "query_balance", "green", "ok"),
     ]
+
+
+def test_the_audit_trail_is_shown_only_with_the_conversations_own_session(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    conversation = start_conversation(agent, log_in(bank, "liming"))
+    other = log_in(bank, "hanmei")
+    url = f"/conversations/{conversation}/audit-trail"
+
+    anyone = agent.get(url)
+    someone_else = agent.get(url, headers={"Authorization": f"Bearer {other.session_token}"})
+
+    assert (anyone.status_code, anyone.json()) == (401, {"error": "not_authenticated"})
+    assert (someone_else.status_code, someone_else.json()) == (401, {"error": "not_authenticated"})
+
+
+def test_a_staff_member_reads_the_audit_trail_with_the_staff_key(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    login = log_in(bank, "liming")
+    conversation = start_conversation(agent, login)
+
+    event = staff(agent, f"/conversations/{conversation}/audit-trail")
+
+    assert event["data"]["session_id"] == login.session_id
 
 
 # --- No token or code is ever traced ------------------------------------------------
@@ -186,7 +211,7 @@ def test_no_token_or_code_appears_in_any_trace(
     secrets = approve_on_the_bank(bank, login)
 
     turn = traces(send(agent, conversation, BALANCE_QUESTION))
-    trail = audit_trail(agent, conversation)
+    trail = audit_trail(agent, conversation, login)
 
     assert [e["event"] for e in trail["data"]["entries"]] == [
         "confirmation_issued",

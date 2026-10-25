@@ -2,7 +2,6 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
-from agent.model import ModelReply
 from conftest import (
     Login,
     act,
@@ -13,7 +12,7 @@ from conftest import (
     start_conversation,
     traces,
 )
-from fake_model import FakeModel, plan, say, step
+from fake_model import FakeModel, ModelReply, plan, say, step
 
 TWO_TRANSFERS = "给老妈转200，再给老婆转300"
 TO_MUM = {"payee_id": "PAY-LM-002", "amount": "200.00", "note": ""}

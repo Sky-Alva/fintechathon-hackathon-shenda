@@ -10,6 +10,8 @@ from typing import Any, Protocol
 
 import httpx
 
+from agent.events import BankRefusal
+
 
 class HttpResponse(Protocol):
     status_code: int
@@ -37,9 +39,9 @@ class BankRefused(Exception):
         self.message = message
         self.detail = detail
 
-    def body(self) -> dict[str, Any]:
+    def body(self) -> BankRefusal:
         """The refusal as the Bank sent it."""
-        return {"reason": self.reason, "message": self.message, "detail": self.detail}
+        return BankRefusal(reason=self.reason, message=self.message, detail=self.detail)
 
 
 class BankUnavailable(Exception):
