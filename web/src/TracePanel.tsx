@@ -8,6 +8,8 @@ export type TraceTurn = { text: string; traces: Trace[] }
 
 type Props = {
   conversationId: string
+  /** The Customer's Bank session token: the Agent shows the audit trail to it only. */
+  sessionToken: string
   turns: TraceTurn[]
   /** How many turns have finished: the audit trail is re-read after each. */
   finishedTurns: number
@@ -17,14 +19,20 @@ type Props = {
 /** The decision trace: what the Agent understood, planned and was told by the Bank, per
  * turn, and the session's audit trail as the Bank recorded it. For judges; hidden by
  * default. Everything shown comes from `trace` events, which never carry a token or code. */
-export default function TracePanel({ conversationId, turns, finishedTurns, onClose }: Props) {
+export default function TracePanel({
+  conversationId,
+  sessionToken,
+  turns,
+  finishedTurns,
+  onClose,
+}: Props) {
   const [audit, setAudit] = useState<AuditEntry[] | null>(null)
   const [auditError, setAuditError] = useState(false)
 
   // Re-read the audit trail when the panel opens and after each turn.
   useEffect(() => {
     let current = true
-    fetchAuditTrail(conversationId)
+    fetchAuditTrail(conversationId, sessionToken)
       .then((entries) => {
         if (current) {
           setAudit(entries)
@@ -35,7 +43,7 @@ export default function TracePanel({ conversationId, turns, finishedTurns, onClo
     return () => {
       current = false
     }
-  }, [conversationId, finishedTurns])
+  }, [conversationId, sessionToken, finishedTurns])
 
   return (
     <aside className="trace-panel" aria-label="决策追踪 Decision trace">

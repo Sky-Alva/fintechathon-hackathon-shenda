@@ -177,9 +177,21 @@ def create_app(bank: HttpClient, model: ModelClient, staff_key: str) -> FastAPI:
             "next": after + len(sent),
         }
 
-    @app.get("/conversations/{conversation_id}/audit-trail")
-    def audit_trail(conversation_id: str) -> Trace:
-        return conversations.audit_trail(conversations.get(conversation_id))
+    @app.get("/conversations/{conversation_id}/audit-trail", response_model=None)
+    def audit_trail(
+        conversation_id: str,
+        authorization: Annotated[str | None, Header()] = None,
+        x_staff_key: Annotated[str | None, Header()] = None,
+    ) -> Trace | JSONResponse:
+        """For the conversation's own session (the Customer's decision trace panel, with
+        the session token the Channel holds), or a Staff Member (the staff key)."""
+        conversation = conversations.get(conversation_id)
+        own = f"Bearer {conversation.bank.session_token}"
+        is_own = authorization is not None and secrets.compare_digest(authorization, own)
+        is_staff = x_staff_key is not None and secrets.compare_digest(x_staff_key, staff_key)
+        if not (is_own or is_staff):
+            return JSONResponse(status_code=401, content={"error": "not_authenticated"})
+        return conversations.audit_trail(conversation)
 
     @staff.get("/conversations")
     def active_conversations() -> dict[str, Any]:

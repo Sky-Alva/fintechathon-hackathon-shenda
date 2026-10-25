@@ -10,7 +10,7 @@ The contract between the Agent's conversation service and everything that talks 
 | `POST /conversations/{conversation_id}/messages` | `{text}` | the turn's events |
 | `POST /conversations/{conversation_id}/actions` | `{action, ...}` | the turn's events (see below) |
 | `GET /conversations/{conversation_id}/updates?after=N` | none | `{events, next}`: the events the Customer was sent outside their own turns (see [Human takeover](#human-takeover), [the spouse's birthday](#the-spouses-birthday-brought-up-unprompted-48) and [Orders paid on the Bank clock](#orders-paid-on-the-bank-clock-48)), from the `N`-th on; poll again with `after=next` |
-| `GET /conversations/{conversation_id}/audit-trail` | none | one `trace` event (`stage: "audit_trail"`): the session's audit trail, for the decision trace panel |
+| `GET /conversations/{conversation_id}/audit-trail` | none; `Authorization: Bearer <session_token>` (the conversation's own Bank session, which the Channel holds from login) or `X-Staff-Key`, otherwise `401 {"error": "not_authenticated"}` | one `trace` event (`stage: "audit_trail"`): the session's audit trail, for the decision trace panel |
 
 - **Login stays with the Channel.** The Channel logs the Customer in with the Bank (`POST /sessions`), keeps the `phone_token` for its simulated phone and hands the Agent the `session_token` only. `POST /conversations` refuses any other field (422), so the Agent never sees a password or the phone token. The Agent acts only through that session and holds no Bank admin key ([ADR-0001](adr/0001-bank-enforces-permission-tiers.md)).
 - **A turn is one streamed response.** It is newline-delimited JSON (`application/x-ndjson`): one event object per line, each with a `type`. The turn is over when the stream ends.

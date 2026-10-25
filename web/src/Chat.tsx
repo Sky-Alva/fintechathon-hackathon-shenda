@@ -194,6 +194,8 @@ type Props = {
   conversationId: string
   /** For the simulated phone only: it goes to the Bank, never to the Agent. */
   phoneToken: string
+  /** For the decision trace panel's audit trail, which the Agent shows this session only. */
+  sessionToken: string
   /** Where the simulated phone is shown, beside the Customer's banking app. */
   smsSlot: HTMLElement | null
   onLogOut: () => void
@@ -339,6 +341,7 @@ export default function Chat({
   customerName,
   conversationId,
   phoneToken,
+  sessionToken,
   smsSlot,
   onLogOut,
 }: Props) {
@@ -627,6 +630,7 @@ export default function Chat({
         {showTrace && (
           <TracePanel
             conversationId={conversationId}
+            sessionToken={sessionToken}
             turns={traceTurns}
             finishedTurns={finishedTurns}
             onClose={() => setShowTrace(false)}

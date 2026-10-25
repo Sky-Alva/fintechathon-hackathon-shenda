@@ -26,6 +26,7 @@ export default function App() {
             customerName={session.login.customer.name}
             conversationId={session.conversationId}
             phoneToken={session.login.phone_token}
+            sessionToken={session.login.session_token}
             smsSlot={smsSlot}
             onLogOut={() => setSession(null)}
           />

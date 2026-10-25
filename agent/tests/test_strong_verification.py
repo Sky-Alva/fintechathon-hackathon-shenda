@@ -386,7 +386,7 @@ def test_no_code_or_verification_token_appears_in_a_trace_the_model_or_the_staff
     seen_by_agent = json.dumps(
         {
             "events": [*confirmed, *wrong, *verified],
-            "audit_trail": audit_trail(agent, conversation),
+            "audit_trail": audit_trail(agent, conversation, login),
             "staff": staff(agent, f"/staff/conversations/{conversation}"),
             "model": [request.text() for request in model.requests],
         },

@@ -110,7 +110,7 @@ def test_the_injection_is_reported_to_the_bank_quoting_the_note(
 
     assert reports(bank, login) == [{"kind": "injection", "evidence": INJECTED_NOTE}]
     # ...and the session's audit trail, as the decision trace panel reads it, shows it.
-    entries = audit_trail(agent, conversation)["data"]["entries"]
+    entries = audit_trail(agent, conversation, login)["data"]["entries"]
     assert [e["input"] for e in entries if e["operation"] == "report_suspected_attempt"] == [
         {"kind": "injection", "evidence": INJECTED_NOTE}
     ]

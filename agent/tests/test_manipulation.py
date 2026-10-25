@@ -74,7 +74,7 @@ def test_the_scam_is_reported_to_the_bank_with_the_quoted_text(
     assert report["outcome"] == "ok"
     assert "报告" in shown(events)[-1]["text"]  # the Customer is told it was reported
     # ...and the session's audit trail, as the decision trace panel reads it, shows it.
-    entries = audit_trail(agent, conversation)["data"]["entries"]
+    entries = audit_trail(agent, conversation, login)["data"]["entries"]
     assert [e["input"] for e in entries if e["operation"] == "report_suspected_attempt"] == [
         {"kind": "impersonation", "evidence": POLICE_SCAM}
     ]

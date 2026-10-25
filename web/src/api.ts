@@ -31,9 +31,15 @@ export async function startConversation(login: BankLogin): Promise<string> {
   return (await response.json()).conversation_id
 }
 
-/** The session's audit trail as the Bank recorded it, for the decision trace panel. */
-export async function fetchAuditTrail(conversationId: string): Promise<AuditEntry[]> {
-  const response = await fetch(`/agent/conversations/${conversationId}/audit-trail`)
+/** The session's audit trail as the Bank recorded it, for the decision trace panel: the
+ * Agent shows it only to the conversation's own session. */
+export async function fetchAuditTrail(
+  conversationId: string,
+  sessionToken: string,
+): Promise<AuditEntry[]> {
+  const response = await fetch(`/agent/conversations/${conversationId}/audit-trail`, {
+    headers: { Authorization: `Bearer ${sessionToken}` },
+  })
   if (!response.ok) throw new Error('无法读取审计记录')
   const event = await response.json()
   return event.data.entries

@@ -147,10 +147,13 @@ def traces(events: list[dict[str, Any]], stage: str | None = None) -> list[dict[
     ]
 
 
-def audit_trail(agent: TestClient, conversation_id: str) -> dict[str, Any]:
+def audit_trail(agent: TestClient, conversation_id: str, login: Login) -> dict[str, Any]:
     """The `trace` event with the session's audit trail, as the decision trace panel
-    fetches it from the Agent."""
-    response = agent.get(f"/conversations/{conversation_id}/audit-trail")
+    fetches it from the Agent, with the conversation's own session token."""
+    response = agent.get(
+        f"/conversations/{conversation_id}/audit-trail",
+        headers={"Authorization": f"Bearer {login.session_token}"},
+    )
     assert response.status_code == 200, response.text
     event: dict[str, Any] = response.json()
     return event
