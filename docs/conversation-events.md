@@ -9,7 +9,7 @@ The contract between the Agent's conversation service and everything that talks 
 | `POST /conversations` | `{session_token}` | `{conversation_id}` |
 | `POST /conversations/{conversation_id}/messages` | `{text}` | the turn's events |
 | `POST /conversations/{conversation_id}/actions` | `{action, ...}` | the turn's events (see below) |
-| `GET /conversations/{conversation_id}/updates?after=N` | none | `{events, next}`: the events the Customer was sent outside their own turns (see [Human takeover](#human-takeover) and [Orders paid on the Bank clock](#orders-paid-on-the-bank-clock-48)), from the `N`-th on; poll again with `after=next` |
+| `GET /conversations/{conversation_id}/updates?after=N` | none | `{events, next}`: the events the Customer was sent outside their own turns (see [Human takeover](#human-takeover), [the spouse's birthday](#the-spouses-birthday-brought-up-unprompted-48) and [Orders paid on the Bank clock](#orders-paid-on-the-bank-clock-48)), from the `N`-th on; poll again with `after=next` |
 | `GET /conversations/{conversation_id}/audit-trail` | none | one `trace` event (`stage: "audit_trail"`): the session's audit trail, for the decision trace panel |
 
 - **Login stays with the Channel.** The Channel logs the Customer in with the Bank (`POST /sessions`), keeps the `phone_token` for its simulated phone and hands the Agent the `session_token` only. `POST /conversations` refuses any other field (422), so the Agent never sees a password or the phone token. The Agent acts only through that session and holds no Bank admin key ([ADR-0001](adr/0001-bank-enforces-permission-tiers.md)).
@@ -134,10 +134,19 @@ Every amount, date, card and Payee it mentions appears in a Bank result from thi
 {"type": "answer", "text": "您的活期账户余额为 1,180.00 元。"}
 ```
 
-Two `answer`s don't end a turn (#48):
+Three `answer`s don't end a turn (#48):
 
 - **What the Planner noticed**, right before a `plan_proposed`. The Planner may give its Plan a `note` (in `propose_plan`) saying what it noticed in the look-up results that led to the Plan ("韩梅梅的生日是 10月28日；去年 2025-10-26 您为她买过生日鲜花（¥268.00）"). It is sent only if every amount, date, card and Payee in it is in a Bank result, as for any answer; otherwise nothing is said (no regenerate: the Plan card says what will happen either way).
 - **Orders paid on the Bank clock**, sent outside the Customer's turns: see below.
+- **The spouse's birthday is coming**, sent outside the Customer's turns: see below.
+
+#### The spouse's birthday, brought up unprompted (#48)
+
+The Agent notices the spouse's birthday is coming without being asked. When the Channel polls `updates`, once per Bank date (and never while a turn is under way or a Staff Member has the conversation), it reads the Customer's profile (`query_profile`, Green); if the spouse's birthday is 7 days away or less on the Bank clock, it also reads last year's gift purchases in the 30 days up to that date (`list_transactions {category: "gifts", start_date, end_date}`, Green) and sends one `answer`, written by the Agent from those two results, not by the model: the spouse's name, the birthday's date and how far off it is, last year's gift (date, Merchant, amount) when there was one, and the offer to reserve ¥1,000 and order flowers and a cake. It is sent once per conversation, with the two look-ups' `bank_request` + `bank_response` traces before it, and kept in the model's context as Bank data. Saying yes is planned like any request: the birthday Plan's Plan card. Asking ("最近有什么需要我安排的吗？") still works at any time, with the Planner's two-week rule.
+
+```json
+{"type": "answer", "text": "提醒您：韩梅梅的生日是 10月28日，还有 4 天。去年 2025-10-26 您在 Bloom & Co. 买过礼物（¥268.00）。需要我帮您预留 ¥1,000，并订好鲜花和蛋糕吗？"}
+```
 
 #### Orders paid on the Bank clock (#48)
 

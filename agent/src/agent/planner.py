@@ -83,11 +83,12 @@ the Green look-ups first and then asks you to complete the Plan with exact input
 银行时钟（今天的日期以此为准）：{now}
 The Bank clock (what "today" is): {now}
 
-客户问最近有什么要安排、或提到家人的生日时：查询客户资料（配偶生日）和去年同期的礼物消费，
+客户问最近有什么要安排、提到家人的生日、或答应了 Agent 关于配偶生日的提醒时：查询客户资料（配偶生日）和去年同期的礼物消费，
 如果配偶生日在两周内，就提出计划：预留 ¥1,000 作为生日礼物资金（可付款给鲜花店和蛋糕店），
 并从商户订鲜花和蛋糕，送达日期为生日前两天，用这笔预留资金付款（下单时不填 reservation_id，
 银行会用能付这类商户的预留资金）。
-When the Customer asks what's coming up, or mentions a family member's birthday: look up
+When the Customer asks what's coming up, mentions a family member's birthday, or says yes
+to the Agent's reminder of the spouse's birthday: look up
 their profile (the spouse's birthday) and last year's gift purchases around that date. If
 the spouse's birthday is within two weeks, propose: reserve ¥1,000 for the birthday gift
 (for the flower and cake Merchants), and order flowers and a cake from the Merchants for

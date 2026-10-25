@@ -14,6 +14,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent import (
+    birthday,
     guard,
     notices,
     orders,
@@ -196,6 +197,10 @@ class Conversation:
     """The Merchant orders placed in this conversation that the Bank will pay on their
     delivery date, by order ID: the Customer is told when the Bank has paid them (or
     couldn't)."""
+    birthday_checked_on: str | None = None
+    """The Bank date the spouse's birthday was last checked on, between turns."""
+    birthday_reminded: bool = False
+    """The Agent has brought the spouse's coming birthday up: once per conversation."""
     injections_seen: set[str] = field(default_factory=set)
     """The instruction-like texts found in Bank data so far, quoted: each is warned about
     and reported once, however often the Bank returns it."""
@@ -619,8 +624,9 @@ class Conversations:
 
     def updates(self, conversation: Conversation, after: int) -> list[Event]:
         """What the Customer was sent outside their own turns, from the `after`-th on:
-        a Staff Member's takeover, replies and hand-back, and the Merchant orders the Bank
-        has paid on the Bank clock."""
+        a Staff Member's takeover, replies and hand-back, the spouse's coming birthday, and
+        the Merchant orders the Bank has paid on the Bank clock."""
+        self.check_birthday(conversation)
         self.check_orders(conversation)
         return conversation.updates[after:]
 
@@ -1543,6 +1549,48 @@ class Conversations:
             result for result in results if result not in conversation.bank_results
         )
         conversation.awaiting_orders.update(orders.placed(results))
+
+    def check_birthday(self, conversation: Conversation) -> None:
+        """Bring the spouse's birthday up, unprompted, once it is a week away or less on the
+        Bank clock: from the profile and last year's gift purchase, both Green look-ups.
+        Checked once per Bank date and told once, between turns; skipped while a turn is
+        under way or a Staff Member has the conversation."""
+        if conversation.birthday_reminded or not conversation.lock.acquire(blocking=False):
+            return
+        try:
+            if conversation.handed_over_to is not None:
+                return
+            bank = conversation.bank
+            try:
+                now = bank.clock()
+                if now[:10] == conversation.birthday_checked_on:
+                    return
+                conversation.birthday_checked_on = now[:10]
+                profile = bank.call(birthday.PROFILE, {})["output"]
+                coming = birthday.coming(profile, now)
+                if coming is None:
+                    bank.take_exchanges()  # nothing to tell: nothing for the trace either
+                    return
+                query = birthday.gifts_query(coming)
+                gifts = bank.call(birthday.TRANSACTIONS, query)["output"]
+            except (BankRefused, BankUnavailable):
+                bank.take_exchanges()
+                return  # try again on the next Bank date
+            conversation.birthday_reminded = True
+            language = customer_language(conversation.history)
+            text = birthday.reminder(profile, coming, birthday.last_gift(gifts), now, language)
+            self._remember(
+                conversation,
+                [
+                    StepResult("birthday_profile", birthday.PROFILE, {}, profile),
+                    StepResult("birthday_gifts", birthday.TRANSACTIONS, query, gifts),
+                ],
+            )
+            conversation.history.append(untrusted.shown(text))
+            for event in with_bank_traces(bank, iter([Answer(text=text)])):
+                self._push(conversation, event)
+        finally:
+            conversation.lock.release()
 
     def check_orders(self, conversation: Conversation) -> None:
         """Tell the Customer, between their turns, about the orders placed in this

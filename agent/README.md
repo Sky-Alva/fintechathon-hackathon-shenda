@@ -29,6 +29,7 @@ docker compose up --build # Channel: http://localhost:8080 · Agent: :8001 · Ba
 | `reviewer.py` | Asks the Bank's tier preview for the Plan, in run order. Green-only Plans run with no Plan card. On the Customer's confirm, and only then, collects one Confirmation token per Yellow step. |
 | `executor.py` | Runs the steps against the Bank, as events; a step the Bank refuses or can't be reached for fails with `step_failed`, and once a step fails while running, the steps after it don't run. |
 | `responder.py` | Writes the answer from the Bank's results only: a draft that fails the fact check is regenerated once, then replaced by the raw Bank result. |
+| `birthday.py` | Notices, between turns, that the spouse's birthday is a week away or less, from the profile and last year's gift purchase, and writes the reminder. |
 | `fact_check.py` | Which amounts, dates, cards and Payees in an answer no Bank result backs. |
 | `bank.py` | The Agent's view of the Bank: one Customer's session. |
 | `model.py` | The model client interface and the OpenAI-compatible implementation. |
