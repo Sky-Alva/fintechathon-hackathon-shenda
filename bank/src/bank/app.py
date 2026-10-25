@@ -36,6 +36,7 @@ from bank import (
     safety_lock,
     scheduled_transfers,
     sessions,
+    spending,
     split_bills,
     transfers,
     verification,
@@ -53,6 +54,7 @@ MODULES: list[BankModule] = [
     split_bills.MODULE,
     reserved_funds.MODULE,
     merchants.MODULE,
+    spending.MODULE,
     limits.MODULE,
     sessions.MODULE,
     approvals.MODULE,
@@ -103,6 +105,9 @@ def create_app(db_path: Path, admin_key: str) -> FastAPI:
         if not db.is_initialised(db_path):
             with db.transaction(db_path) as conn:
                 db.reset(conn, registry.modules)
+        else:
+            with db.transaction(db_path) as conn:
+                spending.migrate(conn)
         yield
 
     app = FastAPI(title="Bank", lifespan=lifespan)

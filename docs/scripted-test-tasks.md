@@ -43,6 +43,7 @@ expect:
   clarifying_question: false       # true if the Agent must ask instead of acting
   final_state:                     # Green Operations run after the task, checked by subset match
     - operation: query_balance
+      input: {}                    # optional; the Operation's input, e.g. {year: 2026, month: 9}
       output: {accounts: [{account_id: ACC-LM-001, balance: "980.00"}]}
 ```
 

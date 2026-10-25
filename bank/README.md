@@ -33,6 +33,46 @@ Demo logins: `liming` / `demo1234` and `hanmei` / `demo1234`. Admin calls need t
 | `DELETE /admin/sessions/{session_id}/safety-lock` | admin | A Staff Member lifts the session's Safety Lock (audited). |
 | `GET /admin/customers/{customer_id}/phone/messages` | admin | A Customer's simulated phone, for the staff console. |
 
+### Spending and transaction Operations
+
+The Bank catalogue exposes these Operations for the current Customer. Queries are Green and read-only; `cancel_subscription` is Yellow, requires a Confirmation token, and is irreversible:
+
+| Operation | Purpose | Main inputs |
+|------|------|------|
+| `list_transactions` | List transaction records, newest first, with a total count and pagination. | Optional `account_id`, inclusive `start_date` / `end_date`, `category`, `merchant`, `limit` (1–100), and `offset`. |
+| `detect_unusual_transactions` | Apply fixed Bank rules to identify unusual transactions and name each rule that fired. | Optional `account_id`, inclusive `start_date` / `end_date`. |
+| `detect_recurring_charges` | Find debit charges from the same merchant that occur at least three times on a regular weekly or monthly schedule. | Optional `account_id`, inclusive `start_date` / `end_date`. |
+| `list_subscriptions` | List known subscriptions with their next renewal date and reasons they may not be needed. | None. |
+| `renewal_reminders` | Show subscriptions renewing soon, calculated from the Bank clock. | Optional `days_ahead` (0–31; defaults to 7). |
+| `cancel_subscription` | Cancel an active subscription. The cancelled record remains visible with status `cancelled`; it has no renewal date, reminder, or active-subscription flags. | Required `subscription_id`. Obtain a Confirmation token through `POST /confirmations`. |
+| `spending_by_category` | Sum debit transactions by category for a date range. | Optional `account_id`, inclusive dates, category, and merchant substring. |
+| `monthly_report` | Return one month's income, spending, net amount, category totals, and chart-ready category series. | Required `year` and `month`; optional `account_id`. |
+| `annual_report` | Return twelve months of income, spending, net amounts, and per-category series, with zero-filled missing months. | Required `year`; optional `account_id`. |
+
+Seeded transaction history is held in the `transactions` table and reset with the other Bank data. It covers roughly six months for Liming and includes salary, rent, food delivery, transport, utilities, shopping, two music services, a subscription trial conversion, a music price increase, and a gift purchase near Hanmei's birthday last year. Subscription records identify both music services as the same category, the price increase, and the converted trial. Recurring-charge detection and subscription reminders use plain Bank rules; reminders are calculated from the Bank clock. Amounts are positive CNY values paired with a `debit` or `credit` direction. Category spending totals include debits only.
+
+To cancel a subscription, first request confirmation for the exact Operation input, then pass the returned token to the Operation call:
+
+```http
+POST /confirmations
+Authorization: Bearer <session_token>
+Content-Type: application/json
+
+{"operations":[{"operation":"cancel_subscription","input":{"subscription_id":"SUB-LM-001"}}]}
+```
+
+Use the corresponding `confirmation_token` from the response:
+
+```http
+POST /operations/cancel_subscription
+Authorization: Bearer <session_token>
+Content-Type: application/json
+
+{"input":{"subscription_id":"SUB-LM-001"},"confirmation_token":"<confirmation_token>"}
+```
+
+Several cancellations can be confirmed in one `/confirmations` request by including one operation entry per subscription. Each returned token is bound to its matching input and can be used once.
+
 A successful call returns `{operation, tier, output}`. Every refusal returns `{"refusal": {"reason", "message", "detail"}}`, where `reason` is one of the values of `RefusalReason` in `src/bank/registry.py`.
 
 The full contract for declaring and calling Operations, including Confirmation and Strong Verification, is [docs/operation-definition.md](../docs/operation-definition.md).
