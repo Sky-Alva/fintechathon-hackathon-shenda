@@ -148,6 +148,8 @@ class _Run:
                 events = self.answer_verification(prompt)
             elif prompt["type"] == "reversal_offered":
                 events = self.answer_reversal(prompt)
+            elif prompt["type"] == "clarification_question":
+                events = self.answer_clarification(prompt)
             elif prompt["type"] == "cancellation_offered":
                 events = self.answer_offer(prompt)
             else:
@@ -182,6 +184,23 @@ class _Run:
             return self.act("reverse", plan_id=prompt["plan_id"], step_ids=step_ids)
         return self.act("reject", plan_id=prompt["plan_id"])
 
+    def answer_clarification(self, prompt: dict[str, Any]) -> list[dict[str, Any]]:
+        """Tap the option the scripted answer names (its value, or part of its label), or
+        else type the answer as the Customer's message. Unscripted, leave it unanswered."""
+        answer = self.take("clarification")
+        asked = f"Agent: clarification “{prompt['text']}”"
+        if answer is None:
+            self.log(f"{asked} -> unanswered (unscripted)")
+            return []
+        options = prompt.get("options", [])
+        chosen = next((o for o in options if o["value"] == answer), None) or next(
+            (o for o in options if answer in o["label"]), None
+        )
+        if chosen is not None:
+            self.log(f"{asked} -> choose {chosen['value']}")
+            return self.act("choose", value=chosen["value"])
+        self.log(f"{asked} -> say {answer}")
+        return self.turn("messages", {"text": answer}, "answering a clarifying question")
     def answer_offer(self, prompt: dict[str, Any]) -> list[dict[str, Any]]:
         """Pick the scripted Subscriptions to cancel. Unscripted, the offer is left
         unanswered: the Customer may pick in words in the next turn."""

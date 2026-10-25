@@ -3,6 +3,8 @@ import { createPortal } from 'react-dom'
 import { type CustomerAction, fetchUpdates, sendAction, sendMessage } from './api'
 import type {
   BankRefusal,
+  CardPayee,
+  ClarificationQuestion,
   Chart,
   ConversationEvent,
   PlanStep,
@@ -43,8 +45,16 @@ type Item =
       steps: PlanStep[]
       refusals: (BankRefusal & { step_id: string })[]
       warnings: PlanWarning[]
+      payees: CardPayee[]
       confirmIds: string[]
       status: PlanCardStatus
+    }
+  | {
+      kind: 'question'
+      text: string
+      options: ClarificationQuestion['options']
+      status: QuestionStatus
+      chosen?: string
     }
   | { kind: 'paused'; planId: string; text: string; status: PausedStatus }
   | { kind: 'reversal'; planId: string; text: string; stepIds: string[]; status: ReversalStatus }
@@ -75,6 +85,10 @@ const REVERSAL_STATUS_TEXT: Record<Exclude<ReversalStatus, 'offered'>, string> =
   declined: '不撤销，保持不变',
   dropped: '未撤销',
 }
+
+/** A clarifying question: waiting → chosen (an option tapped), or answered in words by
+ * the Customer's next message. */
+type QuestionStatus = 'waiting' | 'chosen' | 'answered'
 
 type StepStatus = 'running' | 'done' | 'failed'
 
@@ -149,6 +163,7 @@ function apply(items: Item[], event: ConversationEvent): Item[] {
           steps: event.steps,
           refusals: event.refusals,
           warnings: event.warnings ?? [],
+          payees: event.payees ?? [],
           confirmIds: [],
           status: 'proposed',
         },
@@ -174,6 +189,11 @@ function apply(items: Item[], event: ConversationEvent): Item[] {
           stepIds: event.steps.map((step) => step.step_id),
           status: 'offered',
         },
+      ]
+    case 'clarification_question':
+      return [
+        ...items,
+        { kind: 'question', text: event.text, options: event.options, status: 'waiting' },
       ]
     case 'cancellation_offered':
       return [
@@ -217,6 +237,7 @@ function replaceWaitingPlans(items: Item[]): Item[] {
     if (item.kind === 'plan' && item.status === 'awaiting') return { ...item, status: 'replaced' }
     if (item.kind === 'paused' && item.status === 'waiting') return { ...item, status: 'changed' }
     if (item.kind === 'reversal' && item.status === 'offered') return { ...item, status: 'dropped' }
+    if (item.kind === 'question' && item.status === 'waiting') return { ...item, status: 'answered' }
     if (item.kind === 'offer' && item.status === 'offered') return { ...item, status: 'dropped' }
     return item
   })
@@ -449,6 +470,21 @@ export default function Chat({
     )
   }
 
+  /** Tap an option of the clarifying question: the Agent plans again with it. */
+  async function choose(index: number, option: ClarificationQuestion['options'][number]) {
+    if (busy) return
+    setItems((current) =>
+      current.map((item, i) =>
+        i === index && item.kind === 'question'
+          ? { ...item, status: 'chosen', chosen: option.value }
+          : item,
+      ),
+    )
+    await runTurn(`（选择：${option.label}）`, (onEvent) =>
+      sendAction(conversationId, { action: 'choose', value: option.value }, onEvent),
+    )
+  }
+
   async function askForHuman() {
     if (busy) return
     setItems((current) => [...current, { kind: 'customer', text: '转人工' }])
@@ -506,6 +542,7 @@ export default function Chat({
                   steps={item.steps}
                   refusals={item.refusals}
                   warnings={item.warnings}
+                  payees={item.payees}
                   confirmIds={item.confirmIds}
                   status={item.status}
                   disabled={busy || staffMember !== null}
@@ -567,6 +604,27 @@ export default function Chat({
                     </div>
                   ) : (
                     <div className="plan-status">{REVERSAL_STATUS_TEXT[item.status]}</div>
+                  )}
+                </div>
+              )
+            case 'question':
+              return (
+                <div key={i} className="paused-card">
+                  <div>{item.text}</div>
+                  {item.options.length > 0 && (
+                    <div className="plan-actions">
+                      {item.options.map((option) => (
+                        <button
+                          key={option.value}
+                          type="button"
+                          className={item.chosen === option.value ? 'primary' : 'secondary'}
+                          disabled={busy || staffMember !== null || item.status !== 'waiting'}
+                          onClick={() => choose(i, option)}
+                        >
+                          {option.label}
+                        </button>
+                      ))}
+                    </div>
                   )}
                 </div>
               )
