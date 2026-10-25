@@ -108,6 +108,18 @@ The Bank ran the step. `tier` is the tier the Bank ran it at; `output` is the Ba
  "output": {"accounts": [{"account_id": "ACC-LM-001", "kind": "current", "name": "活期账户 Current account", "currency": "CNY", "balance": "1180.00"}]}}
 ```
 
+### `chart` (emitted, #40)
+
+Follows the `step_succeeded` of a `spending_by_category` (category summary), `monthly_report` or `annual_report` step: the Channel draws it as a chart. `data` is the Bank's output for that step, unchanged (the same as the `step_succeeded`'s `output`), so every number in the chart comes from the Bank in that turn; the model writes nothing in it. `title` names the chart in the Customer's language, from the period in the Bank's output (`year`, `month`, `start_date`, `end_date`). A step that fails gets no chart. The turn's `answer` still follows.
+
+The Channel draws a category summary and a monthly report as bars of `categories[].amount`, and an annual report as monthly income and spending bars over `labels` (`monthly_income`, `monthly_spending`), with the Bank's totals beside them.
+
+```jsonc
+{"type": "chart", "step_id": "s1", "operation": "spending_by_category", "title": "分类支出（2026-10-01 至 2026-10-20）",
+ "data": {"start_date": "2026-10-01", "end_date": "2026-10-20", "total_spending": "7961.60",
+          "categories": [{"category": "food_delivery", "amount": "162.30", "transaction_count": 3}, …]}}
+```
+
 ### `answer` (emitted, #29)
 
 The Agent's reply to the Customer, written only from the Bank's results this turn and the conversation. Ends a normal turn.
