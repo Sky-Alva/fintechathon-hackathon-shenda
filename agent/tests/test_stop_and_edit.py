@@ -58,30 +58,68 @@ def stop_after_first_transfer(agent: TestClient, bank_link: BankLink, conversati
 # --- Remove steps before confirming -----------------------------------------------------
 
 
-def test_removing_a_step_before_confirming_runs_only_the_rest_re_tiered_by_the_bank(
+def remove(agent: TestClient, conversation: str, plan_id: str, *step_ids: str
+           ) -> list[dict[str, Any]]:
+    """The Customer takes these steps off the Plan card."""
+    return shown(act(agent, conversation, "remove_steps", plan_id=plan_id, step_ids=list(step_ids)))
+
+
+def test_removing_a_step_shows_a_new_plan_card_of_the_rest_re_tiered_by_the_bank(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    model.script(two_transfers())
+    login = log_in(bank, "liming")
+    conversation = start_conversation(agent, login)
+    plan_id = shown(send(agent, conversation, TWO_TRANSFERS))[0]["plan_id"]
+
+    events = act(agent, conversation, "remove_steps", plan_id=plan_id, step_ids=["s1"])
+
+    assert event_types(events) == ["plan_proposed", "confirmation_requested"]
+    proposed, requested = shown(events)
+    assert proposed["plan_id"] != plan_id
+    assert [(s["id"], s["tier"]) for s in proposed["steps"]] == [("s2", "yellow")]
+    assert requested == {
+        "type": "confirmation_requested", "plan_id": proposed["plan_id"], "step_ids": ["s2"]
+    }
+    assert [data["steps"] for data in traces(events, "plan")] == [proposed["steps"]]
+    entries = bank_audit(bank, login)
+    assert [e["event"] for e in entries] == ["tier_preview", "tier_preview"]  # nothing ran
+    assert [op["input"]["amount"] for op in entries[1]["input"]["operations"]] == ["300.00"]
+
+
+def test_only_the_new_plan_card_runs_once_confirmed(
     agent: TestClient, bank: TestClient, model: FakeModel
 ) -> None:
     model.script(two_transfers(), say("已向韩梅梅转账 300.00 元。"))
     login = log_in(bank, "liming")
     conversation = start_conversation(agent, login)
     plan_id = shown(send(agent, conversation, TWO_TRANSFERS))[0]["plan_id"]
+    new_plan = remove(agent, conversation, plan_id, "s1")[0]["plan_id"]
 
-    events = act(agent, conversation, "confirm", plan_id=plan_id, removed_step_ids=["s1"])
+    events = shown(act(agent, conversation, "confirm", plan_id=new_plan))
 
     assert event_types(events) == ["step_started", "step_succeeded", "answer"]
-    started = shown(events)[0]
-    assert (started["step"]["id"], started["step"]["tier"]) == ("s2", "yellow")
     assert transfers_run(bank, login) == ["300.00"]
-    entries = bank_audit(bank, login)
-    assert [(e["event"], e["outcome"]) for e in entries] == [
-        ("tier_preview", "ok"),  # the card
-        ("tier_preview", "ok"),  # the rest, re-tiered
-        ("confirmation_issued", "ok"),
-        ("operation", "ok"),
+    assert [entry["event"] for entry in bank_audit(bank, login)] == [
+        "tier_preview", "tier_preview", "confirmation_issued", "operation"
     ]
-    assert [op["input"]["amount"] for op in entries[1]["input"]["operations"]] == ["300.00"]
-    assert entries[2]["input"]["amount"] == "300.00"
-    assert [data["steps"] for data in traces(events, "plan")] == [[started["step"]]]
+
+
+def test_the_card_a_step_was_removed_from_no_longer_takes_an_answer(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    model.script(two_transfers())
+    login = log_in(bank, "liming")
+    conversation = start_conversation(agent, login)
+    plan_id = shown(send(agent, conversation, TWO_TRANSFERS))[0]["plan_id"]
+    remove(agent, conversation, plan_id, "s1")
+
+    response = agent.post(
+        f"/conversations/{conversation}/actions", json={"action": "confirm", "plan_id": plan_id}
+    )
+
+    assert response.status_code == 409
+    assert transfers_run(bank, login) == []
 
 
 def test_the_rest_are_re_tiered_in_their_new_order(
@@ -93,9 +131,11 @@ def test_the_rest_are_re_tiered_in_their_new_order(
     plan_id = shown(send(agent, conversation, TWO_TRANSFERS))[0]["plan_id"]
     # ¥600 leaves on another device: with both steps the second would now cross ¥1,000.
     transfer_directly(bank, login, {"payee_id": "PAY-LM-002", "amount": "600.00", "note": ""})
+    new_plan = remove(agent, conversation, plan_id, "s1")[0]
 
-    events = shown(act(agent, conversation, "confirm", plan_id=plan_id, removed_step_ids=["s1"]))
+    events = shown(act(agent, conversation, "confirm", plan_id=new_plan["plan_id"]))
 
+    assert [(s["id"], s["tier"]) for s in new_plan["steps"]] == [("s2", "yellow")]
     assert event_types(events) == ["step_started", "step_succeeded", "answer"]
     assert (events[1]["step_id"], events[1]["tier"]) == ("s2", "yellow")
     assert events[1]["output"]["daily_transfer_total"] == "900.00"
@@ -109,7 +149,7 @@ def two_600s() -> ModelReply:
     return plan(step("s1", "transfer", TO_HUSBAND), step("s2", "transfer", TO_HUSBAND))
 
 
-def test_removing_an_earlier_transfer_turns_a_red_step_yellow(
+def test_removing_an_earlier_transfer_turns_a_red_step_yellow_on_the_new_card(
     agent: TestClient, bank: TestClient, model: FakeModel
 ) -> None:
     model.script(two_600s(), say("已向李明转账 600.00 元。"))
@@ -117,19 +157,58 @@ def test_removing_an_earlier_transfer_turns_a_red_step_yellow(
     conversation = start_conversation(agent, login)
     proposed = shown(send(agent, conversation, "给老公转两笔600"))[0]
     assert [(s["id"], s["tier"]) for s in proposed["steps"]] == [("s1", "yellow"), ("s2", "red")]
+    assert proposed["warnings"] != []
 
-    events = shown(
-        act(agent, conversation, "confirm", plan_id=proposed["plan_id"], removed_step_ids=["s1"])
-    )
+    new_plan = remove(agent, conversation, proposed["plan_id"], "s1")[0]
 
+    assert [(s["id"], s["tier"]) for s in new_plan["steps"]] == [("s2", "yellow")]
+    assert new_plan["warnings"] == []  # it no longer crosses ¥1,000
+    events = shown(act(agent, conversation, "confirm", plan_id=new_plan["plan_id"]))
     assert event_types(events) == ["step_started", "step_succeeded", "answer"]
-    assert (events[0]["step"]["id"], events[0]["step"]["tier"]) == ("s2", "yellow")
     assert (events[1]["tier"], events[1]["output"]["amount"]) == ("yellow", "600.00")
-    entries = bank_audit(bank, login)
-    assert [e["event"] for e in entries] == [
-        "tier_preview", "tier_preview", "confirmation_issued", "operation"
-    ]  # no verification: s2 is Yellow on its own
-    assert phone_messages(bank, login) == []
+    assert phone_messages(bank, login) == []  # no verification: s2 is Yellow on its own
+
+
+def test_a_step_that_waits_on_a_removed_step_is_removed_too_and_the_customer_is_told(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    model.script(
+        plan(
+            step("s1", "transfer", TO_MUM),
+            step("s2", "transfer", TO_WIFE, depends_on=["s1"]),
+            step("s3", "add_card_lock", {"card_id": "CARD-LM-001", "scope": "overseas"}),
+        )
+    )
+    login = log_in(bank, "liming")
+    conversation = start_conversation(agent, login)
+    proposed = shown(send(agent, conversation, TWO_TRANSFERS + "，再锁定境外交易"))[0]
+    numbers = {s["id"]: str(i + 1) for i, s in enumerate(proposed["steps"])}
+
+    events = remove(agent, conversation, proposed["plan_id"], "s1")
+
+    assert event_types(events) == ["answer", "plan_proposed", "confirmation_requested"]
+    assert f"第 {numbers['s2']} 步" in events[0]["text"]
+    assert [s["id"] for s in events[1]["steps"]] == ["s3"]
+
+
+def test_a_step_still_waiting_on_a_step_left_on_the_card_stays(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    model.script(
+        plan(
+            step("s1", "transfer", TO_MUM),
+            step("s2", "transfer", TO_WIFE),
+            step("s3", "query_balance", depends_on=["s1", "s2"]),
+        )
+    )
+    login = log_in(bank, "liming")
+    conversation = start_conversation(agent, login)
+    plan_id = shown(send(agent, conversation, TWO_TRANSFERS + "，然后查余额"))[0]["plan_id"]
+
+    events = remove(agent, conversation, plan_id, "s1")
+
+    assert event_types(events) == ["plan_proposed", "confirmation_requested"]
+    assert [s["id"] for s in events[0]["steps"]] == ["s2", "s3"]
 
 
 def test_stopping_a_plan_waiting_for_verification_pauses_it_there(
@@ -230,7 +309,7 @@ def test_removing_a_step_the_card_does_not_have_is_refused_and_the_card_still_wa
 
     response = agent.post(
         f"/conversations/{conversation}/actions",
-        json={"action": "confirm", "plan_id": plan_id, "removed_step_ids": ["s9"]},
+        json={"action": "remove_steps", "plan_id": plan_id, "step_ids": ["s9"]},
     )
 
     assert response.status_code == 422
@@ -248,9 +327,7 @@ def test_removing_every_step_runs_nothing(
     conversation = start_conversation(agent, login)
     plan_id = shown(send(agent, conversation, TWO_TRANSFERS))[0]["plan_id"]
 
-    events = shown(
-        act(agent, conversation, "confirm", plan_id=plan_id, removed_step_ids=["s1", "s2"])
-    )
+    events = remove(agent, conversation, plan_id, "s1", "s2")
 
     assert event_types(events) == ["answer"]
     assert "取消" in events[0]["text"]

@@ -348,9 +348,14 @@ export default function Chat({
     }
   }
 
-  async function answerPlan(planId: string, action: 'confirm' | 'reject', removed: string[] = []) {
+  async function answerPlan(
+    planId: string,
+    action: 'confirm' | 'reject' | 'remove_steps',
+    removed: string[] = [],
+  ) {
     if (busy) return
-    const status: PlanCardStatus = action === 'confirm' ? 'confirmed' : 'rejected'
+    const status: PlanCardStatus =
+      action === 'confirm' ? 'confirmed' : action === 'reject' ? 'rejected' : 'edited'
     setItems((current) =>
       current.map((item) =>
         item.kind === 'plan' && item.planId === planId ? { ...item, status } : item,
@@ -362,11 +367,14 @@ export default function Chat({
       )
       return
     }
-    const label = removed.length ? `（确认计划，移除 ${removed.length} 步）` : '（确认计划）'
-    const confirm: CustomerAction = removed.length
-      ? { action, plan_id: planId, removed_step_ids: removed }
-      : { action, plan_id: planId }
-    await runPlan(planId, label, confirm)
+    if (action === 'remove_steps') {
+      // Nothing runs: the rest, re-tiered by the Bank, come back as a new Plan card.
+      await runTurn(`（移除 ${removed.length} 步）`, (onEvent) =>
+        sendAction(conversationId, { action, plan_id: planId, step_ids: removed }, onEvent),
+      )
+      return
+    }
+    await runPlan(planId, '（确认计划）', { action, plan_id: planId })
   }
 
   /** The stop button: sent alongside the running turn, whose stream then ends with
@@ -548,7 +556,8 @@ export default function Chat({
                   confirmIds={item.confirmIds}
                   status={item.status}
                   disabled={busy || staffMember !== null}
-                  onConfirm={(removed) => answerPlan(item.planId, 'confirm', removed)}
+                  onConfirm={() => answerPlan(item.planId, 'confirm')}
+                  onRemove={(removed) => answerPlan(item.planId, 'remove_steps', removed)}
                   onReject={() => answerPlan(item.planId, 'reject')}
                 />
               )

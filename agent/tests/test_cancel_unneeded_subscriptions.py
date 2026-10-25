@@ -212,12 +212,13 @@ def test_removing_a_pick_from_the_plan_card_leaves_it_active(
         s["id"] for s in proposed["steps"] if s["input"].get("subscription_id") == "SUB-LM-003"
     )
 
-    events = shown(
+    edited = shown(
         act(
-            agent, conversation, "confirm",
-            plan_id=proposed["plan_id"], removed_step_ids=[streamplus],
+            agent, conversation, "remove_steps",
+            plan_id=proposed["plan_id"], step_ids=[streamplus],
         )
-    )
+    )[0]
+    events = shown(act(agent, conversation, "confirm", plan_id=edited["plan_id"]))
 
     assert statuses(bank, login) == {
         "SUB-LM-001": "active", "SUB-LM-002": "cancelled", "SUB-LM-003": "active"

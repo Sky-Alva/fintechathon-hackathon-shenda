@@ -1,9 +1,15 @@
 import { useState } from 'react'
 import type { BankRefusal, CardPayee, PlanStep, PlanWarning, Tier } from './events'
 
-/** proposed → awaiting (confirmation_requested) → confirmed | rejected, or replaced when the
- * Customer sends a new message instead of answering. */
-export type PlanCardStatus = 'proposed' | 'awaiting' | 'confirmed' | 'rejected' | 'replaced'
+/** proposed → awaiting (confirmation_requested) → confirmed | rejected | edited (steps taken
+ * off: a new card follows), or replaced when the Customer sends a new message instead. */
+export type PlanCardStatus =
+  | 'proposed'
+  | 'awaiting'
+  | 'confirmed'
+  | 'rejected'
+  | 'edited'
+  | 'replaced'
 
 type Props = {
   steps: PlanStep[]
@@ -15,8 +21,9 @@ type Props = {
   confirmIds: string[]
   status: PlanCardStatus
   disabled: boolean
-  /** `removedIds`: the steps the Customer took off the card; the Bank re-tiers the rest. */
-  onConfirm: (removedIds: string[]) => void
+  onConfirm: () => void
+  /** The steps the Customer took off the card: the Bank re-tiers the rest, as a new card. */
+  onRemove: (removedIds: string[]) => void
   onReject: () => void
 }
 
@@ -78,6 +85,7 @@ function details(step: PlanStep, payee?: CardPayee): [string, string][] {
 const STATUS_TEXT: Partial<Record<PlanCardStatus, string>> = {
   confirmed: '已确认',
   rejected: '已取消',
+  edited: '已修改，请确认新的计划',
   replaced: '已作废',
 }
 
@@ -93,6 +101,7 @@ export default function PlanCard({
   status,
   disabled,
   onConfirm,
+  onRemove,
   onReject,
 }: Props) {
   const [removed, setRemoved] = useState<string[]>([])
@@ -165,7 +174,7 @@ export default function PlanCard({
       {awaiting ? (
         <div className="plan-actions">
           {removed.length > 0 && left.length > 0 && (
-            <span className="plan-note">银行将按新的顺序重新评估剩余步骤的级别</span>
+            <span className="plan-note">银行将按新的顺序重新评估剩余步骤，您再确认一次</span>
           )}
           <button type="button" className="secondary" disabled={disabled} onClick={onReject}>
             取消
@@ -174,9 +183,11 @@ export default function PlanCard({
             type="button"
             className="primary"
             disabled={disabled || left.length === 0}
-            onClick={() => onConfirm(removed)}
+            onClick={() => (removed.length ? onRemove(removed) : onConfirm())}
           >
-            一键确认{confirming > 1 ? `（${confirming} 项）` : ''}
+            {removed.length
+              ? '更新计划'
+              : `一键确认${confirming > 1 ? `（${confirming} 项）` : ''}`}
           </button>
         </div>
       ) : (

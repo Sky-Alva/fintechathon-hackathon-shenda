@@ -63,6 +63,22 @@ def safety_lock(trigger: str, locked_until: str, language: Language) -> str:
     return SAFETY_LOCK[language].format(because=because, until=until)
 
 
+REMOVED_WITH: dict[Language, str] = {
+    "zh": "第 {numbers} 步要等您移除的步骤完成后才能执行，所以也一并移除了。",
+    "en": "Step{s} {numbers} waited on what you removed, so I've removed {them} too.",
+}
+
+
+def removed_with(numbers: list[str], language: Language) -> str:
+    """The card's steps, by number, that went with the ones the Customer removed."""
+    if language == "en":
+        many = len(numbers) > 1
+        return REMOVED_WITH["en"].format(
+            s="s" if many else "", numbers=", ".join(numbers), them="them" if many else "it"
+        )
+    return REMOVED_WITH["zh"].format(numbers="、".join(numbers))
+
+
 def red_warnings(
     steps: list[PlanStep], catalogue: list[dict[str, Any]], language: Language
 ) -> list[PlanWarning]:

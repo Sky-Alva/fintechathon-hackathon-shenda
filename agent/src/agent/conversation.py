@@ -213,8 +213,16 @@ class ConfirmPlan(BaseModel):
     model_config = ConfigDict(extra="forbid")
     action: Literal["confirm"]
     plan_id: str
-    removed_step_ids: list[str] = []
-    """Steps the Customer took off the card first: the rest are re-tiered by the Bank."""
+
+
+class RemoveSteps(BaseModel):
+    """Take these steps off the Plan card: the rest, re-tiered by the Bank, become a new
+    Plan card for the Customer to confirm. Nothing runs."""
+
+    model_config = ConfigDict(extra="forbid")
+    action: Literal["remove_steps"]
+    plan_id: str
+    step_ids: list[str] = Field(min_length=1)
 
 
 class RejectPlan(BaseModel):
@@ -309,6 +317,7 @@ class CancelSubscriptions(BaseModel):
 
 CustomerAction = Annotated[
     ConfirmPlan
+    | RemoveSteps
     | CancelSubscriptions
     | RejectPlan
     | AskForHuman
@@ -396,11 +405,17 @@ def plan_data(plan: ReviewedPlan, look_ups: bool = False) -> dict[str, Any]:
 
 
 def answers(
-    action: ConfirmPlan | RejectPlan | VerifiedStep | WrongCode | ResumePlan | CancelPlan,
+    action: ConfirmPlan
+    | RemoveSteps
+    | RejectPlan
+    | VerifiedStep
+    | WrongCode
+    | ResumePlan
+    | CancelPlan,
     pending: PendingPlan | PendingVerification | PausedPlan | PendingClarification | None,
 ) -> bool:
-    """Whether the action answers the prompt waiting for an answer: confirm and reject
-    answer a Plan card, a verification answers its own Red step, resume and cancel answer
+    """Whether the action answers the prompt waiting for an answer: confirm, remove_steps
+    and reject answer a Plan card, a verification answers its own Red step, resume and cancel answer
     a stopped Plan."""
     if pending is None or isinstance(pending, PendingClarification):
         return False
@@ -436,6 +451,22 @@ def paused_text(paused: PausedPlan, language: Language) -> str:
     parts.append(f"未执行：第 {'、'.join(not_run)} 步。")
     parts.append("您可以继续、修改或取消剩下的步骤。")
     return "".join(parts)
+
+
+def without(plan: ReviewedPlan, removed: set[str]) -> set[str]:
+    """The card's steps that go when the Customer removes `removed`: those, and every step
+    left with nothing on the card to wait on, since all the card's steps it waits on went."""
+    on_card = {step.id for step in plan.steps}
+    gone = set(removed)
+    changed = True
+    while changed:
+        changed = False
+        for step in plan.steps:
+            waits_on = [id for id in step.depends_on if id in on_card]
+            if step.id not in gone and waits_on and all(id in gone for id in waits_on):
+                gone.add(step.id)
+                changed = True
+    return gone
 
 
 def ran_steps(paused: PausedPlan) -> list[str]:
@@ -818,12 +849,12 @@ class Conversations:
             if not answers(action, pending):
                 raise PlanNotPending(action.plan_id)
             removed: set[str] = set()
-            if isinstance(action, ConfirmPlan):
+            if isinstance(action, RemoveSteps):
                 assert isinstance(pending, PendingPlan)
-                removed = set(action.removed_step_ids)
                 card = {step.id for step in pending.plan.steps}
-                if not removed <= card:
-                    raise UnknownStep(sorted(removed - card))
+                if not set(action.step_ids) <= card:
+                    raise UnknownStep(sorted(set(action.step_ids) - card))
+                removed = without(pending.plan, set(action.step_ids))
                 if removed == card:  # nothing left to confirm: as good as a reject
                     action = RejectPlan(action="reject", plan_id=action.plan_id)
             conversation.pending = None  # a prompt is answered once
@@ -846,9 +877,12 @@ class Conversations:
         elif isinstance(action, ResumePlan):
             assert isinstance(pending, PausedPlan)
             turn = self._resumed(conversation, pending)
+        elif isinstance(action, RemoveSteps):
+            assert isinstance(pending, PendingPlan)
+            turn = self._edited(conversation, pending, set(action.step_ids), removed)
         else:
             assert isinstance(pending, PendingPlan)
-            turn = self._confirmed(conversation, pending, removed)
+            turn = self._confirmed(conversation, pending)
         return self._recorded(conversation, with_bank_traces(conversation.bank, turn))
 
     def _choose(self, conversation: Conversation, value: str) -> Iterator[Event]:
@@ -1202,10 +1236,37 @@ class Conversations:
             conversation.history.append({"role": "assistant", "content": text})
             yield Answer(text=text)
 
-    def _confirmed(
-        self, conversation: Conversation, pending: PendingPlan, removed: set[str]
+    def _edited(
+        self,
+        conversation: Conversation,
+        pending: PendingPlan,
+        asked: set[str],
+        removed: set[str],
     ) -> Iterator[Event]:
-        """The Customer tapped confirm, with `removed` steps taken off the card first."""
+        """The Customer took the `asked` steps off the Plan card (`removed` adds the steps
+        left waiting on nothing): the rest are a new Plan card, to confirm again."""
+        with conversation.lock:
+            if conversation.handed_over_to is not None:
+                return  # taken over since the Customer tapped: the Agent starts nothing
+            card = [step.id for step in pending.plan.steps]
+            # Tiers depend on order (an earlier transfer counts toward the Daily Transfer
+            # Total), so the Bank tiers the rest afresh, as they will now run: removing an
+            # earlier transfer can turn a Red step Yellow.
+            rest = [step for step in pending.plan.steps if step.id not in removed]
+            try:
+                catalogue = conversation.bank.catalogue()
+                reviewed = reviewer.review(planner.Plan(steps=rest), conversation.bank)
+            except (BankRefused, BankUnavailable):
+                yield self._not_retrieved(conversation)
+                return
+            if waiting := [str(card.index(id) + 1) for id in card if id in removed - asked]:
+                text = notices.removed_with(waiting, customer_language(conversation.history))
+                conversation.history.append({"role": "assistant", "content": text})
+                yield Answer(text=text)
+            yield from self._propose(conversation, reviewed, pending.looked_up, catalogue)
+
+    def _confirmed(self, conversation: Conversation, pending: PendingPlan) -> Iterator[Event]:
+        """The Customer tapped confirm: every Yellow step on the card is confirmed."""
         with conversation.lock:
             if conversation.handed_over_to is not None:
                 # Taken over since the Customer confirmed: the Agent starts nothing.
@@ -1213,18 +1274,6 @@ class Conversations:
                 return
             card = [step.id for step in pending.plan.steps]
             plan = pending.plan
-            if removed:
-                # Tiers depend on order (an earlier transfer counts toward the Daily Transfer
-                # Total), so the Bank tiers the rest afresh, as they will now run: removing
-                # an earlier transfer can turn a Red step Yellow.
-                rest = [step for step in plan.steps if step.id not in removed]
-                try:
-                    plan = reviewer.review(planner.Plan(steps=rest), conversation.bank)
-                except (BankRefused, BankUnavailable):
-                    conversation.running = None
-                    yield self._not_retrieved(conversation)
-                    return
-                yield trace("plan", plan_data(plan))
             try:
                 tokens = reviewer.collect_confirmations(plan, conversation.bank)
             except reviewer.ConfirmationRefused as refused:
