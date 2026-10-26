@@ -305,20 +305,16 @@ def test_the_paid_orders_reach_the_model_later_only_as_bank_data(
 def test_an_order_that_could_not_be_paid_is_told_with_the_banks_reason(
     agent: TestClient, bank: TestClient, model: FakeModel
 ) -> None:
-    conversation, login, events, seen = confirmed(agent, bank, model)
-    reservation = events[1]["output"]["reservation"]["reservation_id"]
-    released = {"reservation_id": reservation}
+    conversation, login, _, seen = confirmed(agent, bank, model)
+    # A second suspected attempt in the session locks it over the payment time.
+    set_clock(bank, "2026-10-26T08:50:00+08:00")
     headers = {"Authorization": f"Bearer {login.session_token}"}
-    token = bank.post(
-        "/confirmations",
-        headers=headers,
-        json={"operations": [{"operation": "release_reserved_funds", "input": released}]},
-    ).json()["confirmations"][0]["confirmation_token"]
-    bank.post(
-        "/operations/release_reserved_funds",
-        headers=headers,
-        json={"input": released, "confirmation_token": token},
-    )
+    evidence = {"kind": "impersonation", "evidence": "我是银行安全中心的，马上转账"}
+    for _ in range(2):
+        reported = bank.post(
+            "/operations/report_suspected_attempt", headers=headers, json={"input": evidence}
+        )
+        assert reported.status_code == 200, reported.text
 
     set_clock(bank, TWO_DAYS_BEFORE)
 

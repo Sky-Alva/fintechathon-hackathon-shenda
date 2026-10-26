@@ -245,16 +245,6 @@ def _validate(
     return merchant, product
 
 
-def _committed(ctx: OperationContext, reservation_id: str) -> int:
-    """What the orders waiting to be paid from these Reserved Funds will take."""
-    committed: int = ctx.conn.execute(
-        "SELECT COALESCE(SUM(amount_cents), 0) FROM merchant_orders"
-        " WHERE reservation_id = ? AND status = 'pending'",
-        (reservation_id,),
-    ).fetchone()[0]
-    return committed
-
-
 def _reservation_for(
     ctx: OperationContext, input: OrderFromMerchantInput, category: str
 ) -> sqlite3.Row:
@@ -264,7 +254,7 @@ def _reservation_for(
     cents = to_cents(input.amount)
     if input.reservation_id is not None:
         reservation = reserved_funds.active_reservation(ctx, input.reservation_id)
-        committed = _committed(ctx, input.reservation_id)
+        committed = reserved_funds.committed_cents(ctx.conn, input.reservation_id)
         reserved_funds.check_can_pay(reservation, category, cents + committed)
         return reservation
     active = ctx.conn.execute(
@@ -282,8 +272,7 @@ def _reservation_for(
             {"merchant_category": category},
         )
     for row in allowed:
-        left = row["amount_cents"] - row["spent_cents"] - _committed(ctx, row["reservation_id"])
-        if left >= cents:
+        if reserved_funds.free_cents(ctx.conn, row) >= cents:
             return row
     raise Refusal(
         RefusalReason.INSUFFICIENT_FUNDS,
@@ -348,7 +337,7 @@ def order_from_merchant(
     return OrderFromMerchantOutput(
         order=_order_view(ctx.conn, order_id),
         reservation=reserved_funds.view(
-            reserved_funds.reservation(ctx, reservation["reservation_id"])
+            ctx.conn, reserved_funds.reservation(ctx, reservation["reservation_id"])
         ),
     )
 

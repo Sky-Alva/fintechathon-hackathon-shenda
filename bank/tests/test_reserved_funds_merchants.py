@@ -403,7 +403,8 @@ def test_an_order_is_accepted_now_and_nothing_is_paid_before_its_delivery_date(
     )
     assert (placed["delivery_date"], placed["amount"]) == (BIRTHDAY, "299.00")
     assert (placed["status"], placed["paid_at"]) == ("pending", None)
-    assert reservations(client, headers)[reservation_id]["remaining"] == "1000.00"
+    held = reservations(client, headers)[reservation_id]
+    assert (held["spent"], held["committed"], held["remaining"]) == ("0.00", "687.00", "313.00")
     assert accounts(client, headers)[LIMING_ACCOUNT] == ("1180.00", "180.00")
 
 
@@ -619,21 +620,50 @@ def test_an_order_cannot_use_released_reserved_funds(client: TestClient) -> None
     assert reasons(response) == "invalid_input"
 
 
-def test_an_order_whose_reserved_funds_were_released_fails_when_due(client: TestClient) -> None:
+def test_releasing_keeps_what_pending_orders_need_and_they_are_still_paid(
+    client: TestClient,
+) -> None:
     headers = login(client, "liming")
     reservation_id = reserve(client, headers, "1000.00")
-    order(client, headers, order_input(reservation_id))
-    confirmed_call(client, headers, "release_reserved_funds", {"reservation_id": reservation_id})
+    order(client, headers, order_input(reservation_id))  # ¥299 on the 26th
 
-    set_clock(client, BIRTHDAY_9AM)
-
-    [failed] = orders(client, headers)
-    assert (failed["status"], failed["failure_reason"], failed["paid_at"]) == (
-        "failed",
-        "invalid_input",
-        None,
+    response = confirmed_call(
+        client, headers, "release_reserved_funds", {"reservation_id": reservation_id}
     )
-    assert accounts(client, headers)[LIMING_ACCOUNT] == ("1180.00", "1180.00")
+
+    assert response.status_code == 200, response.text
+    released = response.json()["output"]
+    assert released["released"] == "701.00"
+    held = released["reservation"]
+    assert (held["status"], held["amount"], held["committed"], held["remaining"]) == (
+        "active",
+        "299.00",
+        "299.00",
+        "0.00",
+    )
+    assert accounts(client, headers)[LIMING_ACCOUNT] == ("1180.00", "881.00")
+    set_clock(client, BIRTHDAY_9AM)
+    [paid] = orders(client, headers)
+    assert paid["status"] == "paid"
+    assert reservations(client, headers)[reservation_id]["status"] == "used"
+    assert accounts(client, headers)[LIMING_ACCOUNT] == ("881.00", "881.00")
+
+
+def test_reserved_funds_that_pending_orders_take_entirely_cannot_be_released(
+    client: TestClient,
+) -> None:
+    headers = login(client, "liming")
+    reservation_id = reserve(client, headers, "299.00")
+    order(client, headers, order_input(reservation_id))
+    release = {"reservation_id": reservation_id}
+
+    preview = preview_tiers(client, headers, ("release_reserved_funds", release))
+    response = call(client, headers, "release_reserved_funds", release)
+
+    assert preview.json()["steps"][0]["refusal"]["reason"] == "invalid_input"
+    assert reasons(response) == "invalid_input"
+    assert refusal(response)["detail"]["committed"] == "299.00"
+    assert reservations(client, headers)[reservation_id]["status"] == "active"
 
 
 def test_an_order_that_has_become_red_by_its_payment_time_fails(client: TestClient) -> None:

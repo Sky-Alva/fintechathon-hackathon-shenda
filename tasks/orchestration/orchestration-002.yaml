@@ -29,4 +29,5 @@ expect:
     - operation: list_reserved_funds
       output:
         reservations:
-          - {reservation_id: RSV-000001, remaining: "1000.00", status: active}
+          # Untouched: the ¥687 of orders paid on their delivery date is committed, not spent.
+          - {reservation_id: RSV-000001, spent: "0.00", committed: "687.00", remaining: "313.00", status: active}
