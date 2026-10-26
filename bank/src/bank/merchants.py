@@ -3,9 +3,10 @@
 Simulated businesses inside the Bank: a flower shop and a cake shop. A Customer orders goods
 for a delivery date and pays from Reserved Funds, so an order only works with a reservation
 that allows that kind of Merchant and has enough left once its other pending orders are paid.
-An order may leave its Reserved Funds unnamed: then it is paid from the Customer's oldest
-active ones that qualify, found when the order is placed, so one Plan (and one approval)
-can reserve the money and place the orders paid from it.
+An order may leave its Reserved Funds unnamed: then it is paid from the Customer's newest
+active ones that may pay that kind of Merchant, found when the order is placed, so one Plan
+(and one approval) can reserve the money and place the orders paid from it. Never from
+older ones when the newest haven't enough left: those were set aside for another purpose.
 
 An order is accepted now and paid at 09:00 on its delivery date, like a Scheduled Transfer:
 nothing is debited and no Reserved Funds are spent before then. It is tiered when ordered like
@@ -175,9 +176,9 @@ class OrderFromMerchantInput(BaseModel):
     reservation_id: ReservationId | None = Field(
         default=None,
         description=(
-            "The Reserved Funds to pay from. Left out, the Customer's oldest active Reserved"
-            " Funds that may pay this kind of Merchant and have enough left, found when the"
-            " order is placed: so a Plan can reserve them in an earlier step."
+            "The Reserved Funds to pay from. Left out, the Customer's newest active Reserved"
+            " Funds that may pay this kind of Merchant, found when the order is placed: so a"
+            " Plan can reserve them in an earlier step."
         ),
     )
     note: str = Field(default="", max_length=100)
@@ -249,34 +250,31 @@ def _reservation_for(
     ctx: OperationContext, input: OrderFromMerchantInput, category: str
 ) -> sqlite3.Row:
     """The Reserved Funds the order will be paid from: the ones it names, or else the
-    Customer's oldest active ones that may pay this kind of Merchant and have enough left,
-    once the orders already waiting on them are paid."""
-    cents = to_cents(input.amount)
+    Customer's newest active ones that may pay this kind of Merchant. Refused unless enough
+    is left once the orders already waiting on them are paid."""
     if input.reservation_id is not None:
         reservation = reserved_funds.active_reservation(ctx, input.reservation_id)
-        committed = reserved_funds.committed_cents(ctx.conn, input.reservation_id)
-        reserved_funds.check_can_pay(reservation, category, cents + committed)
-        return reservation
-    active = ctx.conn.execute(
+    else:
+        reservation = _newest_for(ctx, category)
+    committed = reserved_funds.committed_cents(ctx.conn, reservation["reservation_id"])
+    reserved_funds.check_can_pay(reservation, category, to_cents(input.amount), committed)
+    return reservation
+
+
+def _newest_for(ctx: OperationContext, category: str) -> sqlite3.Row:
+    """The Customer's newest active Reserved Funds that may pay this kind of Merchant: in a
+    Plan, the ones it has just reserved."""
+    active: list[sqlite3.Row] = ctx.conn.execute(
         "SELECT * FROM reserved_funds WHERE customer_id = ? AND status = 'active'"
-        " ORDER BY reservation_id",
+        " ORDER BY reservation_id DESC",
         (ctx.customer_id,),
     ).fetchall()
-    allowed: list[sqlite3.Row] = [
-        row for row in active if category in reserved_funds.categories_of(row)
-    ]
-    if not allowed:
-        raise Refusal(
-            RefusalReason.INVALID_INPUT,
-            "No Reserved Funds may be spent at this kind of Merchant",
-            {"merchant_category": category},
-        )
-    for row in allowed:
-        if reserved_funds.free_cents(ctx.conn, row) >= cents:
+    for row in active:
+        if category in reserved_funds.categories_of(row):
             return row
     raise Refusal(
-        RefusalReason.INSUFFICIENT_FUNDS,
-        "Not enough left in the Reserved Funds for this kind of Merchant",
+        RefusalReason.INVALID_INPUT,
+        "No Reserved Funds may be spent at this kind of Merchant",
         {"merchant_category": category},
     )
 

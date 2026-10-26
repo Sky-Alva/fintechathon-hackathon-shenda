@@ -126,9 +126,10 @@ def active_reservation(ctx: OperationContext, reservation_id: str) -> sqlite3.Ro
     return row
 
 
-def check_can_pay(row: sqlite3.Row, category: str, cents: int) -> None:
+def check_can_pay(row: sqlite3.Row, category: str, cents: int, committed: int = 0) -> None:
     """Refuse paying `cents` to a Merchant of `category` from this active reservation,
-    unless its purpose allows that kind of Merchant and enough is left."""
+    unless its purpose allows that kind of Merchant and enough is left once the `committed`
+    orders waiting on it are paid."""
     allowed = categories_of(row)
     if category not in allowed:
         raise Refusal(
@@ -141,7 +142,7 @@ def check_can_pay(row: sqlite3.Row, category: str, cents: int) -> None:
                 "merchant_category": category,
             },
         )
-    remaining = row["amount_cents"] - row["spent_cents"]
+    remaining = row["amount_cents"] - row["spent_cents"] - committed
     if remaining < cents:
         raise Refusal(
             RefusalReason.INSUFFICIENT_FUNDS,

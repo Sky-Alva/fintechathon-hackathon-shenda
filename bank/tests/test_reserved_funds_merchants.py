@@ -472,8 +472,8 @@ BIRTHDAY_9AM = "2026-10-26T09:00:00+08:00"
 
 
 def without_reservation(input: dict[str, Any]) -> dict[str, Any]:
-    """The order as a Plan proposes it before its Reserved Funds exist: paid from whichever
-    of the Customer's Reserved Funds may pay that kind of Merchant."""
+    """The order as a Plan proposes it before its Reserved Funds exist: paid from the
+    Customer's newest Reserved Funds that may pay that kind of Merchant."""
     return {key: value for key, value in input.items() if key != "reservation_id"}
 
 
@@ -514,6 +514,36 @@ def test_an_order_without_reserved_funds_named_needs_some_that_may_pay_for_it(
     assert reasons(no_reservation) == "invalid_input"
     assert reasons(cake_only) == "invalid_input"
     assert reasons(too_small) == "insufficient_funds"
+    assert orders(client, headers) == []
+
+
+def test_an_order_without_reserved_funds_named_is_paid_from_the_newest_that_may_pay_for_it(
+    client: TestClient,
+) -> None:
+    headers = login(client, "hanmei")
+    wedding = reserve(client, headers, "500.00", ["flowers"], purpose="婚礼鲜花")
+    gift = reserve(client, headers, "1000.00")
+    reserve(client, headers, "200.00", ["cake"], purpose="蛋糕")  # newer, but no flowers
+
+    response = order(client, headers, without_reservation(order_input("unused")))
+
+    assert response.status_code == 200, response.text
+    assert response.json()["output"]["order"]["reservation_id"] == gift
+    held = reservations(client, headers)
+    assert (held[gift]["committed"], held[wedding]["committed"]) == ("299.00", "0.00")
+
+
+def test_an_order_is_never_paid_from_older_reserved_funds_when_the_newest_are_short(
+    client: TestClient,
+) -> None:
+    headers = login(client, "hanmei")
+    reserve(client, headers, "500.00", ["flowers"], purpose="婚礼鲜花")
+    gift = reserve(client, headers, "200.00", ["flowers"])
+
+    response = order(client, headers, without_reservation(order_input("unused")))
+
+    assert reasons(response) == "insufficient_funds"
+    assert refusal(response)["detail"]["reservation_id"] == gift
     assert orders(client, headers) == []
 
 
