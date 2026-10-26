@@ -3,7 +3,7 @@
 Before an answer is sent, the fact check confirms that every amount, date, card and Payee
 it mentions appears in a Bank result from this turn or earlier in the conversation. A
 draft that fails is regenerated once; if that fails too, the Customer gets the raw Bank
-result instead.
+result instead. So do they when the model can't be asked: what ran is never left unsaid.
 
 When the turn's queries all failed (the Bank refused them or couldn't be reached), the
 answer may state no figures at all, not even earlier ones, which may be out of date: it
@@ -18,7 +18,7 @@ from agent import untrusted
 from agent.executor import StepResult
 from agent.fact_check import Facts, unsupported
 from agent.language import Language, customer_language
-from agent.model import ModelClient
+from agent.model import ModelClient, ModelUnavailable
 from agent.secrets_guard import asks_for_secret
 
 SYSTEM_PROMPT = """\
@@ -99,16 +99,19 @@ def answer(
         untrusted.bank_data("Bank results for this turn:", [result.as_data() for result in results]),
         {"role": "system", "content": REPLY_IN[language]},
     ]
-    draft = model.chat(messages).content or ""
-    if (problems := check(draft, facts)) is None:
-        return Written(draft)
-    messages += [
-        {"role": "assistant", "content": draft},
-        {"role": "system", "content": problems},
-    ]
-    draft = model.chat(messages).content or ""
-    if check(draft, facts) is None:
-        return Written(draft)
+    try:
+        draft = model.chat(messages).content or ""
+        if (problems := check(draft, facts)) is None:
+            return Written(draft)
+        messages += [
+            {"role": "assistant", "content": draft},
+            {"role": "system", "content": problems},
+        ]
+        draft = model.chat(messages).content or ""
+        if check(draft, facts) is None:
+            return Written(draft)
+    except ModelUnavailable:
+        pass
     return Written(raw(results, language), quotes_bank=True)
 
 

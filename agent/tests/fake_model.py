@@ -8,10 +8,11 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-from agent.model import ModelReply, ToolCall
+from agent.model import ModelReply, ModelUnavailable, ToolCall
 
-__all__ = ["FakeModel", "ModelReply", "ModelRequest"]
-"""`ModelReply` is what a scripted reply is, for type hints: tests import it from here."""
+__all__ = ["FakeModel", "ModelReply", "ModelRequest", "ToolCall"]
+"""`ModelReply` and `ToolCall` are what a scripted reply is made of, for type hints and
+hand-made replies: tests import them from here."""
 
 
 @dataclass
@@ -26,10 +27,10 @@ class ModelRequest:
 
 @dataclass
 class FakeModel:
-    replies: list[ModelReply] = field(default_factory=list)
+    replies: list[ModelReply | ModelUnavailable] = field(default_factory=list)
     requests: list[ModelRequest] = field(default_factory=list)
 
-    def script(self, *replies: ModelReply) -> None:
+    def script(self, *replies: ModelReply | ModelUnavailable) -> None:
         self.replies.extend(replies)
 
     def chat(
@@ -37,7 +38,10 @@ class FakeModel:
     ) -> ModelReply:
         self.requests.append(ModelRequest(messages=messages, tools=tools))
         assert self.replies, "the model was asked for more replies than the test scripted"
-        return self.replies.pop(0)
+        reply = self.replies.pop(0)
+        if isinstance(reply, ModelUnavailable):
+            raise reply
+        return reply
 
 
 def step(
@@ -59,6 +63,11 @@ def plan(
     return ModelReply(
         tool_calls=[ToolCall(id="call-plan", name="propose_plan", arguments=arguments)]
     )
+
+
+def unavailable() -> ModelUnavailable:
+    """The model can't be asked this time: the API is down, refuses or times out."""
+    return ModelUnavailable("the model API timed out")
 
 
 def say(text: str) -> ModelReply:

@@ -1,8 +1,8 @@
 """What the Customer is told, in their language, that the Agent writes itself: why a Red
 step on the Plan card needs extra proof, a wrong code, what still works while a Safety Lock
 holds the session, a Plan card changed, rejected, stopped or cancelled, the offer to undo
-a failed Plan, and a Staff Member asked for; and the notes the model is given about a
-takeover or a chosen option.
+a failed Plan, a Staff Member asked for, and a request the model couldn't plan; and the
+notes the model is given about a takeover or a chosen option.
 
 The Agent writes these itself, never the model: the Bank decides what is Red and when a
 session is locked (ADR-0001), so nothing the Customer or the model says changes them.
@@ -138,6 +138,13 @@ NOT_REVERSED: dict[Language, str] = {
     "en": "OK, I won't undo anything: the steps that ran stay as they are.",
 }
 """The Agent's acknowledgement of a declined reversal offer."""
+
+NOT_PLANNED: dict[Language, str] = {
+    "zh": "抱歉，我暂时无法处理这个请求，没有执行任何操作。请稍后再试。",
+    "en": "Sorry, I can't work on that request right now, and nothing was done. Please try"
+    " again in a moment.",
+}
+"""When the model can't be asked, or gives no reply the Agent can act on."""
 
 
 def reversal_text(numbers: list[str], language: Language) -> str:

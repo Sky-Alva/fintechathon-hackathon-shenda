@@ -10,7 +10,7 @@ import json
 from graphlib import TopologicalSorter
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from agent import untrusted
 from agent.events import ClarificationOption, PlanStep
@@ -267,7 +267,7 @@ class CancellationsAsked(BaseModel):
 
 
 class PlannerFailed(Exception):
-    pass
+    """The model's reply is no Plan, decline, question or the like the Agent can use."""
 
 
 def irreversible(catalogue: list[dict[str, Any]]) -> frozenset[str]:
@@ -496,19 +496,22 @@ def make_plan(
         ]
         tools = [plan_tool(catalogue), clarify_tool()]
     reply = model.chat(messages, tools)
-    for call in reply.tool_calls:
-        if call.name == PLAN_TOOL:
-            plan = Plan.model_validate(call.arguments)
-            done = {result["step_id"] for result in looked_up or []}
-            return plan.model_copy(
-                update={"steps": [step for step in plan.steps if step.id not in done]}
-            )
-        if call.name == DECLINE_TOOL:
-            return Declined.model_validate(call.arguments)
-        if call.name == HUMAN_TOOL:
-            return HumanAsked()
-        if call.name == CLARIFY_TOOL:
-            return Clarification.model_validate(call.arguments)
-        if call.name == OFFER_TOOL:
-            return CancellationsAsked()
+    try:
+        for call in reply.tool_calls:
+            if call.name == PLAN_TOOL:
+                plan = Plan.model_validate(call.arguments)
+                done = {result["step_id"] for result in looked_up or []}
+                return plan.model_copy(
+                    update={"steps": [step for step in plan.steps if step.id not in done]}
+                )
+            if call.name == DECLINE_TOOL:
+                return Declined.model_validate(call.arguments)
+            if call.name == HUMAN_TOOL:
+                return HumanAsked()
+            if call.name == CLARIFY_TOOL:
+                return Clarification.model_validate(call.arguments)
+            if call.name == OFFER_TOOL:
+                return CancellationsAsked()
+    except ValidationError as error:
+        raise PlannerFailed(f"the model's {call.name} call doesn't fit it: {error}") from error
     raise PlannerFailed(f"the model did not propose a Plan: {reply.content!r}")

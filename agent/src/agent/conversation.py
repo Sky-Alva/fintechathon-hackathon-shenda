@@ -5,6 +5,7 @@ turn's events: plan → review → execute → answer. A Plan with a Yellow or R
 at its Plan card instead, and runs only when the Customer confirms it.
 """
 
+import logging
 import secrets
 import threading
 from collections.abc import Generator, Iterator
@@ -70,7 +71,7 @@ from agent.events import (
 from agent.executor import BANK_UNAVAILABLE, StepResult, execute, failed
 from agent.fact_check import Facts
 from agent.language import customer_language
-from agent.model import ModelClient
+from agent.model import ModelClient, ModelUnavailable
 from agent.prompts import (
     CancellationOffer,
     PausedPlan,
@@ -85,6 +86,12 @@ from agent.prompts import (
 )
 from agent.reviewer import ReviewedPlan
 from agent.trace import trace, with_bank_traces
+
+log = logging.getLogger(__name__)
+
+NOT_PLANNED = (ModelUnavailable, planner.PlannerFailed)
+"""The model couldn't be asked, or gave no reply the Agent can act on: nothing is planned."""
+
 
 @dataclass
 class Conversation:
@@ -406,7 +413,13 @@ class Conversations:
                 update={"steps": [s for s in plan.steps if (s.operation, s.input) != retried]}
             )
 
-        plan = ask()
+        try:
+            plan = ask()
+        except NOT_PLANNED:
+            log.warning("No Plan for conversation %s", conversation.conversation_id, exc_info=True)
+            if failed is None:  # after a failed step, the answer already said what happened
+                yield self._not_planned(conversation)
+            return
         if isinstance(plan, planner.Declined):
             yield from self._decline(conversation, plan, catalogue)
             return
@@ -449,7 +462,15 @@ class Conversations:
                     self._remember(conversation, looked_up)
                     yield self._clarify(conversation, which)
                     return
-                plan = ask(looked_up)
+                try:
+                    plan = ask(looked_up)
+                except NOT_PLANNED:
+                    log.warning(
+                        "No Plan for conversation %s", conversation.conversation_id, exc_info=True
+                    )
+                    self._remember(conversation, looked_up)
+                    yield self._not_planned(conversation)
+                    return
                 if isinstance(plan, planner.Declined):  # not on offer, but just in case
                     yield from self._decline(conversation, plan, catalogue)
                     return
@@ -1311,6 +1332,12 @@ class Conversations:
                 self._push(conversation, event)
         finally:
             conversation.lock.release()
+
+    def _not_planned(self, conversation: Conversation) -> Answer:
+        """The answer when the model couldn't plan the request: nothing but look-ups ran."""
+        text = notices.NOT_PLANNED[customer_language(conversation.history)]
+        conversation.history.append({"role": "assistant", "content": text})
+        return Answer(text=text)
 
     def _not_retrieved(self, conversation: Conversation) -> Answer:
         """The answer when the Bank can't be reached, or refuses the session, before

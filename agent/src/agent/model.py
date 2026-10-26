@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from openai import OpenAI
+from openai import OpenAI, OpenAIError
 
 
 @dataclass(frozen=True)
@@ -56,7 +56,12 @@ PROVIDERS = {
 DEFAULT_PROVIDER = "qwen"
 
 
-class ModelNotConfigured(Exception):
+class ModelUnavailable(Exception):
+    """The model couldn't be asked, or its reply couldn't be read: no API key, the API
+    refused or timed out, or a tool call's arguments aren't JSON."""
+
+
+class ModelNotConfigured(ModelUnavailable):
     pass
 
 
@@ -76,19 +81,22 @@ class OpenAICompatibleModel:
         kwargs: dict[str, Any] = {"model": self.provider.model, "messages": messages}
         if tools:
             kwargs["tools"] = tools
-        message = self.client.chat.completions.create(**kwargs).choices[0].message
-        return ModelReply(
-            content=message.content,
-            tool_calls=[
-                ToolCall(
-                    id=call.id,
-                    name=call.function.name,
-                    arguments=json.loads(call.function.arguments or "{}"),
-                )
-                for call in message.tool_calls or []
-                if call.type == "function"
-            ],
-        )
+        try:
+            message = self.client.chat.completions.create(**kwargs).choices[0].message
+            return ModelReply(
+                content=message.content,
+                tool_calls=[
+                    ToolCall(
+                        id=call.id,
+                        name=call.function.name,
+                        arguments=json.loads(call.function.arguments or "{}"),
+                    )
+                    for call in message.tool_calls or []
+                    if call.type == "function"
+                ],
+            )
+        except (OpenAIError, ValueError) as error:  # json.JSONDecodeError is a ValueError
+            raise ModelUnavailable(f"{self.provider.model}: {error}") from error
 
 
 def model_from_env(env: Mapping[str, str]) -> OpenAICompatibleModel:
