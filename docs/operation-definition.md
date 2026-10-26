@@ -29,7 +29,7 @@ Operation(
 | `tier` | Either a fixed `Tier.GREEN / YELLOW / RED`, or a `TierRule` whose `resolve(input, ctx)` returns a tier from the input and current Bank state. It must not write anything. Follow the tier table in [plan.md §3](plan.md#3-permission-tiers): anything that makes the account less safe is Red. Money leaving the Customer is tiered with `limits.tier_for_outgoing(amount, ctx)`. |
 | `reversibility` | `ReadOnly()` for queries; `Irreversible()`; or `ReversedBy(operation, build_input)` naming the Operation that undoes it and building its input from `(original_input, original_output)`. The Agent uses this to *offer* rollback. |
 | `handler` | Business logic only. Read and write through `ctx.conn`. Scope every read or change of the Customer's own data by `ctx.customer_id` (paying in to a Payee's account and Bank-wide ID counters are the exceptions). Use `ctx.now`, never the system clock. |
-| `daily_transfer_amount` | Only for Operations that send the Customer's money out (transfers, Merchant payments from Reserved Funds, a Scheduled Transfer when it runs): the amount, from the input. The gate adds it to the Daily Transfer Total after the handler succeeds. Modules never keep their own total. |
+| `daily_transfer_amount` | Only for Operations that send the Customer's money out (transfers, a Scheduled Transfer or a Merchant order when it is paid): the amount, from the input. The gate adds it to the Daily Transfer Total after the handler succeeds. Modules never keep their own total. |
 
 ### IDs of things a Customer owns
 
@@ -54,7 +54,7 @@ Mark an input field the audit log must never store, such as a new password, as `
 
 The policy gate owns it. `ctx.daily_transfer_total` is the Customer's total for the Bank-clock day *before* this Operation. When the Bank tiers several steps of a Plan together (a tier preview or a Confirmation request), it also includes the earlier steps, in order, without writing anything. So a tier rule only ever needs `(input, ctx)`.
 
-The one exception is money leaving on another day. A Scheduled Transfer is tiered against its run day's *projected* total (sent that day, plus the Customer's other Scheduled Transfers waiting to run on it), read by its own tier rule and passed to `limits.tier_for_day_total`. When it runs, at 09:00 on its run date, it goes through the gate's `policy.run_approved` as the `transfer` the Customer approved: the gate checks the session's Safety Lock and the tier again, adds it to that day's total and audits it in the session that scheduled it.
+The one exception is money leaving on another day: a Scheduled Transfer, or a Merchant order paid from Reserved Funds on its delivery date. Each is tiered against that day's *projected* total (`scheduled_transfers.projected_total`: sent that day, plus the Customer's Scheduled Transfers and pending Merchant orders waiting to be paid on it), read by its own tier rule and passed to `limits.tier_for_day_total`. Neither declares `daily_transfer_amount`, since nothing leaves when it is created. When the Bank clock is set or advanced to 09:00 on its date, it goes through the gate's `policy.run_approved` as what the Customer approved: a Scheduled Transfer as a `transfer`, a Merchant order as `pay_merchant_order` (an Operation of the private `merchants.PAYMENTS` registry, not in the catalogue, so nothing else can call it). The gate checks the session's Safety Lock and the tier again, adds it to that day's total and audits it in the session that created it. A Scheduled Transfer that is Red or locked then is held; a Merchant order that can't be paid then is `failed` with the refusal reason.
 
 ### Refusing
 
@@ -90,7 +90,7 @@ Authorization: Bearer <session_token>
 | Yellow | `confirmation_token`, or a `verification_token` for the same call (e.g. one obtained while it was Red) |
 | Red | `verification_token`; a `confirmation_token` alone is refused with `needs_verification` |
 
-Success: `200 {"operation", "tier", "output"}`. Refusal: `{"refusal": {"reason", "message", "detail"}}`.
+Success: `200 {"operation", "tier", "output", "reversal"}`. `reversal` is the call that would undo it, `{"operation", "input"}`, built by the Operation's `ReversedBy` from this call's input and output (e.g. `add_card_lock` → `{"operation": "lift_card_lock", "input": {"card_id", "scope"}}`), or `null` for an irreversible or read-only Operation (#42). The Agent only offers it to the Customer; undoing is a new call, approved like any other. Refusal: `{"refusal": {"reason", "message", "detail"}}`.
 
 ### Tier preview
 

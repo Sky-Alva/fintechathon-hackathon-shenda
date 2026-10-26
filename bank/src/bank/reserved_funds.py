@@ -6,6 +6,10 @@ spend it except an order from the kinds of Merchant the purpose names (merchants
 what is left. Every reservation names at least one kind, so none can pay just anything.
 Reserving and releasing change the available balance, never the total balance.
 
+An order is paid on its delivery date, so until then its amount is *committed*: still set
+aside, no longer remaining. Releasing gives back only what is neither spent nor committed;
+the money for orders already placed stays set aside until they are paid.
+
 The table and `customers.available_cents` live in customers.py with the accounts, because every
 check of what an account can pay has to know about them (see `transfers.funded_current_account`).
 """
@@ -42,9 +46,14 @@ ReservationId = Annotated[str, OwnedBy("reserved_funds", "reservation_id")]
 class Reservation(BaseModel):
     reservation_id: str
     account_id: str
-    amount: Decimal = Field(description="What was set aside.")
+    amount: Decimal = Field(description="What is set aside, less any part released.")
     spent: Decimal = Field(description="How much of it has been spent on orders.")
-    remaining: Decimal = Field(description="Still set aside; zero once used or released.")
+    committed: Decimal = Field(
+        description="Promised to Merchant orders that are paid on their delivery date."
+    )
+    remaining: Decimal = Field(
+        description="Still free for new orders; zero once used or released."
+    )
     purpose: str
     merchant_categories: list[MerchantCategory] = Field(
         description="The kinds of Merchant it may pay, and nothing else."
@@ -58,14 +67,34 @@ def categories_of(row: sqlite3.Row) -> list[MerchantCategory]:
     return cast(list[MerchantCategory], stored.split(","))
 
 
-def view(row: sqlite3.Row) -> Reservation:
-    remaining = row["amount_cents"] - row["spent_cents"] if row["status"] == "active" else 0
+def committed_cents(conn: sqlite3.Connection, reservation_id: str) -> int:
+    """What the Merchant orders waiting to be paid from these Reserved Funds will take (the
+    orders table is merchants.py's)."""
+    committed: int = conn.execute(
+        "SELECT COALESCE(SUM(amount_cents), 0) FROM merchant_orders"
+        " WHERE reservation_id = ? AND status = 'pending'",
+        (reservation_id,),
+    ).fetchone()[0]
+    return committed
+
+
+def free_cents(conn: sqlite3.Connection, row: sqlite3.Row) -> int:
+    """What is left in an active reservation for new orders, or to release."""
+    committed = committed_cents(conn, row["reservation_id"])
+    free: int = row["amount_cents"] - row["spent_cents"] - committed
+    return free
+
+
+def view(conn: sqlite3.Connection, row: sqlite3.Row) -> Reservation:
+    active = row["status"] == "active"
+    committed = committed_cents(conn, row["reservation_id"]) if active else 0
     return Reservation(
         reservation_id=row["reservation_id"],
         account_id=row["account_id"],
         amount=from_cents(row["amount_cents"]),
         spent=from_cents(row["spent_cents"]),
-        remaining=from_cents(remaining),
+        committed=from_cents(committed),
+        remaining=from_cents(free_cents(conn, row) if active else 0),
         purpose=row["purpose"],
         merchant_categories=categories_of(row),
         status=row["status"],
@@ -97,9 +126,10 @@ def active_reservation(ctx: OperationContext, reservation_id: str) -> sqlite3.Ro
     return row
 
 
-def check_can_pay(row: sqlite3.Row, category: str, cents: int) -> None:
+def check_can_pay(row: sqlite3.Row, category: str, cents: int, committed: int = 0) -> None:
     """Refuse paying `cents` to a Merchant of `category` from this active reservation,
-    unless its purpose allows that kind of Merchant and enough is left."""
+    unless its purpose allows that kind of Merchant and enough is left once the `committed`
+    orders waiting on it are paid."""
     allowed = categories_of(row)
     if category not in allowed:
         raise Refusal(
@@ -112,7 +142,7 @@ def check_can_pay(row: sqlite3.Row, category: str, cents: int) -> None:
                 "merchant_category": category,
             },
         )
-    remaining = row["amount_cents"] - row["spent_cents"]
+    remaining = row["amount_cents"] - row["spent_cents"] - committed
     if remaining < cents:
         raise Refusal(
             RefusalReason.INSUFFICIENT_FUNDS,
@@ -180,7 +210,7 @@ def reserve_funds(ctx: OperationContext, input: ReserveFundsInput) -> ReserveFun
         ),
     )
     return ReserveFundsOutput(
-        reservation=view(reservation(ctx, reservation_id)),
+        reservation=view(ctx.conn, reservation(ctx, reservation_id)),
         available_balance=from_cents(customers.available_cents(ctx.conn, account)),
     )
 
@@ -194,31 +224,56 @@ class ReleaseReservedFundsInput(BaseModel):
 
 
 class ReleaseReservedFundsOutput(BaseModel):
-    reservation: Reservation
+    reservation: Reservation = Field(
+        description="Still active, holding what pending orders need, if there are any."
+    )
     released: Decimal = Field(description="What went back to the available balance.")
     available_balance: Decimal = Field(description="What can be spent now, after this.")
+
+
+def releasable(ctx: OperationContext, reservation_id: str) -> int:
+    """What releasing the active reservation gives back: refused if pending orders take all
+    of what is left."""
+    free = free_cents(ctx.conn, active_reservation(ctx, reservation_id))
+    if free == 0:
+        raise Refusal(
+            RefusalReason.INVALID_INPUT,
+            "Everything left in these Reserved Funds pays orders not yet delivered",
+            {
+                "reservation_id": reservation_id,
+                "committed": str(from_cents(committed_cents(ctx.conn, reservation_id))),
+            },
+        )
+    return free
 
 
 def release_reserved_funds_tier(
     input: ReleaseReservedFundsInput, ctx: OperationContext
 ) -> Tier:
-    active_reservation(ctx, input.reservation_id)  # already used or released: refuse early
+    releasable(ctx, input.reservation_id)  # used, released or all committed: refuse early
     return Tier.YELLOW
 
 
 def release_reserved_funds(
     ctx: OperationContext, input: ReleaseReservedFundsInput
 ) -> ReleaseReservedFundsOutput:
-    row = active_reservation(ctx, input.reservation_id)
-    released_cents = row["amount_cents"] - row["spent_cents"]
-    ctx.conn.execute(
-        "UPDATE reserved_funds SET status = 'released', closed_at = ?"
-        " WHERE reservation_id = ? AND customer_id = ?",
-        (ctx.now.isoformat(), input.reservation_id, ctx.customer_id),
-    )
+    released_cents = releasable(ctx, input.reservation_id)
+    if committed_cents(ctx.conn, input.reservation_id):
+        # Keep what the pending orders need set aside; they close it as used when paid.
+        ctx.conn.execute(
+            "UPDATE reserved_funds SET amount_cents = amount_cents - ?"
+            " WHERE reservation_id = ? AND customer_id = ?",
+            (released_cents, input.reservation_id, ctx.customer_id),
+        )
+    else:
+        ctx.conn.execute(
+            "UPDATE reserved_funds SET status = 'released', closed_at = ?"
+            " WHERE reservation_id = ? AND customer_id = ?",
+            (ctx.now.isoformat(), input.reservation_id, ctx.customer_id),
+        )
     account = customers.current_account(ctx.conn, ctx.customer_id)
     return ReleaseReservedFundsOutput(
-        reservation=view(reservation(ctx, input.reservation_id)),
+        reservation=view(ctx.conn, reservation(ctx, input.reservation_id)),
         released=from_cents(released_cents),
         available_balance=from_cents(customers.available_cents(ctx.conn, account)),
     )
@@ -244,7 +299,7 @@ def list_reserved_funds(
         " ORDER BY reservation_id",
         (ctx.customer_id, input.status, input.status),
     ).fetchall()
-    return ListReservedFundsOutput(reservations=[view(row) for row in rows])
+    return ListReservedFundsOutput(reservations=[view(ctx.conn, row) for row in rows])
 
 
 MODULE = BankModule(
@@ -283,18 +338,26 @@ MODULE = BankModule(
         ),
         Operation(
             name="release_reserved_funds",
-            description_zh="提前释放一笔预留资金，剩余未用部分回到可用余额。",
+            description_zh=(
+                "提前释放一笔预留资金，未用且未被待付款订单占用的部分回到可用余额；"
+                "待付款订单所需的钱继续预留，直到付款。"
+            ),
             description_en=(
-                "Release Reserved Funds early; whatever has not been spent goes back to the"
-                " available balance."
+                "Release Reserved Funds early; whatever is neither spent nor committed to"
+                " orders still to be paid goes back to the available balance. The money"
+                " for those orders stays set aside until they are paid."
             ),
             input_model=ReleaseReservedFundsInput,
             output_model=ReleaseReservedFundsOutput,
             tier=TierRule(
-                description_zh="一律为黄色（需确认）；已用完或已释放的预留资金会被拒绝。",
+                description_zh=(
+                    "一律为黄色（需确认）；已用完、已释放或余额全部被待付款订单占用的预留资金"
+                    "会被拒绝。"
+                ),
                 description_en=(
                     "Always Yellow (Confirmation); Reserved Funds already used up or"
-                    " released are refused."
+                    " released, or whose rest is all committed to pending orders, are"
+                    " refused."
                 ),
                 resolve=release_reserved_funds_tier,
             ),
@@ -310,10 +373,12 @@ MODULE = BankModule(
         ),
         Operation(
             name="list_reserved_funds",
-            description_zh="列出当前客户的预留资金：用途、已用金额、剩余金额和状态。",
+            description_zh=(
+                "列出当前客户的预留资金：用途、已用金额、待付款订单占用的金额、剩余金额和状态。"
+            ),
             description_en=(
                 "List the current Customer's Reserved Funds: purpose, amount spent, amount"
-                " remaining and status."
+                " committed to orders still to be paid, amount remaining and status."
             ),
             input_model=ListReservedFundsInput,
             output_model=ListReservedFundsOutput,

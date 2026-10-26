@@ -1,10 +1,12 @@
-"""Customers, their accounts, and the balance query.
+"""Customers, their accounts, the balance query and the profile query.
 
 Seed: a married couple. 李明 (liming) has a balance close to the ¥1,000 boundary;
-韩梅梅 (hanmei)'s birthday on her profile drives the birthday demo.
+韩梅梅 (hanmei)'s birthday on her profile drives the birthday demo: 李明 reads it
+as his spouse's birthday in his own profile (query_profile).
 """
 
 import sqlite3
+from datetime import date
 from decimal import Decimal
 from typing import Annotated, Literal
 
@@ -163,6 +165,38 @@ def query_balance(ctx: OperationContext, input: QueryBalanceInput) -> QueryBalan
     )
 
 
+class QueryProfileInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class SpouseProfile(BaseModel):
+    name: str
+    birthday: date
+
+
+class QueryProfileOutput(BaseModel):
+    name: str
+    birthday: date
+    spouse: SpouseProfile | None = Field(description="None if the Customer has no spouse.")
+
+
+def query_profile(ctx: OperationContext, input: QueryProfileInput) -> QueryProfileOutput:
+    # The spouse's name and birthday are part of the Customer's own profile; nothing
+    # else about the spouse (accounts, cards, transactions) is read here.
+    row = ctx.conn.execute(
+        "SELECT c.name, c.birthday, s.name AS spouse_name, s.birthday AS spouse_birthday"
+        " FROM customers c LEFT JOIN customers s ON s.customer_id = c.spouse_customer_id"
+        " WHERE c.customer_id = ?",
+        (ctx.customer_id,),
+    ).fetchone()
+    spouse = (
+        SpouseProfile(name=row["spouse_name"], birthday=row["spouse_birthday"])
+        if row["spouse_name"] is not None
+        else None
+    )
+    return QueryProfileOutput(name=row["name"], birthday=row["birthday"], spouse=spouse)
+
+
 MODULE = BankModule(
     name="customers",
     schema=SCHEMA,
@@ -180,6 +214,19 @@ MODULE = BankModule(
             tier=Tier.GREEN,
             reversibility=ReadOnly(),
             handler=query_balance,
-        )
+        ),
+        Operation(
+            name="query_profile",
+            description_zh="查询当前客户本人的资料：姓名和生日，以及配偶的姓名和生日。",
+            description_en=(
+                "Get the current Customer's own profile: their name and birthday, and their"
+                " spouse's name and birthday."
+            ),
+            input_model=QueryProfileInput,
+            output_model=QueryProfileOutput,
+            tier=Tier.GREEN,
+            reversibility=ReadOnly(),
+            handler=query_profile,
+        ),
     ],
 )

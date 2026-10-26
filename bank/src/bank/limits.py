@@ -7,6 +7,7 @@ they run) all count the same way. Scenario modules only read it, through
 """
 
 import sqlite3
+from collections.abc import Callable
 from datetime import date, datetime
 from decimal import Decimal
 
@@ -34,6 +35,26 @@ def daily_transfer_total(conn: sqlite3.Connection, customer_id: str, day: date) 
         (customer_id, day.isoformat()),
     ).fetchone()
     return from_cents(row[0])
+
+
+PendingTotal = Callable[[sqlite3.Connection, str, date], Decimal]
+"""What a Customer has set to leave their account on a day but isn't paid yet."""
+
+_pending_totals: list[PendingTotal] = []
+
+
+def counts_as_pending(total: PendingTotal) -> PendingTotal:
+    """Declare money set to leave on a day (Scheduled Transfers, Merchant orders): each
+    module owns its own, and `projected_total` adds them all up."""
+    _pending_totals.append(total)
+    return total
+
+
+def projected_total(conn: sqlite3.Connection, customer_id: str, day: date) -> Decimal:
+    """The Customer's projected Daily Transfer Total for `day`: what they have already sent
+    that day, plus everything still set to be paid on it."""
+    pending = sum((total(conn, customer_id, day) for total in _pending_totals), Decimal(0))
+    return daily_transfer_total(conn, customer_id, day) + pending
 
 
 def record(
