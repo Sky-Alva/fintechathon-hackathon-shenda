@@ -604,7 +604,7 @@ function Console({ keys, onLeave }: { keys: StaffKeys; onLeave: () => void }) {
 export default function StaffConsole() {
   const [keys, setKeys] = useState<StaffKeys | null>(null)
   return (
-    <div className="staff">
+    <div className="staff-desk">
       {keys ? <Console keys={keys} onLeave={() => setKeys(null)} /> : <KeysForm onSubmit={setKeys} />}
     </div>
   )

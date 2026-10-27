@@ -1,6 +1,8 @@
-/* The staff console: a full-width desk layout, unlike the Channel's phone frame. */
+/* The staff console: a full-width desk layout, unlike the Channel's phone frame.
+   This sheet is bundled with the Channel too, so its root class must be one the Channel
+   never uses: a bare `.staff` matched the Channel's Staff Member reply bubble. */
 
-.staff {
+.staff-desk {
   position: fixed;
   inset: 0;
   overflow: auto;
@@ -8,17 +10,17 @@
   font-size: 14px;
 }
 
-.staff .muted {
+.staff-desk .muted {
   color: var(--muted);
 }
 
-.staff code,
-.staff pre {
+.staff-desk code,
+.staff-desk pre {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
 }
 
-.staff pre {
+.staff-desk pre {
   margin: 6px 0 0;
   padding: 8px;
   background: var(--bg);
@@ -26,7 +28,7 @@
   overflow-x: auto;
 }
 
-.staff details summary {
+.staff-desk details summary {
   cursor: pointer;
   color: var(--muted);
   font-size: 12px;
@@ -113,17 +115,17 @@
   font-weight: 600;
 }
 
-.staff .locked {
+.staff-desk .locked {
   color: var(--brand);
   font-weight: 600;
 }
 
-.staff .unlocked,
-.staff .ok {
+.staff-desk .unlocked,
+.staff-desk .ok {
   color: #2e8b57;
 }
 
-.staff .refused {
+.staff-desk .refused {
   color: var(--brand);
 }
 
@@ -192,7 +194,7 @@
   padding-left: 20px;
 }
 
-.staff .tier {
+.staff-desk .tier {
   display: inline-block;
   padding: 0 6px;
   border-radius: 4px;
@@ -200,15 +202,15 @@
   color: #fff;
 }
 
-.staff .tier.green {
+.staff-desk .tier.green {
   background: #2e8b57;
 }
 
-.staff .tier.yellow {
+.staff-desk .tier.yellow {
   background: #d4a017;
 }
 
-.staff .tier.red {
+.staff-desk .tier.red {
   background: var(--brand);
 }
 
