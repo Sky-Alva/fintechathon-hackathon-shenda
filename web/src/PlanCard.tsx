@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { BankRefusal, CardPayee, PlanStep, PlanWarning, Tier } from './events'
+import type { BankRefusal, CardPayee, PlanStep, PlanWarning, StepCard, Tier } from './events'
 import { type Language, useLanguage } from './language'
 
 /** proposed → awaiting (confirmation_requested) → confirmed | rejected | edited (steps taken
@@ -19,6 +19,8 @@ type Props = {
   warnings: PlanWarning[]
   /** Who each transfer pays, as the Bank's lookup found them; `is_new`: never paid. */
   payees: CardPayee[]
+  /** Which card each card step acts on, as the Bank listed it, so the Customer can check it. */
+  cards: StepCard[]
   confirmIds: string[]
   status: PlanCardStatus
   disabled: boolean
@@ -109,6 +111,7 @@ const WORDS = {
     confirm: (n: number) => `一键确认${n > 1 ? `（${n} 项）` : ''}`,
     separator: '、',
     payee: (name: string, extra: string[]) => (extra.length ? `${name}（${extra.join('，')}）` : name),
+    card: (name: string, last4: string) => `${name}，尾号 ${last4}`,
   },
   en: {
     title: 'Please confirm this Plan',
@@ -122,6 +125,7 @@ const WORDS = {
     confirm: (n: number) => `Confirm${n > 1 ? ` (${n})` : ''}`,
     separator: ', ',
     payee: (name: string, extra: string[]) => (extra.length ? `${name} (${extra.join(', ')})` : name),
+    card: (name: string, last4: string) => `${name}, ending ${last4}`,
   },
 }
 
@@ -145,8 +149,14 @@ function shownValue(key: string, value: unknown, language: Language): string {
 }
 
 /** Every input of the step, exactly as it will be sent to the Bank; a Payee the lookup
- * found is named, with their nickname and masked phone. */
-function details(step: PlanStep, language: Language, payee?: CardPayee): [string, string][] {
+ * found is named, with their nickname and masked phone, and a card the Bank listed by its
+ * name and last four digits. */
+function details(
+  step: PlanStep,
+  language: Language,
+  payee?: CardPayee,
+  card?: StepCard,
+): [string, string][] {
   const labels = INPUT_LABELS[language]
   return Object.entries(step.input)
     .filter(([, value]) => value !== '' && value !== null && value !== undefined)
@@ -155,6 +165,7 @@ function details(step: PlanStep, language: Language, payee?: CardPayee): [string
         const extra = [payee.nickname, payee.phone].filter((part): part is string => !!part)
         return [labels[key], WORDS[language].payee(payee.name, extra)]
       }
+      if (key === 'card_id' && card) return [labels[key], WORDS[language].card(card.name, card.last4)]
       return [labels[key] ?? key, shownValue(key, value, language)]
     })
 }
@@ -167,6 +178,7 @@ export default function PlanCard({
   refusals,
   warnings,
   payees,
+  cards,
   confirmIds,
   status,
   disabled,
@@ -198,6 +210,7 @@ export default function PlanCard({
           // A removal re-tiers the rest, so a warning about the daily line may no longer hold.
           const warning = removed.length ? undefined : warnings.find((w) => w.step_id === step.id)
           const payee = payees.find((p) => p.step_id === step.id)
+          const card = cards.find((c) => c.step_id === step.id)
           return (
             <li key={step.id} className={classes.trim()}>
               <div className="plan-step-head">
@@ -224,7 +237,7 @@ export default function PlanCard({
                 </span>
               </div>
               <dl>
-                {details(step, language, payee).map(([label, value]) => (
+                {details(step, language, payee, card).map(([label, value]) => (
                   <div key={label}>
                     <dt>{label}</dt>
                     <dd>{value}</dd>

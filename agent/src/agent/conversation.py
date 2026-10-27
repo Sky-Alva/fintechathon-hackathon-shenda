@@ -14,6 +14,7 @@ from typing import Any
 
 from agent import (
     birthday,
+    cards,
     guard,
     notices,
     orders,
@@ -405,6 +406,7 @@ class Conversations:
                 payees=[
                     payee.as_data() for payee in payees.known(conversation.bank_results).values()
                 ],
+                cards=[card.as_data() for card in cards.known(conversation.bank_results).values()],
             )
             if failed is None or not isinstance(plan, planner.Plan):
                 return plan
@@ -528,6 +530,9 @@ class Conversations:
             ),
             payees=payees.on_card(
                 reviewed.steps, payees.known([*conversation.bank_results, *looked_up])
+            ),
+            cards=cards.on_card(
+                reviewed.steps, cards.known([*conversation.bank_results, *looked_up])
             ),
         )
         yield ConfirmationRequested(

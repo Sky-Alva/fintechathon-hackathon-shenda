@@ -5,6 +5,7 @@ import type {
   BankRefusal,
   CardPayee,
   ClarificationQuestion,
+  StepCard,
   Chart,
   ConversationEvent,
   PlanStep,
@@ -47,6 +48,7 @@ type Item =
       refusals: (BankRefusal & { step_id: string })[]
       warnings: PlanWarning[]
       payees: CardPayee[]
+      cards: StepCard[]
       confirmIds: string[]
       status: PlanCardStatus
     }
@@ -258,6 +260,7 @@ function apply(items: Item[], event: ConversationEvent, language: Language): Ite
           refusals: event.refusals,
           warnings: event.warnings ?? [],
           payees: event.payees ?? [],
+          cards: event.cards ?? [],
           confirmIds: [],
           status: 'proposed',
         },
@@ -659,6 +662,7 @@ export default function Chat({
                     refusals={item.refusals}
                     warnings={item.warnings}
                     payees={item.payees}
+                    cards={item.cards}
                     confirmIds={item.confirmIds}
                     status={item.status}
                     disabled={busy || staffMember !== null}

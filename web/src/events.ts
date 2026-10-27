@@ -98,6 +98,13 @@ export type CardPayee = {
   phone: string | null
   is_new: boolean
 }
+// Which card a step acts on, as the Bank listed it: its name and last four digits.
+export type StepCard = {
+  step_id: string
+  card_id: string
+  name: string
+  last4: string
+}
 export type PlanProposed = {
   type: 'plan_proposed'
   plan_id: string
@@ -105,6 +112,7 @@ export type PlanProposed = {
   refusals: (BankRefusal & { step_id: string })[]
   warnings: PlanWarning[]
   payees: CardPayee[]
+  cards: StepCard[]
 }
 export type ConfirmationRequested = {
   type: 'confirmation_requested'

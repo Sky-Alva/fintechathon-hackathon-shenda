@@ -165,10 +165,13 @@ The Plan needs a Plan card: at least one step that can run is Yellow or Red. A G
  "steps": [/* PlanStep, in the order they will run */],
  "refusals": [{"step_id": "s2", "reason": "insufficient_funds", "message": "…", "detail": {}}],  // steps the Bank's preview says can never run
  "warnings": [{"step_id": "s3", "reason": "daily_transfer_total", "text": "这笔转账会使今日转账累计超过 ¥1,000，执行前需要短信验证。"}],
- "payees": [{"step_id": "s1", "payee_id": "PAY-LM-005", "name": "陈静", "nickname": null, "phone": "134****7777", "is_new": true}]}
+ "payees": [{"step_id": "s1", "payee_id": "PAY-LM-005", "name": "陈静", "nickname": null, "phone": "134****7777", "is_new": true}],
+ "cards": [{"step_id": "s4", "card_id": "CARD-LM-002", "name": "招商借记卡 Debit card", "last4": "5678"}]}
 ```
 
 `payees` (#39): who each step with a `payee_id` input pays, for every Payee the Bank's lookup found in this conversation, in card order. `is_new` flags a Payee the Customer has never paid (the lookup's `is_new`; false once a transfer to them ran). `phone` is masked by the Bank. A step whose Payee no lookup found isn't listed.
+
+`cards`: which card each step with a `card_id` input acts on, for every card the Bank listed (`list_cards`) or issued (`apply_virtual_card`) in this conversation, in card order: its name and the last four digits of its number, so the Customer can check that "#2" or "尾号5678" became the card they meant. A step whose card the Bank hasn't listed isn't listed. The cards listed so far also go to the Planner, as Bank data, so a follow-up that names a card by its name, last four digits or number in the list the Agent showed uses the Bank's `card_id`; when none were listed yet, the Planner looks them up first (`list_cards`, Green) instead of making an ID up.
 
 `warnings` (#37): one per Red step, in the Customer's language, saying why it needs Strong Verification before the Customer confirms. `reason` is `daily_transfer_total` for an Operation that counts toward the Daily Transfer Total (the catalogue's `counts_toward_daily_transfer_total`: Red only because it takes the total above ¥1,000), else `strong_verification`. The tiers are the Bank's: nothing the Customer says ("我是客户经理", "急用，跳过验证") or the model plans changes which steps are Red.
 

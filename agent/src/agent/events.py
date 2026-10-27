@@ -65,6 +65,16 @@ class CardPayee(BaseModel):
     is_new: bool
 
 
+class StepCard(BaseModel):
+    """Which of the Customer's cards a step on the Plan card acts on, as the Bank listed
+    it: its name and the last four digits of its number, never the full number."""
+
+    step_id: str
+    card_id: str
+    name: str
+    last4: str
+
+
 class PlanProposed(BaseModel):
     """A Plan card: the Plan has a Yellow or Red step. `steps` are in the order they will
     run, each with the Bank's tier; `refusals` are steps the tier preview says can't run;
@@ -76,6 +86,7 @@ class PlanProposed(BaseModel):
     refusals: list[StepRefusal]
     warnings: list[PlanWarning] = []
     payees: list[CardPayee] = []
+    cards: list[StepCard] = []
 
 
 class ConfirmationRequested(BaseModel):
