@@ -431,7 +431,9 @@ def clarify_tool() -> dict[str, Any]:
             "name": CLARIFY_TOOL,
             "description": (
                 "Ask the Customer one short clarifying question instead of planning, only"
-                " when the request is genuinely ambiguous or misses a needed input."
+                " when the request is genuinely ambiguous or misses a needed input. Never"
+                " to ask which of their cards they mean before the Bank has listed them:"
+                " plan list_cards first, and ask after it with the cards as options."
             ),
             "parameters": {
                 "type": "object",
