@@ -542,9 +542,13 @@ def make_plan(
         for call in reply.tool_calls:
             if call.name == PLAN_TOOL:
                 plan = Plan.model_validate(call.arguments)
-                done = {result["step_id"] for result in looked_up or []}
+                # Leave out a look-up the model repeats: the same call as one that ran,
+                # whatever its step ID, since the completed Plan may number its steps afresh.
+                ran = [(result["operation"], result["input"]) for result in looked_up or []]
                 return plan.model_copy(
-                    update={"steps": [step for step in plan.steps if step.id not in done]}
+                    update={
+                        "steps": [s for s in plan.steps if (s.operation, s.input) not in ran]
+                    }
                 )
             if call.name == DECLINE_TOOL:
                 return Declined.model_validate(call.arguments)

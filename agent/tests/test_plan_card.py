@@ -227,6 +227,29 @@ def test_a_green_look_up_runs_first_so_the_plan_card_shows_the_exact_amount(
     assert events[3]["step_ids"] == ["s2"]
 
 
+def test_a_completed_step_numbered_like_the_look_up_is_on_the_plan_card_a_repeat_isnt(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    # The model numbers the completed Plan afresh ("s1" for the transfer) and repeats the
+    # look-up that already ran: only the repeat (same Operation, same input) is left out.
+    model.script(
+        half_my_balance_to_mum()[0],
+        plan(
+            step("s0", "query_balance"),
+            step("s1", "transfer", {"payee_id": "PAY-LM-002", "amount": "590.00", "note": ""}),
+        ),
+    )
+    conversation = start_conversation(agent, log_in(bank, "liming"))
+
+    events = shown(send(agent, conversation, HALF_TO_MUM))
+
+    assert event_types(events) == [
+        "step_started", "step_succeeded", "plan_proposed", "confirmation_requested"
+    ]
+    card = [(s["id"], s["operation"], s["input"]["amount"]) for s in events[2]["steps"]]
+    assert card == [("s1", "transfer", "590.00")]
+
+
 def test_the_plan_is_completed_from_the_banks_look_up_results(
     agent: TestClient, bank: TestClient, model: FakeModel
 ) -> None:
