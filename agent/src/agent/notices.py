@@ -26,11 +26,11 @@ STRONG_VERIFICATION: dict[Language, str] = {
 
 
 WRONG_CODE: dict[Language, str] = {
-    "zh": "验证码不正确（本次会话已输错 {count} 次）。请在模拟手机上重新输入短信中的验证码；"
+    "zh": "验证码不正确（本次会话已输错 {count} 次）。请在下方的短信验证框中重新输入短信里的验证码；"
     "累计输错 {limit} 次，会话将被安全锁定。",
     "en": "That code isn't right ({count} wrong so far this session). Please type the code"
-    " from the SMS into the simulated phone again; after {limit} wrong codes the session"
-    " is put under a Safety Lock.",
+    " from the SMS into the SMS verification box below again; after {limit} wrong codes the"
+    " session is put under a Safety Lock.",
 }
 WRONG_CODES_BEFORE_LOCK = 3
 

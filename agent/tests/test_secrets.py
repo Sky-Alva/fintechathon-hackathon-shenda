@@ -140,7 +140,7 @@ def waiting_for_verification(
 
 
 @pytest.mark.parametrize("message", ["{code}", "验证码是{code}"])
-def test_a_code_typed_into_the_chat_goes_no_further_and_points_to_the_phone(
+def test_a_code_typed_into_the_chat_goes_no_further_and_points_to_the_verification_box(
     agent: TestClient, bank: TestClient, model: FakeModel, message: str
 ) -> None:
     login = log_in(bank, "hanmei")
@@ -150,9 +150,9 @@ def test_a_code_typed_into_the_chat_goes_no_further_and_points_to_the_phone(
 
     events = send(agent, conversation, message.format(code=code))
 
-    # Not echoed: the Customer is pointed to the simulated phone, the challenge still open.
+    # Not echoed: the Customer is pointed to the verification box, the challenge still open.
     assert event_types(events) == ["answer", "verification_requested"]
-    assert "手机" in events[0]["text"]
+    assert "短信验证" in events[0]["text"]
     assert events[-1] == requested
     assert code not in json.dumps(events)
     # Not sent to the model, now or later, nor kept in the history Staff Members read.
@@ -283,7 +283,7 @@ def test_an_answer_that_keeps_asking_for_a_code_falls_back_to_the_banks_result(
     assert text.startswith("以下是银行返回的结果") and "1180.00" in text
 
 
-def test_the_agents_own_words_point_to_the_phone_and_never_ask_for_the_code(
+def test_the_agents_own_words_point_to_the_verification_box_and_never_ask_for_the_code(
     agent: TestClient, bank: TestClient, model: FakeModel
 ) -> None:
     login = log_in(bank, "hanmei")
@@ -291,4 +291,4 @@ def test_the_agents_own_words_point_to_the_phone_and_never_ask_for_the_code(
 
     text = answer_text(send(agent, conversation, latest_code(bank, login)))
 
-    assert "请不要在聊天中发送验证码" in text
+    assert "请不要把验证码作为聊天消息发送" in text and "短信验证" in text

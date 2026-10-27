@@ -137,7 +137,7 @@ export type StepFailed = BankRefusal & {
   text: string
 }
 
-// Emitted since #37: a Red step waits for the code typed into the simulated phone, and
+// Emitted since #37: a Red step waits for the SMS code typed into the verification box, and
 // the Safety Lock notice (ends the turn).
 export type VerificationRequested = {
   type: 'verification_requested'

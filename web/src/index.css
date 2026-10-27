@@ -439,31 +439,54 @@ button.secondary {
   color: #9ca3af;
 }
 
-.sms-code {
+/* The SMS verification box, in the chat under the Plan card: it sends the code to the
+ * Bank, not to the Agent, so it looks like a bank form, not a message. */
+.verify-box {
+  align-self: stretch;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
+  padding: 14px;
+  background: var(--surface);
+  border: 1px solid var(--brand);
+  border-radius: 14px;
+  font-size: 13px;
 }
 
-.sms-code > div {
+.verify-title {
   display: flex;
+  align-items: center;
   gap: 6px;
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--brand);
 }
 
-.sms-code input {
+.verify-row {
+  display: flex;
+  gap: 8px;
+}
+
+.verify-row input {
   flex: 1;
   min-width: 0;
   padding: 8px 10px;
   font: inherit;
-  letter-spacing: 4px;
-  border: 1px solid #374151;
+  font-size: 16px;
+  letter-spacing: 6px;
+  border: 1px solid var(--border);
   border-radius: 10px;
   background: #f9fafb;
   color: var(--text);
 }
 
-.sms-error {
-  color: #fca5a5;
+.verify-error {
+  color: var(--brand);
+  font-size: 12px;
+}
+
+.verify-note {
+  color: var(--muted);
   font-size: 12px;
 }
 

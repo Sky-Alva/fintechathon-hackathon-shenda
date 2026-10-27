@@ -1,7 +1,8 @@
 """Red steps: Strong Verification on the simulated phone, and the Safety Lock notice.
 
 A Red step runs only with a verification token. The Bank texts a code to the Customer's
-simulated phone; the test reads it there and types it back as the Channel's phone does,
+simulated phone; the test reads it there and types it back as the Channel's SMS
+verification box does,
 straight to the Bank with the phone token. The Agent only ever gets the resulting
 verification token, never the code or the phone token.
 """
@@ -211,7 +212,8 @@ def wrong_code(bank: TestClient, login: Login) -> str:
 def type_a_wrong_code(
     agent: TestClient, bank: TestClient, login: Login, conversation: str, requested: dict[str, Any]
 ) -> list[dict[str, Any]]:
-    """Type a wrong code into the phone; the phone tells the Agent the Bank refused it."""
+    """Type a wrong code into the verification box; the box tells the Agent the Bank
+    refused it."""
     refused = type_code(bank, login, requested["challenge_id"], wrong_code(bank, login))
     assert refused["refusal"]["reason"] == "token_invalid"
     return act(

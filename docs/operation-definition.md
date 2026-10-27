@@ -152,7 +152,7 @@ Authorization: Bearer <phone_token>
 {"code": "123456"}
 ```
 
-The code is typed into the simulated phone, which sends it with the same session's `phone_token` (the session token is refused with `not_authenticated`). The right code returns `{operation, verification_id, verification_token, expires_at}`, which the Channel passes on for the call.
+The code is typed into the Channel's SMS verification box, which sends it with the same session's `phone_token` (the session token is refused with `not_authenticated`). The right code returns `{operation, verification_id, verification_token, expires_at}`, which the Channel passes on for the call.
 
 - The challenge is bound like a Confirmation token (Customer, session, Operation name, exact input), lasts 5 Bank-clock minutes and can be answered once, from its own session. Otherwise the answer is refused with `token_invalid`.
 - A wrong code is refused with `token_invalid` and `detail: {challenge_id, failed_attempts}`, where `failed_attempts` counts every wrong code in the session. The third wrong code since the session's last `wrong_codes` Safety Lock locks the session, and its refusal also carries `locked_until`. Three wrong codes close the challenge; after that, request a new one.
@@ -160,7 +160,7 @@ The code is typed into the simulated phone, which sends it with the same session
 
 #### The simulated phone
 
-The Bank's SMS go to the Customer's simulated phone, readable with `GET /phone/messages` and the `phone_token` from login, or by the staff console with `GET /admin/customers/{customer_id}/phone/messages`. Each login has its own phone token, and it shows every SMS the Customer has received. The session token can neither read the phone nor answer a challenge: the Channel keeps the phone token for its phone view and never hands it, or any code, to the Agent. Codes go from the Customer to the Bank, never through the model.
+The Bank's SMS go to the Customer's simulated phone, readable with `GET /phone/messages` and the `phone_token` from login, or by the staff console with `GET /admin/customers/{customer_id}/phone/messages`. Each login has its own phone token, and it shows every SMS the Customer has received. The session token can neither read the phone nor answer a challenge: the Channel keeps the phone token for its phone view and its SMS verification box and never hands it, or any code, to the Agent. Codes go from the Customer to the Bank, never through the model.
 
 ### Safety Lock
 

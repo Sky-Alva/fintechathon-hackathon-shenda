@@ -824,7 +824,7 @@ class Conversations:
         return question
 
     def _code_in_chat(self, conversation: Conversation) -> Answer:
-        """The Customer typed a code into the chat: point them to the simulated phone."""
+        """The Customer typed a code into the chat: point them to the verification box."""
         text = secrets_guard.CODE_IN_CHAT[customer_language(conversation.history)]
         conversation.history.append({"role": "assistant", "content": text})
         return Answer(text=text)

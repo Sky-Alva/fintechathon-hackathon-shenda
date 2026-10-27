@@ -184,8 +184,8 @@ def latest_code(bank: TestClient, login: Login) -> str:
 
 
 def type_code(bank: TestClient, login: Login, challenge_id: str, code: str) -> dict[str, Any]:
-    """Type a code into the simulated phone, which sends it straight to the Bank with the
-    phone token, as the Channel does. Returns the Bank's body: a verification token, or
+    """Type a code into the SMS verification box, which sends it straight to the Bank with
+    the phone token, as the Channel does. Returns the Bank's body: a verification token, or
     its refusal."""
     response = bank.post(
         f"/verifications/{challenge_id}",

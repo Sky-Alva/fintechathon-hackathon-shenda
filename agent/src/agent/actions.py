@@ -43,8 +43,9 @@ class AskForHuman(BaseModel):
 
 
 class VerifiedStep(BaseModel):
-    """The Customer typed the right code into the simulated phone, which sent it straight
-    to the Bank and hands the Agent only the verification token it got back."""
+    """The Customer typed the right code into the Channel's SMS verification box, which
+    sent it straight to the Bank and hands the Agent only the verification token it got
+    back."""
 
     model_config = ConfigDict(extra="forbid")
     action: Literal["verified"]
@@ -54,7 +55,7 @@ class VerifiedStep(BaseModel):
 
 
 class WrongCode(BaseModel):
-    """The Bank refused the code the Customer typed into the simulated phone
+    """The Bank refused the code the Customer typed into the SMS verification box
     (`token_invalid`); `failed_attempts` is the Bank's count of wrong codes this session.
     The Agent asks the Bank itself whether that locked the session."""
 

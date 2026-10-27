@@ -22,11 +22,11 @@ CARD_NUMBER = re.compile(rf"{NOT_IN_A_WORD}\d(?:[ -]?\d){{11,18}}(?![A-Za-z0-9_]
 """13 to 19 digits, maybe grouped by spaces or dashes: what a full card number looks like."""
 
 CODE_IN_CHAT: dict[Language, str] = {
-    "zh": "为了您的账户安全，请不要在聊天中发送验证码，我不会查看、保存或转发它。"
-    "请在模拟手机上输入短信中的验证码以继续。",
-    "en": "To keep your account safe, please don't send verification codes in the chat;"
-    " I don't read, keep or pass them on. Please type the code from the SMS into the"
-    " simulated phone to continue.",
+    "zh": "为了您的账户安全，请不要把验证码作为聊天消息发送，我不会查看、保存或转发它。"
+    "请在下方的“短信验证”框中输入短信里的验证码以继续，它会直接提交给银行。",
+    "en": "To keep your account safe, please don't send verification codes as a chat"
+    " message; I don't read, keep or pass them on. Please type the code from the SMS into"
+    " the SMS verification box below to continue: it goes straight to the Bank.",
 }
 
 

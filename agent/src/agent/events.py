@@ -100,7 +100,8 @@ class ConfirmationRequested(BaseModel):
 class VerificationRequested(BaseModel):
     """A Red step needs Strong Verification: the Bank has texted a code to the Customer's
     simulated phone. The Customer answers with `verified` and the verification token the
-    phone got back from the Bank; the code itself never reaches the Agent."""
+    Channel's SMS verification box got back from the Bank; the code itself never reaches
+    the Agent."""
 
     type: Literal["verification_requested"] = "verification_requested"
     plan_id: str

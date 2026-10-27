@@ -19,6 +19,7 @@ import PlanCard, { type PlanCardStatus } from './PlanCard'
 import SimulatedPhone from './SimulatedPhone'
 import SpendingChart from './SpendingChart'
 import TracePanel, { type TraceTurn } from './TracePanel'
+import VerificationBox from './VerificationBox'
 
 /** One step's progress line: running, then done or failed (with the Bank's message). */
 type StepItem = {
@@ -110,7 +111,7 @@ const STEP_LABEL: Record<Language, Record<StepStatus, string>> = {
  * tap in the decision trace. */
 const UI = {
   zh: {
-    codeSent: (to: string) => `验证码已发送至 ${to}，请在模拟手机上输入以继续`,
+    codeSent: (to: string) => `验证码已发送至 ${to}，请在下方输入`,
     staffJoined: (staff: string) => `人工客服 ${staff} 已接入对话`,
     staffLeft: '人工客服已离开，智能助手继续为您服务',
     error: '出错了，请稍后再试。',
@@ -122,7 +123,7 @@ const UI = {
     undoTap: '（撤销已完成的步骤）',
     keepTap: '（不撤销）',
     pickTap: (n: number) => (n ? `（选择取消 ${n} 个订阅）` : '（都保留）'),
-    verifiedTap: '（短信验证通过）',
+    verifiedTap: '（短信验证通过：银行核对了验证码，助手只收到验证凭证）',
     stopTap: '（停止计划）',
     wrongCodeTap: '（验证码错误）',
     chooseTap: (label: string) => `（选择：${label}）`,
@@ -150,7 +151,7 @@ const UI = {
     send: '发送',
   },
   en: {
-    codeSent: (to: string) => `A code was sent to ${to}. Type it into the simulated phone to go on.`,
+    codeSent: (to: string) => `A code was sent to ${to}. Type it in below.`,
     staffJoined: (staff: string) => `Staff Member ${staff} has joined the conversation`,
     staffLeft: 'The Staff Member has left; the Agent is back with you',
     error: 'Something went wrong. Please try again later.',
@@ -162,7 +163,7 @@ const UI = {
     undoTap: '(undo the completed steps)',
     keepTap: "(don't undo)",
     pickTap: (n: number) => (n ? `(cancel ${n} Subscription${n > 1 ? 's' : ''})` : '(keep all)'),
-    verifiedTap: '(SMS code verified)',
+    verifiedTap: '(SMS code verified: the Bank checked the code, the Agent got only a token)',
     stopTap: '(stop the Plan)',
     wrongCodeTap: '(wrong code)',
     chooseTap: (label: string) => `(chose: ${label})`,
@@ -194,7 +195,8 @@ const UI = {
 type Props = {
   customerName: string
   conversationId: string
-  /** For the simulated phone only: it goes to the Bank, never to the Agent. */
+  /** For the simulated phone and the SMS verification box only: they talk to the Bank,
+   * never to the Agent. */
   phoneToken: string
   /** For the decision trace panel's audit trail, which the Agent shows this session only. */
   sessionToken: string
@@ -361,7 +363,7 @@ export default function Chat({
   // The confirmed Plan whose steps are running: the stop button pauses it.
   const [runningPlan, setRunningPlan] = useState<string | null>(null)
   const [stopping, setStopping] = useState(false)
-  // The Red step waiting for the code typed into the simulated phone.
+  // The Red step waiting for its SMS code, typed into the verification box.
   const [verification, setVerification] = useState<VerificationRequested | null>(null)
   // The conversation's language, as the Agent decides it: the Channel's controls follow it.
   const [language, setLanguage] = useState<Language>('zh')
@@ -438,7 +440,7 @@ export default function Chat({
     languageRef.current = customerLanguage(text, languageRef.current)
     setLanguage(languageRef.current)
     // A code typed into the chat while a verification is pending isn't shown back: the
-    // Agent masks it too, and points the Customer to the simulated phone.
+    // Agent masks it too, and points the Customer to the verification box.
     const shown = verification ? text.replace(CODE_IN_CHAT, '******') : text
     setVerification(null) // a new request drops a Plan paused for verification
     setItems((current) => [...replaceWaitingPlans(current), { kind: 'customer', text: shown }])
@@ -547,7 +549,7 @@ export default function Chat({
     await runTurn(t.pickTap(subscriptionIds.length), (onEvent) => sendAction(conversationId, action, onEvent))
   }
 
-  /** The simulated phone got a verification token from the Bank for the right code: the
+  /** The verification box got a verification token from the Bank for the right code: the
    * Plan runs on from its Red step, and can be stopped. */
   async function verified(waiting: VerificationRequested, token: string) {
     if (busy) return
@@ -569,7 +571,7 @@ export default function Chat({
     )
   }
 
-  /** The Bank refused the code typed into the simulated phone. */
+  /** The Bank refused the code typed into the verification box. */
   async function wrongCode(waiting: VerificationRequested, failedAttempts: number) {
     if (busy) return
     setVerification(null)
@@ -803,6 +805,15 @@ export default function Chat({
               {stopping ? t.stopping : t.stop}
             </button>
           )}
+          {verification && (
+            <VerificationBox
+              phoneToken={phoneToken}
+              verification={verification}
+              disabled={busy || staffMember !== null}
+              onVerified={verified}
+              onWrongCode={wrongCode}
+            />
+          )}
           {verification && !busy && !staffMember && (
             <button type="button" className="stop-plan" onClick={() => stopWaiting(verification)}>
               {t.stopWaiting}
@@ -812,13 +823,7 @@ export default function Chat({
         </main>
         {smsSlot &&
           createPortal(
-            <SimulatedPhone
-              phoneToken={phoneToken}
-              verification={verification}
-              disabled={busy || staffMember !== null}
-              onVerified={verified}
-              onWrongCode={wrongCode}
-            />,
+            <SimulatedPhone phoneToken={phoneToken} verification={verification} />,
             smsSlot,
           )}
         <form className="composer" onSubmit={submit}>

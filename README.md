@@ -243,7 +243,7 @@ Change the demo keys for anything shared beyond your own machine.
 
 **The birthday Plan doesn't come up.** The Bank clock starts on 10-20, more than a week before the birthday. Set it to 2026-10-24 10:00 with the demo control first. The reminder appears only once per conversation.
 
-**The Strong Verification code doesn't work in the chat.** Codes go into the simulated phone beside the chat, never into the chat itself. A code typed into the chat is masked and not used.
+**The Strong Verification code doesn't work in the chat.** Read the code on the simulated phone beside the chat and type it into the SMS verification box under the Plan card, never into the message box. The box sends it straight to the Bank; a code sent as a chat message is masked and not used.
 
 **Bank `mypy src tests` reports errors about `httpx2` types in the tests.** Newer Starlette test clients return `httpx2` types; the tests themselves pass. `mypy src` is clean.
 
