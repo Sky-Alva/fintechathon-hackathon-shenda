@@ -8,7 +8,7 @@ at its Plan card instead, and runs only when the Customer confirms it.
 import logging
 import secrets
 import threading
-from collections.abc import Generator, Iterator
+from collections.abc import Callable, Generator, Iterator
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -92,6 +92,15 @@ log = logging.getLogger(__name__)
 
 NOT_PLANNED = (ModelUnavailable, planner.PlannerFailed)
 """The model couldn't be asked, or gave no reply the Agent can act on: nothing is planned."""
+
+PlannerReply = (
+    planner.Plan
+    | planner.Declined
+    | planner.HumanAsked
+    | planner.Clarification
+    | planner.CancellationsAsked
+)
+"""What the Planner can answer a request with (`planner.make_plan`)."""
 
 
 @dataclass
@@ -386,15 +395,7 @@ class Conversations:
             yield self._not_retrieved(conversation)
             return
 
-        def ask(
-            looked_up: list[StepResult] | None = None,
-        ) -> (
-            planner.Plan
-            | planner.Declined
-            | planner.HumanAsked
-            | planner.Clarification
-            | planner.CancellationsAsked
-        ):
+        def ask(looked_up: list[StepResult] | None = None) -> PlannerReply:
             plan = planner.make_plan(
                 self.model,
                 conversation.history,
@@ -440,61 +441,107 @@ class Conversations:
         if failed is not None and not plan.steps:
             return  # nothing else reaches the goal: the answer already said what happened
         yield trace("intent", {"intent": plan.intent})
-        # Exact details first: run the Green look-ups a later step's input waits on,
-        # then have the Planner complete the Plan from what the Bank returned.
         looked_up: list[StepResult] = []
+        done = yield from self._complete(
+            conversation, plan, catalogue, ask, looked_up, failed is not None
+        )
+        if done is None:
+            return
+        plan, reviewed = done
+        listed = cards.known([*conversation.bank_results, *looked_up])
+        made_up = cards.made_up(reviewed.steps, listed, catalogue, reviewed.refusals)
+        if made_up and not any(result.operation == cards.LOOKUP for result in looked_up):
+            # A card the Planner made up ("3" for "card #3") never runs: list the cards and
+            # have the Planner complete the step from the Bank's list.
+            done = yield from self._complete(
+                conversation,
+                cards.listed_first(plan, made_up),
+                catalogue,
+                ask,
+                looked_up,
+                failed is not None,
+            )
+            if done is None:
+                return
+            plan, reviewed = done
+            listed = cards.known([*conversation.bank_results, *looked_up])
+            made_up = cards.made_up(reviewed.steps, listed, catalogue, reviewed.refusals)
+        if made_up and listed:
+            # Even with the Bank's list the Planner names no card it has: the Customer picks.
+            self._remember(conversation, looked_up)
+            yield self._clarify(conversation, cards.which_one(listed, language))
+            return
+        yield from self._propose(conversation, reviewed, looked_up, catalogue, plan.note)
+
+    def _complete(
+        self,
+        conversation: Conversation,
+        plan: planner.Plan,
+        catalogue: list[dict[str, Any]],
+        ask: Callable[[list[StepResult]], PlannerReply],
+        looked_up: list[StepResult],
+        after_failure: bool,
+    ) -> Generator[Event, None, tuple[planner.Plan, ReviewedPlan] | None]:
+        """Exact details first: run the Green look-ups a later step's input waits on (into
+        `looked_up`), have the Planner (`ask`) complete the Plan from what the Bank
+        returned, then get the Bank's tiers for it. Returns the Plan and its review, or
+        None if the turn ended here (a question asked, nothing more to plan after a failed
+        step, the Bank out of reach)."""
+        bank = conversation.bank
+        language = customer_language(conversation.history)
         look_ups = plan.look_ups(catalogue)
         if look_ups is not None:
             try:
                 reviewed_look_ups = reviewer.review(look_ups, bank, catalogue)
             except (BankRefused, BankUnavailable):
                 yield self._not_retrieved(conversation)
-                return
+                return None
             yield trace("plan", plan_data(reviewed_look_ups, look_ups=True))
             if reviewed_look_ups.other_customers:
                 yield from self._other_customer(conversation, reviewed_look_ups)
-                return
+                return None
             if reviewed_look_ups.green_only:  # the Bank agrees they need no Plan card
                 yield from execute(reviewed_look_ups, bank, looked_up, language=language)
                 if (lock := (yield from self._screen(conversation, looked_up))) is not None:
                     yield self._locked(conversation, lock)
-                    return
+                    return None
                 if (which := payees.which_one(looked_up, language)) is not None:
                     # Several Payees match: ask which one, never guess with the money.
                     self._remember(conversation, looked_up)
                     yield self._clarify(conversation, which)
-                    return
+                    return None
                 try:
-                    plan = ask(looked_up)
+                    completed = ask(looked_up)
                 except NOT_PLANNED:
                     log.warning(
                         "No Plan for conversation %s", conversation.conversation_id, exc_info=True
                     )
                     self._remember(conversation, looked_up)
                     yield self._not_planned(conversation)
-                    return
-                if isinstance(plan, planner.Declined):  # not on offer, but just in case
-                    yield from self._decline(conversation, plan, catalogue)
-                    return
-                if isinstance(plan, planner.HumanAsked):  # nor is this
+                    return None
+                if isinstance(completed, planner.Declined):  # not on offer, but just in case
+                    yield from self._decline(conversation, completed, catalogue)
+                    return None
+                if isinstance(completed, planner.HumanAsked):  # nor is this
                     yield self._human_requested(conversation)
-                    return
-                if isinstance(plan, planner.Clarification):
+                    return None
+                if isinstance(completed, planner.Clarification):
                     # Something the Bank doesn't show (no past rent, say): ask for it.
                     self._remember(conversation, looked_up)
-                    yield self._clarify(conversation, asked(plan))
-                    return
-                if isinstance(plan, planner.CancellationsAsked):  # nor this
+                    yield self._clarify(conversation, asked(completed))
+                    return None
+                if isinstance(completed, planner.CancellationsAsked):  # nor this
                     yield from self._offer_cancellations(conversation, catalogue)
-                    return
-                if failed is not None and not plan.steps:
-                    return
+                    return None
+                if after_failure and not completed.steps:
+                    return None
+                plan = completed
         try:
             reviewed = reviewer.review(plan, bank, catalogue)
         except (BankRefused, BankUnavailable):
             yield self._not_retrieved(conversation)
-            return
-        yield from self._propose(conversation, reviewed, looked_up, catalogue, plan.note)
+            return None
+        return plan, reviewed
 
     def _propose(
         self,

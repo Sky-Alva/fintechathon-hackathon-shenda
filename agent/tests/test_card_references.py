@@ -17,7 +17,7 @@ from conftest import (
     start_conversation,
     type_code,
 )
-from fake_model import FakeModel, plan, say, step
+from fake_model import FakeModel, clarify, plan, say, step
 
 LISTED = (
     "Here are your cards:\n\n"
@@ -27,11 +27,31 @@ LISTED = (
     "Which one did you lose?"
 )
 
+CARD_1 = {"card_id": "CARD-LM-001", "name": "工商借记卡 Debit card", "last4": "1234"}
 CARD_2 = {"card_id": "CARD-LM-002", "name": "招商借记卡 Debit card", "last4": "5678"}
+CARD_3 = {"card_id": "CARD-LM-003", "name": "信用卡 Credit card", "last4": "9012"}
 
 
 def shown(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [event for event in events if event["type"] != "trace"]
+
+
+def ran(bank: TestClient, login: Any, operation: str) -> list[tuple[str, str]]:
+    """The card each call of `operation` the Bank received named, with its outcome."""
+    return [
+        (e["input"].get("card_id"), e["outcome"])
+        for e in bank_audit(bank, login)
+        if e["event"] == "operation" and e["operation"] == operation
+    ]
+
+
+def listed(agent: TestClient, bank: TestClient, model: FakeModel) -> tuple[Any, str]:
+    """A conversation in which the Agent has listed 李明's three cards."""
+    model.script(plan(step("s1", "list_cards")), say(LISTED))
+    login = log_in(bank, "liming")
+    conversation = start_conversation(agent, login)
+    send(agent, conversation, "list my cards")
+    return login, conversation
 
 
 def cards_seen(model: FakeModel) -> list[dict[str, Any]]:
@@ -138,3 +158,118 @@ def test_a_card_the_bank_has_not_listed_is_not_named_on_the_plan_card(
 
     assert event_types(events) == ["plan_proposed", "confirmation_requested"]
     assert events[0]["cards"] == []
+
+
+def test_a_card_number_taken_for_a_card_id_never_runs_the_cards_are_listed_instead(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    login, conversation = listed(agent, bank, model)
+    model.script(
+        plan(step("s1", "file_loss_report", {"card_id": "3"})),  # the Bank has no card "3"
+        plan(step("s1", "file_loss_report", {"card_id": "CARD-LM-003"})),
+    )
+
+    events = shown(send(agent, conversation, "i lost card #3"))
+
+    # The Agent listed the cards and the Planner completed the step from the Bank's list.
+    assert "The look-ups' results" in model.requests[-1].text()
+    assert event_types(events) == [
+        "step_started", "step_succeeded", "plan_proposed", "confirmation_requested"
+    ]
+    assert events[0]["step"]["operation"] == "list_cards"
+    assert events[2]["cards"] == [{"step_id": "s1", **CARD_3}]
+    assert ran(bank, login, "file_loss_report") == []
+
+
+def test_a_card_step_with_no_card_lists_the_cards_and_the_customer_picks_one(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    model.script(
+        plan(step("s1", "file_loss_report")),  # "i lost my card": which one isn't said
+        clarify(
+            "Which card did you lose?",
+            ("工商借记卡 Debit card, ending 1234", "CARD-LM-001"),
+            ("招商借记卡 Debit card, ending 5678", "CARD-LM-002"),
+            ("信用卡 Credit card, ending 9012", "CARD-LM-003"),
+        ),
+    )
+    conversation = start_conversation(agent, log_in(bank, "liming"))
+
+    events = shown(send(agent, conversation, "i lost my card"))
+
+    assert event_types(events) == ["step_started", "step_succeeded", "clarification_question"]
+    assert events[0]["step"]["operation"] == "list_cards"
+    model.script(plan(step("s1", "file_loss_report", {"card_id": "CARD-LM-001"})))
+    chosen = shown(act(agent, conversation, "choose", value="CARD-LM-001"))
+    assert event_types(chosen) == ["plan_proposed", "confirmation_requested"]
+    assert chosen[0]["cards"] == [{"step_id": "s1", **CARD_1}]
+
+
+def test_a_card_still_made_up_after_the_list_is_asked_about_with_the_banks_cards(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    login, conversation = listed(agent, bank, model)
+    model.script(
+        plan(step("s1", "file_loss_report", {"card_id": "the first card"})),
+        plan(step("s1", "file_loss_report", {"card_id": "the first card"})),
+    )
+
+    events = shown(send(agent, conversation, "actually i lost my first card"))
+
+    # Never guessed: the Customer picks from the cards the Bank listed.
+    assert event_types(events) == ["step_started", "step_succeeded", "clarification_question"]
+    assert events[-1]["text"] == "Which card do you mean?"
+    assert events[-1]["options"] == [
+        {"label": "工商借记卡 Debit card, ending 1234", "value": "CARD-LM-001"},
+        {"label": "招商借记卡 Debit card, ending 5678", "value": "CARD-LM-002"},
+        {"label": "信用卡 Credit card, ending 9012", "value": "CARD-LM-003"},
+    ]
+    model.script(plan(step("s1", "file_loss_report", {"card_id": "CARD-LM-001"})))
+    chosen = shown(act(agent, conversation, "choose", value="CARD-LM-001"))
+    assert chosen[0]["cards"] == [{"step_id": "s1", **CARD_1}]
+    assert ran(bank, login, "file_loss_report") == []
+
+
+def test_which_card_is_asked_in_chinese_to_a_customer_writing_chinese(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    model.script(
+        plan(step("s1", "file_loss_report", {"card_id": "第一张"})),
+        plan(step("s1", "file_loss_report", {"card_id": "第一张"})),
+    )
+    conversation = start_conversation(agent, log_in(bank, "liming"))
+
+    events = shown(send(agent, conversation, "第一张卡丢了"))
+
+    assert events[-1]["text"] == "您指的是哪一张卡？"
+    assert events[-1]["options"][0] == {
+        "label": "工商借记卡 Debit card（尾号 1234）", "value": "CARD-LM-001"
+    }
+
+
+def test_another_customers_card_the_customer_typed_still_goes_to_the_bank_to_refuse(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    model.script(plan(step("s1", "add_card_lock", {"card_id": "CARD-HM-001", "scope": "online"})))
+    conversation = start_conversation(agent, log_in(bank, "liming"))
+
+    events = shown(send(agent, conversation, "帮我把韩梅梅的卡 CARD-HM-001 锁了"))
+
+    assert event_types(events) == ["step_failed", "refusal"]
+    assert events[0]["reason"] == "forbidden_other_customer"
+
+
+def test_a_listed_card_the_bank_refuses_as_not_found_is_not_listed_again(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    login, conversation = listed(agent, bank, model)
+    # Card 1234 has no overseas lock: the Bank's not_found is about the lock, not the card.
+    model.script(
+        plan(step("s1", "lift_card_lock", {"card_id": "CARD-LM-001", "scope": "overseas"})),
+        say("That card has no overseas lock to lift."),
+    )
+
+    events = shown(send(agent, conversation, "unlock overseas on my 1234 card"))
+
+    assert event_types(events) == ["step_failed", "answer"]
+    assert events[0]["reason"] == "not_found"
