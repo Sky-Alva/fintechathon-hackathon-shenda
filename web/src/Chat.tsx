@@ -366,7 +366,11 @@ export default function Chat({
   const t = UI[language]
   const bottom = useRef<HTMLDivElement>(null)
 
-  useEffect(() => bottom.current?.scrollIntoView({ behavior: 'smooth' }), [items])
+  // Braces matter: Chromium's scrollIntoView now returns a Promise, which React would
+  // take for the effect's cleanup and crash calling.
+  useEffect(() => {
+    bottom.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [items])
 
   // A Staff Member's takeover, replies and hand-back arrive between the Customer's turns,
   // and so does the news that Merchant orders were paid when the Bank clock reached their
