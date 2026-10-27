@@ -144,6 +144,39 @@ def test_a_chinese_question_is_answered_in_chinese(
     assert "Reply in English." not in answering.text()
 
 
+def test_the_planner_asks_its_questions_in_the_customers_language(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    # The Planner's instructions are mostly Chinese: without the note, a model may ask an
+    # English-speaking Customer "您丢的是哪张卡？".
+    model.script(
+        plan(step("s1", "list_cards"), step("s2", "file_loss_report", depends_on=["s1"])),
+        plan(step("s2", "file_loss_report", {"card_id": "CARD-LM-003"})),
+    )
+
+    send(agent, start_conversation(agent, log_in(bank, "liming")), "i lost my card")
+
+    planning, completing = model.requests
+    for request in (planning, completing):
+        assert request.messages[-1] == {
+            "role": "system",
+            "content": "The Customer's language: English. Write anything they will read in"
+            " English.",
+        }
+
+
+def test_the_planner_asks_a_chinese_speaking_customer_in_chinese(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    model.script(plan(step("s1", "list_cards")), say("您有三张卡。"))
+
+    send(agent, start_conversation(agent, log_in(bank, "liming")), "我有哪些银行卡？")
+
+    assert model.requests[0].messages[-1]["content"] == (
+        "客户使用的语言：中文。The Customer's language: Chinese."
+    )
+
+
 def test_a_reply_without_words_keeps_the_conversations_language(
     agent: TestClient, bank: TestClient, model: FakeModel
 ) -> None:

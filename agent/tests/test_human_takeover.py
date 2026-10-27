@@ -89,7 +89,8 @@ def test_handing_back_resumes_the_agent_with_the_whole_conversation_as_context(
     assert any(
         "王经理" in m["content"] and "您的问题我已记录" in m["content"] for m in planner_saw
     )
-    assert planner_saw[-1] == {"role": "user", "content": "那帮我查下余额"}
+    said = [m for m in planner_saw if m["role"] != "system"]  # past the Agent's notes
+    assert said[-1] == {"role": "user", "content": "那帮我查下余额"}
     assert updates(agent, conversation)["events"][-1] == {"type": "handed_back"}
 
 

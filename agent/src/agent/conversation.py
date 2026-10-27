@@ -408,6 +408,7 @@ class Conversations:
                     payee.as_data() for payee in payees.known(conversation.bank_results).values()
                 ],
                 cards=[card.as_data() for card in cards.known(conversation.bank_results).values()],
+                language=language,
             )
             if failed is None or not isinstance(plan, planner.Plan):
                 return plan
