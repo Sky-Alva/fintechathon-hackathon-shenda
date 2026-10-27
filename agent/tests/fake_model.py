@@ -19,6 +19,7 @@ hand-made replies: tests import them from here."""
 class ModelRequest:
     messages: list[dict[str, Any]]
     tools: list[dict[str, Any]] | None
+    require_tool: bool = False
 
     def text(self) -> str:
         """Everything the model was shown, as one string, for `in` checks."""
@@ -34,9 +35,14 @@ class FakeModel:
         self.replies.extend(replies)
 
     def chat(
-        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        require_tool: bool = False,
     ) -> ModelReply:
-        self.requests.append(ModelRequest(messages=messages, tools=tools))
+        self.requests.append(
+            ModelRequest(messages=list(messages), tools=tools, require_tool=require_tool)
+        )
         assert self.replies, "the model was asked for more replies than the test scripted"
         reply = self.replies.pop(0)
         if isinstance(reply, ModelUnavailable):

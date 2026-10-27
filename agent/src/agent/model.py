@@ -28,9 +28,14 @@ class ModelReply:
 
 class ModelClient(Protocol):
     def chat(
-        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        require_tool: bool = False,
     ) -> ModelReply:
-        """One chat completion. `messages` and `tools` are in the OpenAI format."""
+        """One chat completion. `messages` and `tools` are in the OpenAI format. With
+        `require_tool`, the reply should call one of `tools` rather than answer in text:
+        a model that can be made to (`tool_choice: "required"`) is."""
         ...
 
 
@@ -39,6 +44,9 @@ class Provider:
     base_url: str
     model: str
     api_key_env: str
+    requires_tool_choice: bool = False
+    """Honours `tool_choice: "required"`. Only set once checked against the real API:
+    left off, the model may still answer in text, and the caller has to cope."""
 
 
 PROVIDERS = {
@@ -51,6 +59,7 @@ PROVIDERS = {
         base_url="https://api.deepseek.com",
         model="deepseek-chat",
         api_key_env="DEEPSEEK_API_KEY",
+        requires_tool_choice=True,
     ),
 }
 DEFAULT_PROVIDER = "qwen"
@@ -72,7 +81,10 @@ class OpenAICompatibleModel:
         self.client = OpenAI(base_url=provider.base_url, api_key=api_key or "not-set")
 
     def chat(
-        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        require_tool: bool = False,
     ) -> ModelReply:
         if not self.api_key:
             raise ModelNotConfigured(
@@ -81,6 +93,8 @@ class OpenAICompatibleModel:
         kwargs: dict[str, Any] = {"model": self.provider.model, "messages": messages}
         if tools:
             kwargs["tools"] = tools
+            if require_tool and self.provider.requires_tool_choice:
+                kwargs["tool_choice"] = "required"
         try:
             message = self.client.chat.completions.create(**kwargs).choices[0].message
             return ModelReply(

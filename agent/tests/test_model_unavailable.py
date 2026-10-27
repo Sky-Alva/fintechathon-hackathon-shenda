@@ -64,13 +64,37 @@ def test_the_conversation_carries_on_once_the_model_is_back(
 def test_a_reply_that_is_no_plan_is_answered_the_same_way(
     agent: TestClient, bank: TestClient, model: FakeModel
 ) -> None:
-    model.script(say("好的，马上帮您查。"))  # plain text where a Plan was asked for
+    # Plain text where a Plan was asked for, and again when reminded to call a tool.
+    model.script(say("好的，马上帮您查。"), say("好的，马上帮您查。"))
     conversation = start_conversation(agent, log_in(bank, "liming"))
 
     events = send(agent, conversation, BALANCE_QUESTION)
 
     assert event_types(events) == ["answer"]
     assert "没有执行任何操作" in answers(events)[0]
+
+
+def test_a_question_asked_again_is_looked_up_again_when_the_model_first_answers_from_memory(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    login = log_in(bank, "liming")
+    conversation = start_conversation(agent, login)
+    model.script(plan(step("s1", "query_balance")), say("您的活期账户余额为 1180.00 元。"))
+    send(agent, conversation, BALANCE_QUESTION)
+    # Asked again, the model first repeats its earlier answer instead of planning.
+    model.script(
+        say("您的活期账户余额为 1180.00 元。"),
+        plan(step("s1", "query_balance")),
+        say("您的活期账户余额为 1180.00 元。"),
+    )
+
+    events = send(agent, conversation, BALANCE_QUESTION)
+
+    assert answers(events) == ["您的活期账户余额为 1180.00 元。"]
+    assert operations_run(bank, login) == ["query_balance", "query_balance"]
+    planner_requests = [request for request in model.requests if request.tools]
+    assert all(request.require_tool for request in planner_requests)
+    assert "call one of the tools" in planner_requests[-1].text()
 
 
 def test_a_plan_whose_steps_dont_fit_is_answered_the_same_way(
