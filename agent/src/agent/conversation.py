@@ -15,11 +15,13 @@ from typing import Any
 from agent import (
     birthday,
     cards,
+    charts,
     guard,
     notices,
     orders,
     payees,
     planner,
+    references,
     refusals,
     responder,
     reviewer,
@@ -408,6 +410,10 @@ class Conversations:
                     payee.as_data() for payee in payees.known(conversation.bank_results).values()
                 ],
                 cards=[card.as_data() for card in cards.known(conversation.bank_results).values()],
+                subscriptions=[
+                    listed.as_data()
+                    for listed in subscriptions.known(conversation.bank_results).values()
+                ],
                 language=language,
             )
             if failed is None or not isinstance(plan, planner.Plan):
@@ -449,29 +455,32 @@ class Conversations:
         if done is None:
             return
         plan, reviewed = done
-        listed = cards.known([*conversation.bank_results, *looked_up])
-        made_up = cards.made_up(reviewed.steps, listed, catalogue, reviewed.refusals)
-        if made_up and not any(result.operation == cards.LOOKUP for result in looked_up):
-            # A card the Planner made up ("3" for "card #3") never runs: list the cards and
-            # have the Planner complete the step from the Bank's list.
-            done = yield from self._complete(
-                conversation,
-                cards.listed_first(plan, made_up),
-                catalogue,
-                ask,
-                looked_up,
-                failed is not None,
-            )
-            if done is None:
+        for kind in (cards.REFERENCE, subscriptions.REFERENCE):
+            listed = kind.known([*conversation.bank_results, *looked_up])
+            made_up = references.made_up(kind, reviewed.steps, listed, catalogue, reviewed.refusals)
+            if made_up and not any(result.operation == kind.lookup for result in looked_up):
+                # An ID the Planner made up ("3" for "card #3") never runs: list them and
+                # have the Planner complete the step from the Bank's list.
+                done = yield from self._complete(
+                    conversation,
+                    references.listed_first(kind, plan, made_up),
+                    catalogue,
+                    ask,
+                    looked_up,
+                    failed is not None,
+                )
+                if done is None:
+                    return
+                plan, reviewed = done
+                listed = kind.known([*conversation.bank_results, *looked_up])
+                made_up = references.made_up(
+                    kind, reviewed.steps, listed, catalogue, reviewed.refusals
+                )
+            if made_up and listed:
+                # Even with the Bank's list the Planner names none it has: the Customer picks.
+                self._remember(conversation, looked_up)
+                yield self._clarify(conversation, references.which_one(kind, listed, language))
                 return
-            plan, reviewed = done
-            listed = cards.known([*conversation.bank_results, *looked_up])
-            made_up = cards.made_up(reviewed.steps, listed, catalogue, reviewed.refusals)
-        if made_up and listed:
-            # Even with the Bank's list the Planner names no card it has: the Customer picks.
-            self._remember(conversation, looked_up)
-            yield self._clarify(conversation, cards.which_one(listed, language))
-            return
         yield from self._propose(conversation, reviewed, looked_up, catalogue, plan.note)
 
     def _complete(
@@ -502,7 +511,13 @@ class Conversations:
                 yield from self._other_customer(conversation, reviewed_look_ups)
                 return None
             if reviewed_look_ups.green_only:  # the Bank agrees they need no Plan card
-                yield from execute(reviewed_look_ups, bank, looked_up, language=language)
+                yield from execute(
+                    reviewed_look_ups,
+                    bank,
+                    looked_up,
+                    language=language,
+                    chart_form=charts.asked_form(conversation.history),
+                )
                 if (lock := (yield from self._screen(conversation, looked_up))) is not None:
                     yield self._locked(conversation, lock)
                     return None
@@ -966,7 +981,13 @@ class Conversations:
             return
         yield trace("plan", plan_data(reviewed))
         results: list[StepResult] = []
-        yield from execute(reviewed, conversation.bank, results, language=language)
+        yield from execute(
+            reviewed,
+            conversation.bank,
+            results,
+            language=language,
+            chart_form=charts.asked_form(conversation.history),
+        )
         if (lock := (yield from self._screen(conversation, results))) is not None:
             yield self._locked(conversation, lock)
             return
@@ -1139,7 +1160,14 @@ class Conversations:
         stop = running.stop if running is not None and running.plan_id == plan_id else None
         language = customer_language(conversation.history)
         halt = yield from execute(
-            plan, conversation.bank, results, tokens, verification_tokens, stop, language
+            plan,
+            conversation.bank,
+            results,
+            tokens,
+            verification_tokens,
+            stop,
+            language,
+            charts.asked_form(conversation.history),
         )
         conversation.running = None
         if (lock := (yield from self._screen(conversation, results))) is not None:

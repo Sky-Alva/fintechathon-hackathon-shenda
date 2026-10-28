@@ -42,6 +42,15 @@ never suggest any other cause.
 永远不要向客户索要验证码或密码，也不要写出完整卡号（只写后四位）。
 Never ask the Customer for a verification code or a password: codes are typed into their
 phone only. Never write out a full card number; give its last four digits only.
+
+回答显示在手机聊天气泡里，只能显示纯文本：用简短的句子回答，不要用表格、标题或 ** 加粗等 Markdown 格式。
+本轮有 spending_by_category、monthly_report 或 annual_report 的结果时，聊天中已在你的回答上方画出
+图表（各类别或各月的金额，饼图或柱状图），所以不要逐项重复这些金额；用一两句话说总数和最值得注意的一两点。
+Your answer is shown in a phone's chat bubble as plain text: write short sentences, never
+a table, a heading or Markdown such as ** for bold. When this turn has a
+spending_by_category, monthly_report or annual_report result, the chat already shows it as
+a chart above your answer (each category's or month's amount, as a pie or bars), so don't
+list those amounts again: give the totals and the one or two things that stand out.
 """
 
 REPLY_IN: dict[Language, str] = {

@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import type { CategoryTotal, Chart } from './events'
 import { type Language, useLanguage } from './language'
 
@@ -45,6 +46,9 @@ const WORDS = {
     monthly: '每月收入与支出',
     byMonth: '按月明细',
     month: '月份',
+    bars: '柱状图',
+    pie: '饼图',
+    form: '图表样式',
   },
   en: {
     none: 'No spending in this period',
@@ -59,6 +63,9 @@ const WORDS = {
     monthly: 'Monthly income and spending',
     byMonth: 'By month',
     month: 'Month',
+    bars: 'Bars',
+    pie: 'Pie',
+    form: 'Chart style',
   },
 }
 
@@ -89,6 +96,107 @@ function CategoryBars({ categories }: { categories: CategoryTotal[] }) {
         </li>
       ))}
     </ul>
+  )
+}
+
+/** The categorical slots in fixed order, largest category first; past them, the rest share
+ * one recessive slice (each still listed in the legend with the Bank's own amount). */
+const SLICE_COLORS = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#6250d6']
+const REST_COLOR = '#b5b8be'
+const RADIUS = 60
+const HOLE = 34
+
+/** A point on the ring at `turn` (0 to 1, clockwise from 12 o'clock). */
+function at(turn: number, r: number) {
+  const angle = turn * 2 * Math.PI
+  return `${RADIUS + r * Math.sin(angle)} ${RADIUS - r * Math.cos(angle)}`
+}
+
+/** One slice of the ring, from `start` to `end` (turns). */
+function slice(start: number, end: number) {
+  if (end - start >= 0.9999) {
+    // A full ring: two half arcs, as one arc can't start and end at the same point.
+    return `M ${at(0, RADIUS)} A ${RADIUS} ${RADIUS} 0 1 1 ${at(0.5, RADIUS)} A ${RADIUS} ${RADIUS} 0 1 1 ${at(0, RADIUS)} M ${at(0, HOLE)} A ${HOLE} ${HOLE} 0 1 0 ${at(0.5, HOLE)} A ${HOLE} ${HOLE} 0 1 0 ${at(0, HOLE)} Z`
+  }
+  const large = end - start > 0.5 ? 1 : 0
+  return [
+    `M ${at(start, RADIUS)}`,
+    `A ${RADIUS} ${RADIUS} 0 ${large} 1 ${at(end, RADIUS)}`,
+    `L ${at(end, HOLE)}`,
+    `A ${HOLE} ${HOLE} 0 ${large} 0 ${at(start, HOLE)}`,
+    'Z',
+  ].join(' ')
+}
+
+/** Categories as a pie (a ring), largest first from 12 o'clock, with a legend of the Bank's
+ * figures: slice sizes are scaled from the Bank's amounts, and no total is computed. */
+function CategoryPie({ categories }: { categories: CategoryTotal[] }) {
+  const sorted = [...categories].sort((a, b) => amount(b.amount) - amount(a.amount))
+  const sum = sorted.reduce((total, c) => total + amount(c.amount), 0)
+  const language = useLanguage()
+  const w = WORDS[language]
+  const categoryName = (category: string) => CATEGORY_NAME[language][category] ?? category
+  if (sorted.length === 0 || sum <= 0) return <p className="chart-empty">{w.none}</p>
+  const color = (i: number) => SLICE_COLORS[i] ?? REST_COLOR
+  const describe = (c: CategoryTotal) =>
+    `${categoryName(c.category)}${w.colon}¥${c.amount}${w.count(c.transaction_count)}`
+  const slices = sorted.reduce<{ c: CategoryTotal; i: number; start: number; end: number }[]>(
+    (done, c, i) => {
+      const start = done.length > 0 ? done[done.length - 1].end : 0
+      return [...done, { c, i, start, end: start + amount(c.amount) / sum }]
+    },
+    [],
+  )
+  return (
+    <div className="chart-pie">
+      <svg viewBox={`0 0 ${2 * RADIUS} ${2 * RADIUS}`} role="img" aria-label={w.pie}>
+        {slices.map(({ c, i, start, end }) =>
+          end > start ? (
+            <path key={c.category} d={slice(start, end)} fill={color(i)} className="chart-slice">
+              <title>{describe(c)}</title>
+            </path>
+          ) : null,
+        )}
+      </svg>
+      <ul className="chart-pie-legend">
+        {sorted.map((c, i) => (
+          <li key={c.category} title={describe(c)}>
+            <i style={{ background: color(i) }} />
+            <span className="chart-label">{categoryName(c.category)}</span>
+            <span className="chart-value">¥{c.amount}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+/** Categories as bars or a pie: drawn first as the Agent says (a pie when the Customer asked
+ * for one), and the Customer can switch. */
+function Categories({ categories, form }: { categories: CategoryTotal[]; form: 'bars' | 'pie' }) {
+  const [shown, setShown] = useState(form)
+  const w = WORDS[useLanguage()]
+  return (
+    <>
+      <div className="chart-form" role="group" aria-label={w.form}>
+        {(['bars', 'pie'] as const).map((f) => (
+          <button
+            key={f}
+            type="button"
+            aria-pressed={shown === f}
+            className={shown === f ? 'chosen' : ''}
+            onClick={() => setShown(f)}
+          >
+            {w[f]}
+          </button>
+        ))}
+      </div>
+      {shown === 'pie' ? (
+        <CategoryPie categories={categories} />
+      ) : (
+        <CategoryBars categories={categories} />
+      )}
+    </>
   )
 }
 
@@ -173,7 +281,8 @@ function Totals({ rows }: { rows: [string, string][] }) {
 }
 
 /** A chart of what the Bank returned for one step (#40): category summary, monthly or
- * annual report. Drawn from the event's `data` only, which is the Bank's output unchanged. */
+ * annual report. Drawn from the event's `data` only, which is the Bank's output unchanged;
+ * a category summary or a monthly report as bars or a pie (`form`). */
 export default function SpendingChart({ chart }: { chart: Chart }) {
   const w = WORDS[useLanguage()]
   return (
@@ -182,7 +291,7 @@ export default function SpendingChart({ chart }: { chart: Chart }) {
       {chart.operation === 'spending_by_category' && (
         <>
           <Totals rows={[[w.totalSpending, chart.data.total_spending]]} />
-          <CategoryBars categories={chart.data.categories} />
+          <Categories categories={chart.data.categories} form={chart.form ?? 'bars'} />
         </>
       )}
       {chart.operation === 'monthly_report' && (
@@ -194,7 +303,7 @@ export default function SpendingChart({ chart }: { chart: Chart }) {
               [w.net, chart.data.net],
             ]}
           />
-          <CategoryBars categories={chart.data.categories} />
+          <Categories categories={chart.data.categories} form={chart.form ?? 'bars'} />
         </>
       )}
       {chart.operation === 'annual_report' && (

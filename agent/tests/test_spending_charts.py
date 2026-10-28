@@ -9,8 +9,8 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
-from conftest import Login, event_types, log_in, send, start_conversation
-from fake_model import FakeModel, plan, say, step
+from conftest import Login, act, event_types, log_in, send, start_conversation
+from fake_model import FakeModel, clarify, plan, say, step
 
 THIS_MONTH = {"start_date": "2026-10-01", "end_date": "2026-10-20"}
 
@@ -108,3 +108,60 @@ def test_a_category_summary_the_bank_refuses_gets_no_chart(
 
     assert "step_failed" in event_types(events)
     assert charts(events) == []
+
+
+def test_a_chart_of_categories_is_drawn_as_bars_unless_the_customer_asks_for_a_pie(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    model.script(plan(step("s1", "spending_by_category", THIS_MONTH)), say("Here you go."))
+    conversation = start_conversation(agent, log_in(bank, "liming"))
+
+    events = send(agent, conversation, "where did my money go?")
+
+    assert [chart["form"] for chart in charts(events)] == ["bars"]
+
+
+def test_a_pie_chart_asked_for_is_drawn_as_a_pie_even_after_a_question_about_the_month(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    model.script(
+        clarify(
+            "Which month's pie chart would you like?",
+            ("September 2026", "2026-09"),
+            ("August 2026", "2026-08"),
+        )
+    )
+    conversation = start_conversation(agent, log_in(bank, "liming"))
+    send(agent, conversation, "can you show me the piechart of my montly transactions")
+    model.script(
+        plan(step("s1", "monthly_report", {"year": 2026, "month": 9})),
+        say("Here is September 2026."),
+    )
+
+    events = act(agent, conversation, "choose", value="2026-09")
+
+    [chart] = charts(events)
+    assert chart["operation"] == "monthly_report"
+    assert chart["form"] == "pie"
+
+
+def test_a_pie_asked_for_in_chinese_is_drawn_as_a_pie(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    model.script(plan(step("s1", "spending_by_category", THIS_MONTH)), say("这是本月的分类支出。"))
+    conversation = start_conversation(agent, log_in(bank, "liming"))
+
+    events = send(agent, conversation, "用饼图看看这个月的支出")
+
+    assert [chart["form"] for chart in charts(events)] == ["pie"]
+
+
+def test_an_annual_report_stays_monthly_bars_even_when_a_pie_is_asked_for(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    model.script(plan(step("s1", "annual_report", {"year": 2026})), say("Here is 2026."))
+    conversation = start_conversation(agent, log_in(bank, "liming"))
+
+    events = send(agent, conversation, "2026 as a pie chart")
+
+    assert [chart["form"] for chart in charts(events)] == ["bars"]

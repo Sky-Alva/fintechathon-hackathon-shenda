@@ -60,7 +60,8 @@ export type AnnualReport = {
   total_spending: string
   net: string
 }
-export type Chart = { type: 'chart'; step_id: string; title: string } & (
+/** `form` since the pie chart: how a chart of categories is drawn first. */
+export type Chart = { type: 'chart'; step_id: string; title: string; form?: 'bars' | 'pie' } & (
   | { operation: 'spending_by_category'; data: SpendingByCategory }
   | { operation: 'monthly_report'; data: MonthlyReport }
   | { operation: 'annual_report'; data: AnnualReport }
