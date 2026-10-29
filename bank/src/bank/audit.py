@@ -2,7 +2,8 @@
 challenge and code attempt, Safety Lock and lift, its tier decision and outcome, per session, in order.
 
 A session reads its own trail with `read_audit_trail` (Green, for the Agent's decision
-trace panel, so it works under a Safety Lock); a Staff Member reads any session's with
+trace panel, so it works under a Safety Lock), without the back-office identifiers; a
+Staff Member reads any session's, identifiers and all, with
 the admin endpoint.
 """
 
@@ -38,6 +39,11 @@ CREATE TABLE audit_log (
     refusal_detail TEXT
 );
 """
+
+
+BACK_OFFICE_IDS = frozenset({"lock_id", "confirmation_id", "verification_id", "challenge_id"})
+"""Identifiers for Staff Members only: a Safety Lock's, an approval token's, a challenge's.
+The session's own trail leaves them out; what happened, when and why stays."""
 
 
 class Event(StrEnum):
@@ -90,7 +96,7 @@ def trail(
 ) -> list[dict[str, Any]]:
     """One session's entries in order: as a Staff Member sees them, or `as_caller`, with
     each refusal showing only what the caller was told (never e.g. which token a refused
-    one turned out to be)."""
+    one turned out to be) and no back-office identifiers (`BACK_OFFICE_IDS`)."""
     rows = conn.execute(
         "SELECT * FROM audit_log WHERE session_id = ? ORDER BY entry_id", (session_id,)
     ).fetchall()
@@ -100,8 +106,19 @@ def trail(
         shown = row["refusal_detail"] if as_caller and row["outcome"] == "refused" else None
         entry["detail"] = json.loads(shown or row["detail"])
         del entry["refusal_detail"]
+        if as_caller:
+            entry["input"] = _without_ids(entry["input"])
+            entry["detail"] = _without_ids(entry["detail"])
         entries.append(entry)
     return entries
+
+
+def _without_ids(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {k: _without_ids(v) for k, v in value.items() if k not in BACK_OFFICE_IDS}
+    if isinstance(value, list):
+        return [_without_ids(item) for item in value]
+    return value
 
 
 class ReadAuditTrailInput(BaseModel):
