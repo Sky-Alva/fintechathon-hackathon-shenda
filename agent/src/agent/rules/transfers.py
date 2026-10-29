@@ -429,7 +429,8 @@ def complete_transfer(request: Request) -> Reply:
         when, question = _when(request, transfer)
         if question is not None:
             return question
-    assert transfer.payee is not None
+    if transfer.payee is None:  # the message, read alone, names nobody: ask as the first stage does
+        return plan_transfer(request)
     payee = looked_up_payee(request, transfer.payee)
     if payee is None:
         return ask(

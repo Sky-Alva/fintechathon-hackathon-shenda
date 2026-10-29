@@ -20,6 +20,7 @@ How to add an intent (each Scenario has its own module here):
 """
 
 import logging
+from dataclasses import replace
 from collections.abc import Sequence
 from typing import Any
 
@@ -42,6 +43,22 @@ MODULES: list[Sequence[Intent]] = [
 """Every module of intents, one per Scenario."""
 
 
+def latest_message(history: list[dict[str, Any]]) -> str:
+    return next((str(m["content"]) for m in reversed(history) if untrusted.from_customer(m)), "")
+
+
+def the_request_asked_about(history: list[dict[str, Any]]) -> str | None:
+    """The Customer's earlier message, if the one before their latest was a question the
+    Agent asked them (shown, not a Customer message), else None."""
+    customer = [i for i, m in enumerate(history) if untrusted.from_customer(m)]
+    if len(customer) < 2 or customer[-1] - customer[-2] < 2:
+        return None
+    between = history[customer[-2] + 1 : customer[-1]]
+    if not any(m["content"].startswith(f"<bank_data>\n{untrusted.SHOWN}\n") for m in between):
+        return None
+    return str(history[customer[-2]]["content"])
+
+
 def intents() -> list[Intent]:
     return [intent for module in MODULES for intent in module]
 
@@ -60,10 +77,7 @@ def make_plan(
 ) -> Reply:
     """`planner.make_plan` without a model."""
     language = language or customer_language(history)
-    text = next(
-        (str(m["content"]) for m in reversed(history) if untrusted.from_customer(m)),
-        "",
-    )
+    text = latest_message(history)
     request = Request(
         text=text,
         matching=matching(text),
@@ -85,6 +99,35 @@ def make_plan(
     if guard.scam(request.matching) is not None:
         return planner.Declined(reason="manipulation", kind="impersonation")
     candidates = [intent for intent in intents() if intent.matches(request)]
+    if not candidates and (asked := the_request_asked_about(history)) is not None:
+        return answer_to_question(request, asked)
+    return respond(request, candidates)
+
+
+JOINERS = (" ", "给", " to ")
+"""How the Customer's answer is attached to the request it answers: the words of a
+transfer fit together differently in each ("转200块" + "给老妈", "send 200" + " to Mum")."""
+
+
+def answer_to_question(request: Request, asked: str) -> Reply:
+    """Nothing in the message is a request of its own: it answers the question just asked
+    ("200", "老妈"), so it is read together with the request that was asked about, joined
+    whichever way gives a Plan or a Decline rather than asking the same thing again."""
+    first: Reply | None = None
+    for joiner in JOINERS:
+        text = f"{asked}{joiner}{request.text}"
+        combined = replace(request, text=text, matching=guard.normalise(text))
+        candidates = [intent for intent in intents() if intent.matches(combined)]
+        reply = respond(combined, candidates)
+        if not isinstance(reply, planner.Clarification):
+            return reply
+        first = first or reply
+    return first or planner.Declined(reason="out_of_scope")
+
+
+def respond(request: Request, candidates: list[Intent]) -> Reply:
+    language = request.language
+    looked_up = request.looked_up
     if len(candidates) > 1:
         return planner.Clarification(
             question=request.say(
