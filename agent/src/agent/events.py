@@ -279,9 +279,9 @@ LockTrigger = Literal["wrong_codes", "reported_attempts", "red_operations"]
 
 
 class SessionLocked(BaseModel):
-    """The Bank has put the session under a Safety Lock: only Green Operations run until
-    `locked_until` or until a Staff Member lifts it. `text` tells the Customer so, in
-    their language. Ends the turn."""
+    """The Bank has put the session's Customer under a Safety Lock: only Green Operations
+    run, in any of their sessions, until `locked_until` or until a Staff Member lifts it.
+    `text` tells the Customer so, in their language. Ends the turn."""
 
     type: Literal["session_locked"] = "session_locked"
     trigger: LockTrigger

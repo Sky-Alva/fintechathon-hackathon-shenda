@@ -53,7 +53,7 @@ A multi-factor check (such as an SMS code or face check) the Customer must pass 
 _Avoid_: MFA, 2FA, authentication
 
 **Safety Lock**:
-A restriction on a session, triggered by repeated failed verifications or suspicious behaviour, under which only Green Operations may run until a Staff Member lifts it or it expires.
+A restriction on a Customer, triggered by repeated failed verifications or suspicious behaviour in any of their sessions, under which only Green Operations may run in every session of theirs (including ones opened after it was set) until a Staff Member lifts it or it expires.
 _Avoid_: Circuit breaker, freeze, lockout
 
 **Daily Transfer Total**:
