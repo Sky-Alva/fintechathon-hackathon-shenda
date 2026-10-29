@@ -61,6 +61,10 @@ _Note_: the Bank API keeps the names `session_locked` and `SessionLocked` for co
 The sum of the Customer's outgoing transfers on the current calendar day; it decides whether a transfer is Yellow (total ≤ RMB 1,000) or Red (total > RMB 1,000).
 _Avoid_: Daily limit, quota
 
+**First-time Payee**:
+A Payee the Customer has no completed transfer to, counting earlier steps of the same Plan. A transfer or Scheduled Transfer of more than RMB 500 to a First-time Payee is Red whatever the Daily Transfer Total; it can only raise a tier, never lower one. Split-bill Requests and Merchant orders are unaffected.
+_Avoid_: New contact, unknown recipient
+
 ### Transfers
 
 **Payee**:

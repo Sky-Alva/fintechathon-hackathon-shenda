@@ -56,6 +56,10 @@ The policy gate owns it. `ctx.daily_transfer_total` is the Customer's total for 
 
 The one exception is money leaving on another day: a Scheduled Transfer, or a Merchant order paid from Reserved Funds on its delivery date. Each is tiered against that day's *projected* total (`scheduled_transfers.projected_total`: sent that day, plus the Customer's Scheduled Transfers and pending Merchant orders waiting to be paid on it), read by its own tier rule and passed to `limits.tier_for_day_total`. Neither declares `daily_transfer_amount`, since nothing leaves when it is created. When the Bank clock is set or advanced to 09:00 on its date, it goes through the gate's `policy.run_approved` as what the Customer approved: a Scheduled Transfer as a `transfer`, a Merchant order as `pay_merchant_order` (an Operation of the private `merchants.PAYMENTS` registry, not in the catalogue, so nothing else can call it). The gate checks the Customer's Safety Lock and the tier again, adds it to that day's total and audits it in the session that created it. A Scheduled Transfer that is Red or locked then is held; a Merchant order that can't be paid then is `failed` with the refusal reason.
 
+### The First-time Payee rule
+
+`limits.tier_for_outgoing(amount, ctx, payee_id)` (and, for a Scheduled Transfer, the same check on top of the run-day total) raises the tier to Red when the amount is over ¥500 and the Customer has no completed transfer to that Payee. It only ever raises a tier. An Operation opts in with `pays_payee=lambda input: (payee_id, amount)` (`transfer` and `schedule_transfer`; not Merchant orders or Split-bill Requests). `ctx.planned_payees` holds the Payees earlier steps of the same tier preview, Confirmation request or verification request would pay, so only the first of two steps to the same new Payee is a first payment. A Scheduled Transfer is tiered again when it runs, like any other rule.
+
 ### Refusing
 
 Raise `Refusal(RefusalReason.X, message, detail)` from a handler or tier rule. The gate rolls back everything the call wrote, audits the refusal and returns it. Reasons:
@@ -110,6 +114,7 @@ Authorization: Bearer <session_token>
 ```
 
 - Steps are tiered in submitted order (at most 20). Each one counts the transfers already made today and the earlier steps toward the Daily Transfer Total, as a Confirmation request does.
+- A step the First-time Payee rule made Red also carries `"reasons": ["first_time_payee"]`; steps without a reason have no `reasons` field.
 - A step that can never run comes back with `refusal: {reason, message, detail}` and no `tier`, and adds nothing to the total. The other steps are still tiered. Only a malformed request as a whole (no list, an empty list, a stray field) is refused with `invalid_input`.
 - The preview is Green and changes nothing: no balances, totals or tokens. It is audited as one `tier_preview` entry listing every step's result.
 - It simulates the Daily Transfer Total only, not balances. A step that is funded now but wouldn't be after earlier steps is refused with `insufficient_funds` when it runs.
