@@ -123,7 +123,7 @@ Beside the phone, a dashed **demo control** shows the Bank clock and moves it fo
 
 ### The staff console
 
-http://localhost:8080/staff lists the active sessions with their Safety Lock status and each session's full audit trail (the Agent's messages and Plans merged with the Bank's record). From there a Staff Member can take a conversation over, reply, hand it back, and lift a Safety Lock. It asks for two keys: the Agent's staff key (`AGENT_STAFF_KEY`, default `demo-staff-key`) and the Bank's admin key (`BANK_ADMIN_KEY`, default `demo-admin-key`). The admin key goes only to the Bank, never to the Agent.
+http://localhost:8080/staff lists the active sessions with their Safety Lock status and each session's full audit trail (the Agent's messages and Plans merged with the Bank's record). From there a Staff Member can take a conversation over, reply, hand it back, and set or lift a Safety Lock. It asks for two keys: the Agent's staff key (`AGENT_STAFF_KEY`, default `demo-staff-key`) and the Bank's admin key (`BANK_ADMIN_KEY`, default `demo-admin-key`). The admin key goes only to the Bank, never to the Agent.
 
 ## Run on your own machine without Docker
 

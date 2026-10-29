@@ -80,6 +80,10 @@ CREATE TABLE safety_locks (
 """
 
 
+NO_SIGNALS = 0
+"""`last_signal_id` of a lock that clears none: one set by hand."""
+
+
 @dataclass(frozen=True)
 class Lock:
     lock_id: str
@@ -160,6 +164,31 @@ def due(conn: sqlite3.Connection, customer_id: str, now: datetime) -> Trigger | 
     return None
 
 
+def _insert(
+    conn: sqlite3.Connection,
+    customer_id: str,
+    session_id: str,
+    trigger: Trigger,
+    last_signal_id: int,
+    now: datetime,
+    set_by: str | None = None,
+    reason: str | None = None,
+) -> Lock:
+    """Lock the Customer for `LOCK_DURATION` from `now`."""
+    lock = Lock(
+        f"LCK-{secrets.token_hex(6)}", session_id, trigger, last_signal_id, now,
+        now + LOCK_DURATION, set_by=set_by, reason=reason,
+    )
+    conn.execute(
+        "INSERT INTO safety_locks (lock_id, customer_id, session_id, trigger,"
+        " last_signal_id, locked_at, expires_at, set_by, reason)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (lock.lock_id, customer_id, session_id, trigger.value, last_signal_id,
+         now.isoformat(), lock.expires_at.isoformat(), set_by, reason),
+    )
+    return lock
+
+
 def trip_if_due(
     conn: sqlite3.Connection, customer_id: str, session_id: str, now: datetime
 ) -> Lock | None:
@@ -171,17 +200,7 @@ def trip_if_due(
     last_signal_id = conn.execute(
         "SELECT MAX(signal_id) FROM lock_signals WHERE customer_id = ?", (customer_id,)
     ).fetchone()[0]
-    lock = Lock(
-        f"LCK-{secrets.token_hex(6)}", session_id, trigger, last_signal_id, now,
-        now + LOCK_DURATION,
-    )
-    conn.execute(
-        "INSERT INTO safety_locks (lock_id, customer_id, session_id, trigger,"
-        " last_signal_id, locked_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (lock.lock_id, customer_id, session_id, trigger.value, last_signal_id,
-         now.isoformat(), lock.expires_at.isoformat()),
-    )
-    return lock
+    return _insert(conn, customer_id, session_id, trigger, last_signal_id, now)
 
 
 def place(
@@ -196,18 +215,7 @@ def place(
     already locked."""
     if active(conn, customer_id, now) is not None:
         return None
-    lock = Lock(
-        f"LCK-{secrets.token_hex(6)}", session_id, Trigger.STAFF, 0, now, now + LOCK_DURATION,
-        set_by=by, reason=reason,
-    )
-    conn.execute(
-        "INSERT INTO safety_locks (lock_id, customer_id, session_id, trigger,"
-        " last_signal_id, locked_at, expires_at, set_by, reason)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (lock.lock_id, customer_id, session_id, lock.trigger.value, 0, now.isoformat(),
-         lock.expires_at.isoformat(), by, reason),
-    )
-    return lock
+    return _insert(conn, customer_id, session_id, Trigger.STAFF, NO_SIGNALS, now, by, reason)
 
 
 def lift(conn: sqlite3.Connection, customer_id: str, now: datetime, by: str) -> Lock | None:

@@ -22,17 +22,17 @@ Demo logins: `liming` / `demo1234` and `hanmei` / `demo1234`. Admin calls need t
 | `POST /operations/{name}` `{input, confirmation_token?, verification_token?}` | `Authorization: Bearer <session_token>` | Call an Operation through the policy gate. |
 | `POST /tier-preview` `{operations: [{operation, input}]}` | `Authorization: Bearer <session_token>` | Tier each step of a proposed Plan in order, counting the Daily Transfer Total; changes nothing. |
 | `POST /confirmations` `{operations: [{operation, input}]}` | `Authorization: Bearer <session_token>` | Issue Confirmation tokens for the Yellow Operations on a Plan card. |
-| `POST /verifications` `{operation, input}` | `Authorization: Bearer <session_token>` | Start Strong Verification for one Red Operation: texts a code to the Customer's simulated phone. |
-| `POST /verifications/{challenge_id}` `{code}` | `Authorization: Bearer <phone_token>` | Answer the challenge from the simulated phone. The right code returns a verification token. |
+| `POST /verifications` `{operations: [{operation, input}]}` | `Authorization: Bearer <session_token>` | Start Strong Verification for one or more Red Operations: texts one code to the Customer's simulated phone. |
+| `POST /verifications/{challenge_id}` `{code}` | `Authorization: Bearer <phone_token>` | Answer the challenge from the simulated phone. The right code returns one verification token per Operation. |
 | `GET /phone/messages` | `Authorization: Bearer <phone_token>` | The Customer's simulated phone (SMS inbox). The session token can neither read it nor answer a challenge. |
 | `GET /clock` | anyone | Read the Bank clock. |
 | `POST /admin/reset` | admin | Restore seed data (also ends every session and clears the audit log). |
 | `PUT /admin/clock` `{now}` | admin | Set the Bank clock. |
 | `POST /admin/clock/advance` `{minutes}` | admin | Move the Bank clock forward. |
 | `GET /admin/sessions/{session_id}/audit` | admin | Any session's full audit trail, in order, for the staff console. A session reads its own with the Green Operation `read_audit_trail`. |
-| `GET /admin/sessions/{session_id}/safety-lock` | admin | Whether the session is under a Safety Lock, why, and until when. |
-| `POST /admin/sessions/{session_id}/safety-lock` | admin | A Staff Member puts the session's Customer under a Safety Lock by hand, `{staff, reason?}` (audited). |
-| `DELETE /admin/sessions/{session_id}/safety-lock` | admin | A Staff Member lifts the session's Safety Lock (audited). |
+| `GET /admin/sessions/{session_id}/safety-lock` | admin | Whether the session's Customer is under a Safety Lock, why, and until when. |
+| `POST /admin/sessions/{session_id}/safety-lock` | admin | A Staff Member puts the session's Customer under a Safety Lock by hand, in every session of theirs, `{staff, reason?}` (audited). |
+| `DELETE /admin/sessions/{session_id}/safety-lock` | admin | A Staff Member lifts the Customer's Safety Lock (audited). |
 | `GET /admin/customers/{customer_id}/phone/messages` | admin | A Customer's simulated phone, for the staff console. |
 
 ### Spending and transaction Operations

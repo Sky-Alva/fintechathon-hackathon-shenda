@@ -5,7 +5,7 @@ A challenge covers its calls in order, each bound like an approval token (Custom
 session, Operation name, input fingerprint). Its code goes to the Customer's simulated
 phone; the right code, from the same session's phone before the challenge expires, earns
 one verification token per call, each for exactly that call. Three wrong codes close a
-challenge, and wrong codes are counted per session for the Safety Lock. Only a hash of
+challenge, and wrong codes are counted per Customer, across their sessions, for the Safety Lock. Only a hash of
 the code is stored.
 """
 
