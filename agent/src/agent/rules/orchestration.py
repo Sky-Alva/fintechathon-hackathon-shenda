@@ -12,6 +12,7 @@ tomorrow, if that is already past). If nothing fits, the Customer is asked for a
 amount.
 """
 
+import re
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -141,7 +142,62 @@ def _order(merchant: dict[str, Any], product: dict[str, Any], delivery: date, id
     )
 
 
+CATEGORY_WORDS = {"flowers": r"花|\bflowers?\b", "cake": r"蛋糕|\bcakes?\b"}
+DELIVERY = r"送到|送达|送去|订|\border\b|deliver"
+"""The Customer asked for the orders too, not only for money to be set aside."""
+RESERVE_ONLY = rf"^(?!.*(?:{DELIVERY})).*(?:预留|\breserve)"
+
+
+def plan_reserve(request: Request) -> Reply:
+    """Reserve Funds the Customer asked for, and nothing else: no orders."""
+    given = slots.amounts(request.matching)
+    categories = [
+        c for c, words in CATEGORY_WORDS.items() if re.search(words, request.matching)
+    ]
+    if len(given) != 1:
+        return Clarification(
+            question=request.say(
+                "您想预留多少钱？" if not given else "您提到了几个金额，要预留多少钱？",
+                "How much would you like to set aside?"
+                if not given
+                else "You mentioned several amounts. How much should I set aside?",
+            )
+        )
+    if not categories:
+        return Clarification(
+            question=request.say(
+                "这笔钱用来买什么？例如鲜花或蛋糕。",
+                "What is the money for? For example flowers or a cake.",
+            )
+        )
+    gift = "生日" in request.matching or "birthday" in request.matching
+    return Plan(
+        intent="预留资金",
+        steps=[
+            PlanStep(
+                id="s1",
+                operation="reserve_funds",
+                input={
+                    "amount": slots.money(given[0]),
+                    "purpose": request.say(
+                        "生日礼物" if gift else "预留资金", "birthday gift" if gift else "reserved"
+                    ),
+                    "merchant_categories": categories,
+                },
+                depends_on=[],
+            )
+        ],
+    )
+
+
 INTENTS = [
+    Intent(
+        name="reserve",
+        label={"zh": "预留资金", "en": "set money aside"},
+        triggers=(pattern(r"预留|\breserve\b"),),
+        excludes=(pattern(DELIVERY), pattern(r"转|汇|\b(transfer|send)\b|释放|release")),
+        plan=plan_reserve,
+    ),
     Intent(
         name="birthday",
         label={"zh": "为配偶的生日做准备", "en": "prepare for your spouse's birthday"},
@@ -151,7 +207,7 @@ INTENTS = [
             pattern(r"birthday.*(gift|flowers?|cake|prepare|arrange|plan|present)"),
             pattern(r"(anything|what).*(arrange|plan|prepare|need me to)"),
         ),
-        excludes=(pattern(r"转|汇|\b(transfer|send)\b"),),
+        excludes=(pattern(r"转|汇|\b(transfer|send)\b"), pattern(RESERVE_ONLY)),
         plan=plan,
         complete=complete,
     ),

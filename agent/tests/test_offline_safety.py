@@ -192,6 +192,35 @@ def test_offline_a_birthday_request_with_an_amount_reserves_that_amount(
     assert plan_card(events)["steps"][0]["input"]["amount"] == "800.00"
 
 
+def test_a_plain_reserve_request_sets_money_aside_and_orders_nothing(
+    offline_agent: TestClient, bank: TestClient
+) -> None:
+    set_clock(bank, SHORTLY_BEFORE)
+    login = log_in(bank, "liming")
+    conversation = start_conversation(offline_agent, login)
+
+    events = shown(
+        send(offline_agent, conversation, "帮我预留1000块，用来给梅梅买生日礼物，买鲜花和蛋糕")
+    )
+    steps = plan_card(events)["steps"]
+    assert [s["operation"] for s in steps] == ["reserve_funds"]
+    assert steps[0]["input"]["amount"] == "1000.00"
+    assert sorted(steps[0]["input"]["merchant_categories"]) == ["cake", "flowers"]
+
+    act(offline_agent, conversation, "confirm", plan_id=plan_card(events)["plan_id"])
+    assert "order_from_merchant" not in operations(bank, login)
+
+
+def test_a_reserve_request_without_an_amount_asks_how_much(
+    offline_agent: TestClient, bank: TestClient
+) -> None:
+    conversation = start_conversation(offline_agent, log_in(bank, "liming"))
+
+    events = shown(send(offline_agent, conversation, "帮我预留一笔钱买鲜花和蛋糕"))
+
+    assert event_types(events) == ["clarification_question"]
+
+
 def test_offline_stopping_the_birthday_plan_leaves_the_rest_unrun(
     offline_agent: TestClient, bank: TestClient, bank_link: BankLink
 ) -> None:
