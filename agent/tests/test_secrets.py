@@ -22,6 +22,7 @@ from conftest import (
     send,
     staff,
     start_conversation,
+    tokens_by_step,
     type_code,
 )
 from fake_model import FakeModel, decline, plan, say, step
@@ -180,7 +181,7 @@ def test_after_a_code_in_the_chat_the_code_on_the_phone_still_verifies_the_step(
             "verified",
             plan_id=requested["plan_id"],
             step_id="s2",
-            verification_token=verified["verification_token"],
+            verification_tokens=tokens_by_step(requested, verified),
         )
     )
 

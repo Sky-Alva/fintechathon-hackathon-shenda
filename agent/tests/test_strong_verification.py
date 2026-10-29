@@ -27,6 +27,7 @@ from conftest import (
     start_conversation,
     take_over,
     traces,
+    tokens_by_step,
     type_code,
 )
 from fake_model import FakeModel, ModelReply, plan, say, step
@@ -118,7 +119,7 @@ def test_the_right_code_from_the_phone_runs_the_red_step_with_its_verification_t
             "verified",
             plan_id=requested["plan_id"],
             step_id="s2",
-            verification_token=verified["verification_token"],
+            verification_tokens=tokens_by_step(requested, verified),
         )
     )
 
@@ -127,13 +128,15 @@ def test_the_right_code_from_the_phone_runs_the_red_step_with_its_verification_t
     entries = bank_audit(bank, login)
     transfers = [e for e in entries if e["event"] == "operation"]
     assert [(e["tier"], e["outcome"]) for e in transfers] == [("yellow", "ok"), ("red", "ok")]
-    assert transfers[-1]["detail"]["verification_id"] == verified["verification_id"]
+    assert transfers[-1]["detail"]["verification_id"] == verified["verifications"][0][
+        "verification_id"
+    ]
 
 
 def verify_with_the_phone(
     agent: TestClient, bank: TestClient, login: Login, conversation: str, requested: dict[str, Any]
 ) -> list[dict[str, Any]]:
-    """Read the code on the simulated phone, type it in, and hand the Agent the token."""
+    """Read the code on the simulated phone, type it in, and hand the Agent the tokens."""
     verified = type_code(bank, login, requested["challenge_id"], latest_code(bank, login))
     return shown(
         act(
@@ -142,12 +145,12 @@ def verify_with_the_phone(
             "verified",
             plan_id=requested["plan_id"],
             step_id=requested["step_id"],
-            verification_token=verified["verification_token"],
+            verification_tokens=tokens_by_step(requested, verified),
         )
     )
 
 
-def test_every_red_step_gets_its_own_verification_when_it_is_reached(
+def test_one_code_covers_every_red_step_of_the_confirmed_plan(
     agent: TestClient, bank: TestClient, model: FakeModel
 ) -> None:
     model.script(
@@ -162,17 +165,123 @@ def test_every_red_step_gets_its_own_verification_when_it_is_reached(
 
     first = shown(act(agent, conversation, "confirm", plan_id=proposed["plan_id"]))
     second = verify_with_the_phone(agent, bank, login, conversation, first[-1])
-    third = verify_with_the_phone(agent, bank, login, conversation, second[-1])
 
     assert event_types(first)[-1] == "verification_requested"
-    assert first[-1]["step_id"] == "s2"
-    assert event_types(second) == ["step_started", "step_succeeded", "verification_requested"]
-    assert second[-1]["step_id"] == "s3"
-    assert second[-1]["challenge_id"] != first[-1]["challenge_id"]
-    assert event_types(third) == ["step_started", "step_succeeded", "answer"]
-    assert len(phone_messages(bank, login)) == 2  # one code per Red step
+    assert (first[-1]["step_id"], first[-1]["step_ids"]) == ("s2", ["s2", "s3"])
+    assert event_types(second) == [
+        "step_started", "step_succeeded", "step_started", "step_succeeded", "answer"
+    ]
+    assert len(phone_messages(bank, login)) == 1  # one code for both Red steps
     transfers = [e for e in bank_audit(bank, login) if e["event"] == "operation"]
     assert [e["tier"] for e in transfers] == ["yellow", "red", "red"]
+
+
+LM_DEBIT, LM_CREDIT = "CARD-LM-001", "CARD-LM-003"
+
+
+def test_a_plan_with_two_loss_reports_asks_for_one_code_and_then_both_run(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    model.script(
+        plan(
+            step("s1", "file_loss_report", {"card_id": LM_CREDIT}),
+            step("s2", "file_loss_report", {"card_id": LM_DEBIT}),
+        ),
+        say("两张卡都已挂失。"),
+    )
+    login = log_in(bank, "liming")
+    conversation = start_conversation(agent, login)
+    proposed = shown(send(agent, conversation, "我的两张卡都丢了，帮我挂失"))[0]
+
+    requested = shown(act(agent, conversation, "confirm", plan_id=proposed["plan_id"]))[-1]
+    events = verify_with_the_phone(agent, bank, login, conversation, requested)
+
+    assert requested["type"] == "verification_requested"
+    assert requested["step_ids"] == ["s1", "s2"]
+    [sms] = phone_messages(bank, login)
+    assert "2 项操作" in sms["text"]
+    assert event_types(events) == [
+        "step_started", "step_succeeded", "step_started", "step_succeeded", "answer"
+    ]
+    reports = [
+        (e["input"]["card_id"], e["tier"], e["outcome"])
+        for e in bank_audit(bank, login)
+        if e["event"] == "operation"
+    ]
+    assert reports == [(LM_CREDIT, "red", "ok"), (LM_DEBIT, "red", "ok")]
+
+
+def bank_call(bank: TestClient, login: Login, path: str, body: dict[str, Any]) -> Any:
+    response = bank.post(
+        path, headers={"Authorization": f"Bearer {login.session_token}"}, json=body
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_lifting_a_card_lock_and_transferring_2000_asks_for_one_code(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    login = log_in(bank, "hanmei")
+    lock = {"card_id": "CARD-HM-001", "scope": "overseas"}
+    [confirmed] = bank_call(
+        bank, login, "/confirmations", {"operations": [{"operation": "add_card_lock", "input": lock}]}
+    )["confirmations"]
+    bank_call(
+        bank,
+        login,
+        "/operations/add_card_lock",
+        {"input": lock, "confirmation_token": confirmed["confirmation_token"]},
+    )
+    model.script(
+        plan(
+            step("s1", "lift_card_lock", lock),
+            step("s2", "transfer", {**TO_HUSBAND, "amount": "2000.00"}),
+        ),
+        say("已解除境外交易锁定，并向李明转账 2000.00 元。"),
+    )
+    conversation = start_conversation(agent, login)
+    proposed = shown(send(agent, conversation, "解除卡的锁定，再给老公转2000"))[0]
+    assert [s["tier"] for s in proposed["steps"]] == ["red", "red"]
+
+    requested = shown(act(agent, conversation, "confirm", plan_id=proposed["plan_id"]))[-1]
+    events = verify_with_the_phone(agent, bank, login, conversation, requested)
+
+    assert requested["step_ids"] == ["s1", "s2"]
+    assert event_types(events)[-1] == "answer"
+    assert len(phone_messages(bank, login)) == 1
+    ran = [(e["operation"], e["outcome"]) for e in bank_audit(bank, login) if e["event"] == "operation"]
+    assert ran[-2:] == [("lift_card_lock", "ok"), ("transfer", "ok")]
+
+
+def test_a_step_that_is_red_only_because_of_a_step_not_yet_run_gets_its_own_code(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    model.script(
+        plan(
+            step("s1", "raise_card_limit", {"card_id": "CARD-HM-001", "new_limit": "20000.00"}),
+            step("s2", "transfer", TO_HUSBAND),
+            step("s3", "transfer", TO_HUSBAND),
+        ),
+        say("已提高卡限额，并向李明转账两笔，各 600.00 元。"),
+    )
+    login = log_in(bank, "hanmei")
+    conversation = start_conversation(agent, login)
+    proposed = shown(send(agent, conversation, "提高卡限额，再给老公转两笔600"))[0]
+    assert [s["tier"] for s in proposed["steps"]] == ["red", "yellow", "red"]
+
+    first = shown(act(agent, conversation, "confirm", plan_id=proposed["plan_id"]))
+    second = verify_with_the_phone(agent, bank, login, conversation, first[-1])
+    third = verify_with_the_phone(agent, bank, login, conversation, second[-1])
+
+    # s3 is Red only once s2's ¥600 has gone: the first code can't cover it.
+    assert first[-1]["step_ids"] == ["s1"]
+    assert event_types(second)[-1] == "verification_requested"
+    assert second[-1]["step_ids"] == ["s3"]
+    assert event_types(third) == ["step_started", "step_succeeded", "answer"]
+    assert len(phone_messages(bank, login)) == 2
+    transfers = [e for e in bank_audit(bank, login) if e["event"] == "operation"]
+    assert [e["tier"] for e in transfers] == ["red", "yellow", "red"]
 
 
 def test_without_a_valid_verification_token_the_red_step_does_not_run(
@@ -191,7 +300,7 @@ def test_without_a_valid_verification_token_the_red_step_does_not_run(
             "verified",
             plan_id=requested["plan_id"],
             step_id="s2",
-            verification_token="made-up",
+            verification_tokens={"s2": "made-up"},
         )
     )
 
@@ -373,9 +482,12 @@ def test_no_code_or_verification_token_appears_in_a_trace_the_model_or_the_staff
         step_id="s2",
         failed_attempts=refused["refusal"]["detail"]["failed_attempts"],
     )
-    token = type_code(bank, login, requested["challenge_id"], code)["verification_token"]
+    token = type_code(bank, login, requested["challenge_id"], code)["verifications"][0][
+        "verification_token"
+    ]
     verified = act(
-        agent, conversation, "verified", plan_id=plan_id, step_id="s2", verification_token=token
+        agent, conversation, "verified", plan_id=plan_id, step_id="s2",
+        verification_tokens={"s2": token},
     )
 
     sent = [
@@ -448,7 +560,7 @@ def test_while_a_staff_member_has_the_conversation_a_verification_starts_nothing
             "action": "verified",
             "plan_id": requested["plan_id"],
             "step_id": "s2",
-            "verification_token": verified["verification_token"],
+            "verification_tokens": tokens_by_step(requested, verified),
         },
     )
 
@@ -471,7 +583,7 @@ def test_a_verification_for_a_step_not_waiting_for_one_is_refused(
             "action": "verified",
             "plan_id": requested["plan_id"],
             "step_id": "s1",
-            "verification_token": "whatever",
+            "verification_tokens": {"s1": "whatever"},
         },
     )
 

@@ -98,14 +98,18 @@ class ConfirmationRequested(BaseModel):
 
 
 class VerificationRequested(BaseModel):
-    """A Red step needs Strong Verification: the Bank has texted a code to the Customer's
-    simulated phone. The Customer answers with `verified` and the verification token the
-    Channel's SMS verification box got back from the Bank; the code itself never reaches
-    the Agent."""
+    """A Red step needs Strong Verification: the Bank has texted one code to the
+    Customer's simulated phone, for it and the Plan's other Red steps it could cover. The
+    Customer answers with `verified` and the verification tokens the Channel's SMS
+    verification box got back from the Bank; the code itself never reaches the Agent."""
 
     type: Literal["verification_requested"] = "verification_requested"
     plan_id: str
     step_id: str
+    """The Red step the Plan is paused at."""
+    step_ids: list[str]
+    """Every step the one code approves, in order, `step_id` first. The Bank returns one
+    verification token per step, in this order."""
     challenge_id: str
     sent_to: str
     expires_at: str

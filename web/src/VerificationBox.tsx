@@ -17,14 +17,14 @@ async function submitCode(
   phoneToken: string,
   challengeId: string,
   code: string,
-): Promise<{ token: string } | { refusal: Refusal }> {
+): Promise<{ tokens: string[] } | { refusal: Refusal }> {
   const response = await fetch(`/bank/verifications/${encodeURIComponent(challengeId)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${phoneToken}` },
     body: JSON.stringify({ code }),
   })
   const body = await response.json()
-  if (response.ok) return { token: body.verification_token }
+  if (response.ok) return { tokens: body.verifications.map((v: { verification_token: string }) => v.verification_token) }
   if (body.refusal) return { refusal: body.refusal }
   throw new Error(`verification: ${response.status}`)
 }
@@ -34,7 +34,7 @@ type Props = {
   /** The Red step waiting for its code. */
   verification: VerificationRequested
   disabled: boolean
-  onVerified: (verification: VerificationRequested, token: string) => void
+  onVerified: (verification: VerificationRequested, tokens: string[]) => void
   onWrongCode: (verification: VerificationRequested, failedAttempts: number) => void
 }
 
@@ -59,8 +59,8 @@ export default function VerificationBox({
     try {
       const result = await submitCode(phoneToken, verification.challenge_id, code.trim())
       setCode('')
-      if ('token' in result) {
-        onVerified(verification, result.token)
+      if ('tokens' in result) {
+        onVerified(verification, result.tokens)
       } else if (
         result.refusal.reason === 'token_invalid' &&
         typeof result.refusal.detail.failed_attempts === 'number'
@@ -95,6 +95,11 @@ export default function VerificationBox({
           zh: `输入发送到 ${verification.sent_to} 的验证码`,
           en: `Type the code sent to ${verification.sent_to}`,
         })}
+        {verification.step_ids.length > 1 &&
+          say({
+            zh: `（一次验证批准 ${verification.step_ids.length} 项操作）`,
+            en: ` (approves ${verification.step_ids.length} steps)`,
+          })}
       </label>
       <div className="verify-row">
         <input

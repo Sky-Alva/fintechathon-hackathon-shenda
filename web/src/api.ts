@@ -71,8 +71,9 @@ export type CustomerAction =
   | { action: 'stop'; plan_id: string }
   | { action: 'resume'; plan_id: string }
   | { action: 'cancel'; plan_id: string }
-  // The verification box got this token from the Bank for the right code (#37); never the code.
-  | { action: 'verified'; plan_id: string; step_id: string; verification_token: string }
+  // The verification box got these tokens from the Bank for the right code (#37), one per step
+  // the challenge covers (#55), by step ID; never the code.
+  | { action: 'verified'; plan_id: string; step_id: string; verification_tokens: Record<string, string> }
   // The Bank refused the code typed into the box; the Agent checks the lock itself.
   | { action: 'wrong_code'; plan_id: string; step_id: string; failed_attempts: number }
   // Tap an option of the clarifying question (#39).
