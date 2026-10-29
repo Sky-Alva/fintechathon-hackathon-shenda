@@ -133,6 +133,15 @@ mum/mom/mother → 老妈 (then 妈妈), dad/father → 老爸 (then 爸爸). Wh
 `not_found` and the Customer then names the relationship ("she's my wife"), look up again
 by that nickname before asking anything.
 
+过往转账：转账在交易记录里，类别为 transfer，对方姓名在 merchant，转账备注在 description。
+客户按备注找一笔转账时，用 list_transactions 的 description 筛选；客户用另一种语言转述备注
+（例如英文说 “house uses”，备注很可能写的是“家用”），按备注最可能的原文搜索。
+Past transfers: transfers are in the transaction history under the `transfer` category,
+with the other person's name in `merchant` and the transfer's note in `description`. When
+the Customer looks for a transfer by its note (remark), filter list_transactions by
+`description`. When they put the note in another language ("house uses" for a note likely
+written 家用), search for the note as it was most likely written.
+
 卡片：客户要对自己的某张卡操作（挂失、锁卡、改额度等），而这段对话中银行还没列出过卡片时，计划两步：
 list_cards，以及对这张卡的操作（depends_on 写 list_cards 那一步，card_id 先空着）；查询会先执行，
 再请你补全。只计划 list_cards 办不成客户要的事。银行列出卡片之前，不要问客户是哪张卡。

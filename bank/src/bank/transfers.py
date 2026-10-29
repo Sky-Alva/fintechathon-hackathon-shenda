@@ -18,7 +18,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 from pypinyin import Style, pinyin
 
-from bank import customers, limits, phone
+from bank import customers, limits, phone, spending
 from bank.money import Amount, from_cents, to_cents
 from bank.registry import (
     BankModule,
@@ -338,6 +338,7 @@ def transfer(ctx: OperationContext, input: TransferInput) -> TransferOutput:
             ctx.now.isoformat(),
         ),
     )
+    spending.record_transfer(ctx.conn, transfer_id)
     return TransferOutput(
         transfer_id=transfer_id,
         payee_id=payee["payee_id"],

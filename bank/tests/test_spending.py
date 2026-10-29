@@ -99,7 +99,9 @@ def test_category_summary_totals_match_the_transactions(client: TestClient) -> N
     headers = login(client, "liming")
     period = {"start_date": "2026-09-01", "end_date": "2026-10-31"}
     summary = output(call(client, headers, "spending_by_category", period))
-    debits = [t for t in transactions(client, headers, **period) if t["direction"] == "debit"]
+    # Transfers are in the history but are not spending (docs/adr/0002).
+    debits = [t for t in transactions(client, headers, **period)
+              if t["direction"] == "debit" and t["category"] != "transfer"]
 
     for row in summary["categories"]:
         matching = [Decimal(t["amount"]) for t in debits if t["category"] == row["category"]]
@@ -133,7 +135,9 @@ def test_annual_report_has_twelve_zero_filled_months(client: TestClient) -> None
 def test_a_customer_sees_only_their_own_transactions(client: TestClient) -> None:
     headers = login(client, "hanmei")
 
-    assert transactions(client, headers) == []
+    # 韩梅梅 has no seeded spending; her history is only her transfers with 李明.
+    assert {(t["account_id"], t["category"], t["merchant"])
+            for t in transactions(client, headers)} == {("ACC-HM-001", "transfer", "李明")}
     response = call(client, headers, "list_transactions", {"account_id": "ACC-LM-001"})
     assert response.status_code == 403
     assert refusal(response)["reason"] == "forbidden_other_customer"
