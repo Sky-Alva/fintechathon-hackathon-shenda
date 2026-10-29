@@ -7,6 +7,8 @@ its own keeps the conversation's language.
 import re
 from typing import Any, Literal
 
+from agent import untrusted
+
 Language = Literal["zh", "en"]
 
 HAN = re.compile(r"[㐀-䶿一-鿿豈-﫿]")
@@ -15,7 +17,7 @@ LATIN = re.compile(r"[A-Za-z]")
 
 def customer_language(history: list[dict[str, Any]]) -> Language:
     for message in reversed(history):
-        if message["role"] != "user":
+        if not untrusted.from_customer(message):
             continue
         text = message["content"]
         if HAN.search(text):

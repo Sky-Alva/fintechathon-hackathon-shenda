@@ -18,10 +18,14 @@ from bank.registry import (
     RefusalReason, Tier,
 )
 
-Category = Literal[
+SpendingCategory = Literal[
     "income", "housing", "food_delivery", "transport", "subscriptions",
     "shopping", "gifts", "utilities", "dining", "entertainment", "healthcare",
 ]
+# Money moved between people, not spent or earned: kept out of spending and income totals,
+# Unusual Transaction rules and Recurring Charges (docs/adr/0002).
+TRANSFER = "transfer"
+Category = SpendingCategory | Literal["transfer"]
 AccountId = customers.AccountId
 
 SCHEMA = """
@@ -158,6 +162,52 @@ def seed(conn: sqlite3.Connection) -> None:
     )
     conn.execute("UPDATE transactions SET location = 'Tokyo, JP' WHERE merchant = 'Tokyo Duty Free'")
     seed_subscriptions(conn)
+    for (transfer_id,) in conn.execute("SELECT transfer_id FROM transfers").fetchall():
+        record_transfer(conn, transfer_id)
+
+
+def record_transfer(conn: sqlite3.Connection, transfer_id: str) -> None:
+    """Put a completed transfer in the transaction history: a debit for the sender, with
+    the Payee as the counterparty and the note as the description, and a credit for the
+    receiving Customer when the Payee's account is in the Bank."""
+    row = conn.execute(
+        "SELECT t.customer_id, t.from_account_id, t.amount_cents, t.note, t.at,"
+        " p.name AS payee_name, p.account_id AS payee_account_id, c.name AS sender_name"
+        " FROM transfers t JOIN payees p ON p.payee_id = t.payee_id"
+        " JOIN customers c ON c.customer_id = t.customer_id WHERE t.transfer_id = ?",
+        (transfer_id,),
+    ).fetchone()
+    entries = [(f"TXN-{transfer_id}", row["customer_id"], row["from_account_id"],
+                row["payee_name"], "debit")]
+    receiver = conn.execute(
+        "SELECT customer_id FROM accounts WHERE account_id = ?", (row["payee_account_id"],)
+    ).fetchone()
+    if receiver is not None:
+        entries.append((f"TXN-{transfer_id}-IN", receiver["customer_id"],
+                        row["payee_account_id"], row["sender_name"], "credit"))
+    conn.executemany(
+        "INSERT OR IGNORE INTO transactions (transaction_id, customer_id, account_id, "
+        "occurred_at, category, merchant, description, direction, amount_cents) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [(txn_id, customer_id, account_id, row["at"], TRANSFER, counterparty, row["note"],
+          direction, row["amount_cents"])
+         for txn_id, customer_id, account_id, counterparty, direction in entries],
+    )
+
+
+def record_merchant_payment(conn: sqlite3.Connection, order_id: str) -> None:
+    """Put a paid Merchant order in the transaction history: a purchase, so it is gift
+    spending (flowers and cakes), unlike a transfer to a Payee."""
+    conn.execute(
+        "INSERT OR IGNORE INTO transactions (transaction_id, customer_id, account_id, "
+        "occurred_at, category, merchant, description, direction, amount_cents) "
+        "SELECT 'TXN-' || o.order_id, o.customer_id, r.account_id, o.paid_at, 'gifts', m.name,"
+        " CASE WHEN o.note != '' THEN o.note ELSE p.name END, 'debit', o.amount_cents"
+        " FROM merchant_orders o JOIN merchants m ON m.merchant_id = o.merchant_id"
+        " JOIN merchant_products p ON p.product_id = o.product_id"
+        " JOIN reserved_funds r ON r.reservation_id = o.reservation_id WHERE o.order_id = ?",
+        (order_id,),
+    )
 
 
 def seed_subscriptions(conn: sqlite3.Connection) -> None:
@@ -217,6 +267,10 @@ class TransactionFilter(BaseModel):
     end_date: date | None = Field(default=None, description="Inclusive end date")
     category: Category | None = None
     merchant: str | None = Field(default=None, min_length=1, max_length=100)
+    description: str | None = Field(
+        default=None, min_length=1, max_length=100,
+        description="Text in the description, such as a transfer's note (家用); any case.",
+    )
 
     @model_validator(mode="after")
     def dates_are_ordered(self) -> TransactionFilter:
@@ -268,6 +322,9 @@ def _where(ctx: OperationContext, filters: TransactionFilter) -> tuple[str, list
     if filters.merchant:
         clauses.append("instr(lower(merchant), lower(?)) > 0")
         params.append(filters.merchant.strip())
+    if filters.description:
+        clauses.append("instr(lower(description), lower(?)) > 0")
+        params.append(filters.description.strip())
     return " AND ".join(clauses), params
 
 
@@ -329,6 +386,8 @@ def detect_unusual_transactions(
     if input.account_id:
         clauses.append("account_id = ?")
         params.append(input.account_id)
+    clauses.append("category != ?")
+    params.append(TRANSFER)
     rows = ctx.conn.execute(
         "SELECT transaction_id, account_id, occurred_at, category, merchant, description, "
         "direction, amount_cents, location FROM transactions "
@@ -423,8 +482,8 @@ def detect_recurring_charges(
     ctx: OperationContext, input: RecurringChargesInput
 ) -> RecurringChargesOutput:
     """Find merchant charges with at least three regular debit occurrences."""
-    clauses = ["customer_id = ?", "direction = 'debit'", "date(occurred_at) <= ?"]
-    params: list[object] = [ctx.customer_id, ctx.now.date().isoformat()]
+    clauses = ["customer_id = ?", "direction = 'debit'", "category != ?", "date(occurred_at) <= ?"]
+    params: list[object] = [ctx.customer_id, TRANSFER, ctx.now.date().isoformat()]
     if input.account_id:
         clauses.append("account_id = ?")
         params.append(input.account_id)
@@ -660,7 +719,7 @@ def renewal_reminders(ctx: OperationContext, input: RenewalRemindersInput) -> Re
 
 class SpendingByCategoryInput(TransactionFilter):
     account_id: AccountId | None = None
-    category: Category | None = None
+    category: SpendingCategory | None = None  # transfers are not spending
     merchant: str | None = None
 
 
@@ -681,9 +740,9 @@ def spending_by_category(ctx: OperationContext, input: SpendingByCategoryInput) 
     where, params = _where(ctx, input)
     rows = ctx.conn.execute(
         f"SELECT category, SUM(amount_cents) AS cents, COUNT(*) AS count "
-        f"FROM transactions WHERE {where} AND direction = 'debit' "
+        f"FROM transactions WHERE {where} AND direction = 'debit' AND category != ? "
         "GROUP BY category ORDER BY category",
-        params,
+        [*params, TRANSFER],
     ).fetchall()
     totals = [CategoryTotal(category=row["category"], amount=from_cents(row["cents"]),
                             transaction_count=row["count"]) for row in rows]
@@ -720,8 +779,8 @@ class MonthlyReportOutput(BaseModel):
 def monthly_report(ctx: OperationContext, input: MonthlyReportInput) -> MonthlyReportOutput:
     start = date(input.year, input.month, 1)
     end = date(input.year + (input.month == 12), input.month % 12 + 1, 1)
-    clauses = ["customer_id = ?", "date(occurred_at) >= ?", "date(occurred_at) < ?"]
-    params: list[object] = [ctx.customer_id, start.isoformat(), end.isoformat()]
+    clauses = ["customer_id = ?", "category != ?", "date(occurred_at) >= ?", "date(occurred_at) < ?"]
+    params: list[object] = [ctx.customer_id, TRANSFER, start.isoformat(), end.isoformat()]
     if input.account_id:
         clauses.append("account_id = ?")
         params.append(input.account_id)
@@ -774,8 +833,10 @@ class AnnualReportOutput(BaseModel):
 
 
 def annual_report(ctx: OperationContext, input: AnnualReportInput) -> AnnualReportOutput:
-    clauses = ["customer_id = ?", "date(occurred_at) >= ?", "date(occurred_at) < ?"]
-    params: list[object] = [ctx.customer_id, f"{input.year:04d}-01-01", f"{input.year + 1:04d}-01-01"]
+    clauses = ["customer_id = ?", "category != ?", "date(occurred_at) >= ?", "date(occurred_at) < ?"]
+    params: list[object] = [
+        ctx.customer_id, TRANSFER, f"{input.year:04d}-01-01", f"{input.year + 1:04d}-01-01"
+    ]
     if input.account_id:
         clauses.append("account_id = ?")
         params.append(input.account_id)
@@ -819,8 +880,15 @@ MODULE = BankModule(
     operations=[
         Operation(
             name="list_transactions",
-            description_zh="按日期范围、类别或商户筛选并查看当前客户自己的交易记录。",
-            description_en="List the current Customer's own transactions, filterable by date range, category, merchant, and account.",
+            description_zh=(
+                "按日期范围、类别、商户（对方）或描述（如转账备注“家用”）筛选并查看当前客户自己的交易记录；"
+                "已完成的转账也在其中，类别为 transfer。"
+            ),
+            description_en=(
+                "List the current Customer's own transactions, filterable by date range, category,"
+                " merchant (counterparty), description (e.g. a transfer's note, 家用) and account;"
+                " completed transfers are included under the `transfer` category."
+            ),
             input_model=ListTransactionsInput, output_model=ListTransactionsOutput,
             tier=Tier.GREEN, reversibility=ReadOnly(), handler=list_transactions,
         ),
@@ -861,8 +929,8 @@ MODULE = BankModule(
         ),
         Operation(
             name="spending_by_category",
-            description_zh="汇总当前客户在指定日期范围内按消费类别划分的支出。",
-            description_en="Summarize the current Customer's spending by category for a date range, with totals that reconcile to matching debit transactions.",
+            description_zh="汇总当前客户在指定日期范围内按消费类别划分的支出；转账不算支出。",
+            description_en="Summarize the current Customer's spending by category for a date range, with totals that reconcile to matching debit transactions; transfers are not spending.",
             input_model=SpendingByCategoryInput, output_model=SpendingByCategoryOutput,
             tier=Tier.GREEN, reversibility=ReadOnly(), handler=spending_by_category,
         ),

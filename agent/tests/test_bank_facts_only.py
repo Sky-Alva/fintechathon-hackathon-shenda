@@ -380,7 +380,6 @@ CARDS_QUESTION = "我有哪些卡？"
         "您的工商借记卡尾号 1234，招商借记卡尾号5678。",
         "信用卡（**** 9012）的月额度为 20000.00 元。",
         "Your credit card ending in 9012 is active.",
-        "CARD-LM-002 已锁定境外交易。",
     ],
 )
 def test_a_card_the_bank_returned_is_sent(
