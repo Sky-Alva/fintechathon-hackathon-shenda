@@ -15,6 +15,7 @@ Bank decides every tier, Confirmation and Strong Verification (ADR-0001).
 """
 
 import re
+import unicodedata
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -30,6 +31,47 @@ SCAM_PATTERNS = [
 ]
 
 
+INVISIBLE = re.compile("[\u200b-\u200d\u2060\ufeff\u202a-\u202e\u2066-\u2069]")
+"""Zero-width characters and bidirectional controls: nothing the Customer can see."""
+
+RIGHT_TO_LEFT_OVERRIDE = "\u202e"
+
+LOOK_ALIKES = str.maketrans(
+    {
+        # Cyrillic
+        "а": "a", "в": "b", "г": "r", "е": "e", "к": "k", "м": "m", "н": "h", "о": "o",
+        "р": "p", "с": "c", "т": "t", "у": "y", "х": "x", "і": "i", "ј": "j", "ѕ": "s",
+        "ԁ": "d", "һ": "h", "ԛ": "q", "ԝ": "w", "ӏ": "l",
+        # Greek
+        "α": "a", "ε": "e", "ι": "i", "ο": "o", "ρ": "p", "ν": "v", "τ": "t", "υ": "u",
+        # Latin
+        "ı": "i", "ɑ": "a", "ɡ": "g", "ɩ": "i", "ӏ": "l",
+    }
+)  # fmt: skip
+
+
+def normalise(text: str) -> str:
+    """What the text reads as once disguises are undone, for matching only: NFKC (full-width
+    letters become plain), zero-width and bidirectional control characters removed,
+    Cyrillic, Greek and Latin look-alikes mapped to ASCII, lower-cased."""
+    text = INVISIBLE.sub("", unicodedata.normalize("NFKC", text))
+    return text.lower().translate(LOOK_ALIKES)
+
+
+def readings(text: str) -> list[str]:
+    """The ways the text may read. A right-to-left override makes reversed text display
+    forwards, so such text is also read back to front."""
+    plain = normalise(text)
+    if RIGHT_TO_LEFT_OVERRIDE in text:
+        return [plain, plain[::-1]]
+    return [plain]
+
+
+def matches(patterns: list[re.Pattern[str]], text: str) -> bool:
+    """Whether any pattern matches any normalised reading of the text."""
+    return any(p.search(reading) for reading in readings(text) for p in patterns)
+
+
 @dataclass(frozen=True)
 class Suspicion:
     """A suspected manipulation attempt, as reported to the Bank: what kind, and the text
@@ -41,22 +83,30 @@ class Suspicion:
 
 def scam(text: str) -> Suspicion | None:
     """The known scam in the Customer's message, if it has one."""
-    if any(pattern.search(text) for pattern in SCAM_PATTERNS):
+    if matches(SCAM_PATTERNS, text):
         return Suspicion("impersonation", quoted(text))
     return None
 
 
-INJECTION_PATTERNS = [
+ADDRESSED_TO_THE_AGENT = [
     re.compile(r"(系统|管理员)(指令|命令|提示)"),
     re.compile(r"(忽略|无视|忘记)(掉)?(此前|之前|以上|上述|前面|先前)?的?(所有|全部|一切)?(规则|指令|指示|提示|限制)"),
-    re.compile(r"(无需|不需要|不用|跳过|绕过)(任何)?(确认|验证|验证码|审批)"),
-    re.compile(r"(全部|所有)余额(都)?转"),
     re.compile(r"\bsystem (prompt|instruction|command|override)", re.IGNORECASE),
     re.compile(
         r"\b(ignore|disregard|forget) (all |any )?(the )?(previous|prior|above|earlier|your)"
         r" (instructions|rules|prompts?)",
         re.IGNORECASE,
     ),
+]
+"""Text that only makes sense as an order to the Agent itself. The Customer has no business
+writing it, so it is declined and reported in their messages too. The rest of
+`INJECTION_PATTERNS` ("skip the verification") is what a Customer may say in a hurry: the
+Bank enforces the tiers whatever they claim, so only Bank data is screened for it."""
+
+INJECTION_PATTERNS = [
+    *ADDRESSED_TO_THE_AGENT,
+    re.compile(r"(无需|不需要|不用|跳过|绕过)(任何)?(确认|验证|验证码|审批)"),
+    re.compile(r"(全部|所有)余额(都)?转"),
     re.compile(
         r"\b(skip|bypass|without|no) (the |any )?(confirmation|verification|code)",
         re.IGNORECASE,
@@ -82,8 +132,16 @@ def injection(output: dict[str, Any] | None) -> Injection | None:
     other people: it is only ever data. Text in it that tries to give orders is never
     followed, and is reported as a suspected injection."""
     for field, text in strings(output):
-        if any(pattern.search(text) for pattern in INJECTION_PATTERNS):
+        if matches(INJECTION_PATTERNS, text):
             return Injection(field, Suspicion("injection", quoted(text)))
+    return None
+
+
+def injected(text: str) -> Suspicion | None:
+    """An order to the Agent itself in something the Customer wrote, if it has one, read
+    through the same normalisation as Bank data."""
+    if matches(ADDRESSED_TO_THE_AGENT, text):
+        return Suspicion("injection", quoted(text))
     return None
 
 
