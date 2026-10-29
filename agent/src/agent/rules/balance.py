@@ -20,7 +20,10 @@ INTENTS = [
             pattern(r"余额|还有多少钱|有多少钱|剩多少|剩下多少|卡里.*(多少|几)"),
             pattern(r"\bbalance\b|how much (money )?(do i have|is (there|left|in))"),
         ),
-        excludes=(pattern(r"转|汇|付|\b(transfer|send|pay|split)\b"),),
+        excludes=(
+            pattern(r"转|汇|付|\b(transfer|send|pay|split)\b"),
+            pattern(r"\bacc-[a-z]+-\d+\b"),  # a balance by account number: rules.safety
+        ),
         plan=plan,
     ),
 ]
