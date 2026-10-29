@@ -74,6 +74,23 @@ class ModelNotConfigured(ModelUnavailable):
     pass
 
 
+OFFLINE = "offline"
+
+
+class OfflineModel:
+    """`AGENT_MODEL_PROVIDER=offline`: no model at all. The conversation plans with the
+    built-in rules (`agent.rules`) and the Responder quotes the Bank; `chat` is never
+    meant to be called, and says so the way an unconfigured model does."""
+
+    def chat(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        require_tool: bool = False,
+    ) -> ModelReply:
+        raise ModelNotConfigured("AGENT_MODEL_PROVIDER=offline: no model is used")
+
+
 class OpenAICompatibleModel:
     def __init__(self, provider: Provider, api_key: str | None):
         self.provider = provider
@@ -113,13 +130,16 @@ class OpenAICompatibleModel:
             raise ModelUnavailable(f"{self.provider.model}: {error}") from error
 
 
-def model_from_env(env: Mapping[str, str]) -> OpenAICompatibleModel:
-    """The model the configuration selects: `AGENT_MODEL_PROVIDER` is `qwen` (default) or
-    `deepseek`, and its API key comes from that provider's env variable."""
+def model_from_env(env: Mapping[str, str]) -> OpenAICompatibleModel | OfflineModel:
+    """The model the configuration selects: `AGENT_MODEL_PROVIDER` is `qwen` (default),
+    `deepseek` or `offline` (no model: the built-in rules plan), and a provider's API key
+    comes from its env variable."""
     name = env.get("AGENT_MODEL_PROVIDER") or DEFAULT_PROVIDER
+    if name == OFFLINE:
+        return OfflineModel()
     if name not in PROVIDERS:
         raise ModelNotConfigured(
-            f"AGENT_MODEL_PROVIDER must be one of {', '.join(PROVIDERS)}, not {name!r}"
+            f"AGENT_MODEL_PROVIDER must be one of {', '.join([*PROVIDERS, OFFLINE])}, not {name!r}"
         )
     provider = PROVIDERS[name]
     return OpenAICompatibleModel(provider, env.get(provider.api_key_env))

@@ -15,6 +15,7 @@ from conftest import act, bank_audit, event_types, log_in, send, staff, start_co
 from fake_model import FakeModel, ModelReply, ToolCall, plan, say, step, unavailable
 
 BALANCE_QUESTION = "我卡里还有多少钱？"
+UNRECOGNISED = "帮我买点理财产品"  # nothing the built-in rules recognise
 TO_MUM_300 = {"payee_id": "PAY-LM-002", "amount": "300.00", "note": ""}
 
 
@@ -30,17 +31,16 @@ def operations_run(bank: TestClient, login: Any) -> list[str]:
     ]
 
 
-def test_a_request_the_model_cant_be_asked_about_is_answered_and_nothing_runs(
+def test_a_request_a_model_that_cant_be_asked_gets_the_rules_decline_and_nothing_runs(
     agent: TestClient, bank: TestClient, model: FakeModel
 ) -> None:
     model.script(unavailable())
     login = log_in(bank, "liming")
     conversation = start_conversation(agent, login)
 
-    events = send(agent, conversation, BALANCE_QUESTION)
+    events = send(agent, conversation, UNRECOGNISED)
 
-    assert event_types(events) == ["answer"]
-    assert "没有执行任何操作" in answers(events)[0]
+    assert event_types(events) == ["refusal"]
     assert operations_run(bank, login) == []
 
 
@@ -53,7 +53,7 @@ def test_the_conversation_carries_on_once_the_model_is_back(
         say("您的活期账户余额为 1180.00 元。"),
     )
     conversation = start_conversation(agent, log_in(bank, "liming"))
-    send(agent, conversation, BALANCE_QUESTION)
+    send(agent, conversation, UNRECOGNISED)
 
     events = send(agent, conversation, BALANCE_QUESTION)
 
@@ -118,9 +118,9 @@ def test_the_customer_writing_in_english_is_told_in_english(
     model.script(unavailable())
     conversation = start_conversation(agent, log_in(bank, "liming"))
 
-    events = send(agent, conversation, "How much money do I have?")
+    events = send(agent, conversation, "Can I get a loan?")
 
-    assert "nothing was done" in answers(events)[0]
+    assert "what I can do" in events[-1]["text"]
 
 
 def test_a_confirmed_transfer_is_reported_from_the_bank_when_the_model_cant_answer(

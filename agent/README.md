@@ -11,7 +11,7 @@ cp .env.example .env      # then fill in DASHSCOPE_API_KEY (or DEEPSEEK_API_KEY)
 docker compose up --build # Channel: http://localhost:8080 · Agent: :8001 · Bank: :8000
 ```
 
-`AGENT_MODEL_PROVIDER` picks the model: `qwen` (`qwen-plus` on DashScope, the default) or `deepseek` (`deepseek-chat`, the backup). Both go through one OpenAI-compatible client (`src/agent/model.py`).
+`AGENT_MODEL_PROVIDER` picks the model: `qwen` (`qwen-plus` on DashScope, the default), `deepseek` (`deepseek-chat`, the backup) or `offline` (no model, no key: the built-in rules Planner, `src/agent/rules/`, plans and the Responder quotes the Bank). Both providers go through one OpenAI-compatible client (`src/agent/model.py`). With a provider, the rules plan a turn when the model raises `ModelUnavailable` (no key included); a reachable model's unusable reply (`PlannerFailed`) is not replaced.
 
 ## Conversation interface
 
@@ -29,6 +29,7 @@ docker compose up --build # Channel: http://localhost:8080 · Agent: :8001 · Ba
 | `planner.py` | Conversation + the Bank's Operation catalogue → a Plan (a dependency graph of steps). Always plans, even for one step, unless it declines an out-of-scope request. |
 | `refusals.py` | The `refusal` texts: an out-of-scope refusal lists what the Agent can do, from the catalogue. |
 | `language.py` | The Customer's language: Chinese by default, English when they write in English. |
+| `rules/` | The rules Planner: same contract as `planner.py` without a model; one module of intents per Scenario, a shared core and slot extractors (see its docstring for how to add an intent). |
 | `reviewer.py` | Asks the Bank's tier preview for the Plan, in run order. Green-only Plans run with no Plan card. On the Customer's confirm, and only then, collects one Confirmation token per Yellow step. |
 | `executor.py` | Runs the steps against the Bank, as events; a step the Bank refuses or can't be reached for fails with `step_failed`, and once a step fails while running, the steps after it don't run. |
 | `responder.py` | Writes the answer from the Bank's results only: a draft that fails the fact check is regenerated once, then replaced by the raw Bank result. |

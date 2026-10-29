@@ -168,8 +168,11 @@ The Plan needs a Plan card: at least one step that can run is Yellow or Red. A G
  "refusals": [{"step_id": "s2", "reason": "insufficient_funds", "message": "…", "detail": {}}],  // steps the Bank's preview says can never run
  "warnings": [{"step_id": "s3", "reason": "daily_transfer_total", "text": "这笔转账会使今日转账累计超过 ¥1,000，执行前需要短信验证。"}],
  "payees": [{"step_id": "s1", "payee_id": "PAY-LM-005", "name": "陈静", "nickname": null, "phone": "134****7777", "is_new": true}],
- "cards": [{"step_id": "s4", "card_id": "CARD-LM-002", "name": "招商借记卡 Debit card", "last4": "5678"}]}
+ "cards": [{"step_id": "s4", "card_id": "CARD-LM-002", "name": "招商借记卡 Debit card", "last4": "5678"}],
+ "planned_by": "model"}  // or "rules"
 ```
+
+`planned_by` (#63): who made the Plan, `model` or `rules` (the Agent's built-in rules Planner: `AGENT_MODEL_PROVIDER=offline`, or the model could not be asked for this turn). The Plan card shows a small label in the Customer's language when it is `rules`.
 
 `payees` (#39): who each step with a `payee_id` input pays, for every Payee the Bank's lookup found in this conversation, in card order. `is_new` flags a Payee the Customer has never paid (the lookup's `is_new`; false once a transfer to them ran). `phone` is masked by the Bank. A step whose Payee no lookup found isn't listed.
 
@@ -325,12 +328,12 @@ A Staff Member took over the conversation (the Agent is paused: it sends nothing
 Decision-trace data for the Channel's toggleable panel, hidden by default: what the Agent understood, planned and was told by the Bank. The other events of a turn don't depend on it; a client that shows no trace skips every `trace` event.
 
 ```jsonc
-{"type": "trace", "stage": "intent", "data": {"intent": "查询账户余额"}}  // the Planner's reading of the request
+{"type": "trace", "stage": "intent", "data": {"intent": "查询账户余额", "planned_by": "model"}}  // the Planner's reading of the request, and who planned it (`model` or `rules`, #63)
 {"type": "trace", "stage": "intent", "data": {"intent": "", "declined": {"reason": "out_of_scope", "can_do": ["query_balance"]}}}  // or why it declined
 {"type": "trace", "stage": "intent", "data": {"intent": "", "declined": {"reason": "manipulation", "kind": "impersonation", "evidence": "警察说…安全账户"}}}  // or the suspected attempt it reports
 {"type": "trace", "stage": "intent", "data": {"intent": "", "ask_for_human": true}}  // or that the Customer asked for a human
 {"type": "trace", "stage": "intent", "data": {"intent": "", "clarification": "您要转多少？"}}  // or the question the Planner asked instead
-{"type": "trace", "stage": "plan", "data": {"steps": [/* PlanStep, in run order, each with the Bank's tier */]}}
+{"type": "trace", "stage": "plan", "data": {"steps": [/* PlanStep, in run order, each with the Bank's tier */], "planned_by": "model"}}  // or "rules"
 {"type": "trace", "stage": "bank_request", "data": {"method": "POST", "path": "/operations/query_balance", "body": {"input": {}}}}
 {"type": "trace", "stage": "bank_response", "data": {"method": "POST", "path": "/operations/query_balance", "status": 200,
   "body": {"operation": "query_balance", "tier": "green", "output": {}}}}   // the Bank's raw body, refusals included

@@ -26,7 +26,7 @@ from agent.cards import Card
 from agent.executor import StepResult
 from agent.fact_check import Facts, unsupported
 from agent.language import Language, customer_language
-from agent.model import ModelClient, ModelUnavailable
+from agent.model import ModelClient, ModelUnavailable, OfflineModel
 from agent.secrets_guard import asks_for_secret
 
 SYSTEM_PROMPT = """\
@@ -159,6 +159,8 @@ def answer(
     """The answer to this turn: `results` are this turn's, `earlier` the conversation's.
     `queries` are the Operations that only look something up (all of them if None)."""
     language = customer_language(history)
+    if isinstance(model, OfflineModel):  # no model to ask: quote the Bank directly
+        return Written(raw(results, language, queries), quotes_bank=True)
     retrieved = [result.output for result in results if result.output is not None]
     if results and not retrieved:
         facts = Facts()

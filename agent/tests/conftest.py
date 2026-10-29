@@ -84,6 +84,16 @@ def agent(bank_link: BankLink, model: FakeModel) -> Iterator[TestClient]:
         yield client
 
 
+@pytest.fixture
+def offline_agent(bank_link: BankLink) -> Iterator[TestClient]:
+    """An Agent configured as `AGENT_MODEL_PROVIDER=offline`: only the built-in rules plan."""
+    from agent.model import model_from_env
+
+    model = model_from_env({"AGENT_MODEL_PROVIDER": "offline"})
+    with TestClient(create_agent(bank=bank_link, model=model, staff_key=STAFF_KEY)) as client:
+        yield client
+
+
 def admin(bank: TestClient, method: str, url: str, **kwargs: Any) -> Any:
     response = bank.request(method, url, headers={"X-Admin-Key": ADMIN_KEY}, **kwargs)
     assert response.status_code == 200, response.text

@@ -43,7 +43,7 @@ This is the recommended way to run it, and the way the judges will.
 
 - [Docker](https://docs.docker.com/get-docker/) with **Docker Compose v2.24 or newer** (`docker compose version`). Docker Desktop on macOS and Windows includes both.
 - `git`.
-- An API key for the model: [DashScope](https://help.aliyun.com/zh/model-studio/) (`qwen-plus`, the default) or [DeepSeek](https://platform.deepseek.com/) (the backup).
+- Optional: an API key for the model: [DashScope](https://help.aliyun.com/zh/model-studio/) (`qwen-plus`, the default) or [DeepSeek](https://platform.deepseek.com/) (the backup). Without one, the Agent still runs on its built-in rules (see below).
 
 On Windows, run the commands below in WSL 2 or Git Bash.
 
@@ -54,13 +54,15 @@ git clone https://github.com/Sky-Alva/fintechathon-hackathon-shenda.git
 cd fintechathon-hackathon-shenda
 ```
 
-**3. Add your API key.**
+**3. Add your API key (optional).**
 
 ```sh
 cp .env.example .env
 ```
 
 Open `.env` and fill in `DASHSCOPE_API_KEY`. To use DeepSeek instead, set `AGENT_MODEL_PROVIDER=deepseek` and fill in `DEEPSEEK_API_KEY`. `.env` is git-ignored: never commit it.
+
+**The API key is optional: rules mode.** The Agent has a built-in, rule-based Planner that needs no model. Set `AGENT_MODEL_PROVIDER=offline` to use only the rules (the answers quote the Bank directly). With a model provider, the rules also take over for a turn whenever the model can't be asked (no key, the API down, a timeout or out of quota). The rules never guess: a request they don't recognise is declined with a list of what the Agent can do, and anything unclear is asked. Everything they plan is still tiered, confirmed and verified by the Bank. The decision trace and the Plan card say whether the model or the rules made a Plan. Today the rules recognise balance look-ups ("我卡里还有多少钱", "what's my balance"); the other Scenarios follow. A model that is reachable but replies with something unusable is not replaced by the rules.
 
 **4. Build and start everything.**
 
@@ -203,7 +205,7 @@ Run one file or one test with, for example, `.venv/bin/pytest tests/test_birthda
 
 ### Evaluation against the real model
 
-The evaluation runner replays the scripted test tasks under [`tasks/`](tasks/) with the configured real model and prints a scoreboard per task, Scenario, category and attack type. It needs an API key (from the environment or `.env`), and results vary from run to run.
+The evaluation runner replays the scripted test tasks under [`tasks/`](tasks/) with the configured model and prints a scoreboard per task, Scenario, category and attack type. A real model needs an API key (from the environment or `.env`) and results vary from run to run; `AGENT_MODEL_PROVIDER=offline` runs the built-in rules with no key.
 
 ```sh
 cd agent
@@ -223,9 +225,9 @@ Docker Compose reads these from `.env` (see [.env.example](.env.example)); witho
 
 | Variable | Used by | Default | What |
 |----------|---------|---------|------|
-| `AGENT_MODEL_PROVIDER` | Agent | `qwen` | `qwen` (`qwen-plus` on DashScope) or `deepseek` (`deepseek-chat`). |
-| `DASHSCOPE_API_KEY` | Agent | (none) | Required for `qwen`. |
-| `DEEPSEEK_API_KEY` | Agent | (none) | Required for `deepseek`. |
+| `AGENT_MODEL_PROVIDER` | Agent | `qwen` | `qwen` (`qwen-plus` on DashScope), `deepseek` (`deepseek-chat`) or `offline` (no model: the built-in rules plan). |
+| `DASHSCOPE_API_KEY` | Agent | (none) | Required for `qwen` (without it the rules plan). |
+| `DEEPSEEK_API_KEY` | Agent | (none) | Required for `deepseek` (without it the rules plan). |
 | `AGENT_STAFF_KEY` | Agent | `demo-staff-key` | Guards the Agent's staff views (`X-Staff-Key`). Required without Docker. |
 | `BANK_ADMIN_KEY` | Bank | `demo-admin-key` | Guards the Bank's `/admin` calls (reset, Bank clock, audit, lifting a Safety Lock). Required without Docker. Never given to the Agent. |
 | `BANK_URL` | Agent | `http://localhost:8000` | Where the Agent finds the Bank (`http://bank:8000` in Docker). |
@@ -236,7 +238,7 @@ Change the demo keys for anything shared beyond your own machine.
 
 ## Troubleshooting
 
-**Every message gets "抱歉，我暂时无法处理这个请求，没有执行任何操作。"** The Agent can't use the model: the API key is missing or wrong, or the provider can't be reached. `docker compose logs agent` says which. After fixing `.env`, recreate the Agent so it reads the new value: `docker compose up -d --force-recreate agent`.
+**Every message gets "抱歉，我暂时无法处理这个请求，没有执行任何操作。"** The Agent got no usable reply from a reachable model (a model that can't be reached at all is covered by the built-in rules, which answer what they recognise and decline the rest). Check that the API key is right. `docker compose logs agent` says which. After fixing `.env`, recreate the Agent so it reads the new value: `docker compose up -d --force-recreate agent`.
 
 **`port is already allocated` / `address already in use`.** Something else is using 8000, 8001 or 8080. Stop it, or change the left-hand port in `docker-compose.yml` (e.g. `"8081:80"` for the Channel).
 

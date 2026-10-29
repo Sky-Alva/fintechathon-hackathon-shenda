@@ -3,8 +3,9 @@ configured model and print the scoreboard.
 
 Configuration, from the environment, then the repo's `.env` for anything not set there:
 
-- `AGENT_MODEL_PROVIDER` (`qwen`, the default, or `deepseek`) and that provider's API key,
-  exactly as the Agent reads them: switching the model is configuration only.
+- `AGENT_MODEL_PROVIDER` (`qwen`, the default, `deepseek` or `offline`) and that provider's
+  API key, exactly as the Agent reads them: switching the model is configuration only.
+  `offline` needs no key: only the Agent's built-in rules plan.
 - `BANK_URL` and `BANK_ADMIN_KEY`: a running Bank (e.g. Docker Compose's, on
   http://localhost:8000), which the runner resets before every task. Without `BANK_URL`,
   the runner starts its own Bank in-process on a temporary database.
@@ -41,7 +42,7 @@ from fastapi.testclient import TestClient
 
 from agent.app import create_app as create_agent
 from agent.bank import HttpClient as AgentBankClient
-from agent.model import ModelNotConfigured, Provider, model_from_env
+from agent.model import ModelNotConfigured, OfflineModel, OpenAICompatibleModel, model_from_env
 from evaluation.baseline import AGENT_UNGATED, FULL_SYSTEM, PROMPT_ONLY, attack_table, run_baseline
 from evaluation.report import report
 from evaluation.runner import HttpClient, TaskResult
@@ -108,12 +109,12 @@ def _commit() -> str:
 def _markdown(
     args: argparse.Namespace,
     results: Sequence[TaskResult],
-    provider: Provider,
+    model: str,
     extra_sections: Sequence[str] = (),
 ) -> str:
     return report(
         results,
-        model=f"{provider.model} ({provider.base_url})",
+        model=model,
         repeat=args.repeat,
         date=date.today().isoformat(),
         commit=_commit(),
@@ -148,13 +149,20 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
     except ModelNotConfigured as problem:
         print(problem, file=sys.stderr)
         return 2
-    if not model.api_key:
+    if isinstance(model, OpenAICompatibleModel) and not model.api_key:
         print(
             f"Set {model.provider.api_key_env} (in the environment or .env) to run the"
-            f" tasks with {model.provider.model}.",
+            f" tasks with {model.provider.model}, or AGENT_MODEL_PROVIDER=offline to run"
+            " the built-in rules.",
             file=sys.stderr,
         )
         return 2
+    name = "offline" if isinstance(model, OfflineModel) else model.provider.model
+    described = (
+        "offline (built-in rules)"
+        if isinstance(model, OfflineModel)
+        else f"{model.provider.model} ({model.provider.base_url})"
+    )
     with bank_from(env) as (bank, agent_bank, admin_key):
         app = create_agent(bank=agent_bank, model=model, staff_key=secrets.token_urlsafe(16))
         with TestClient(app) as agent:
@@ -163,7 +171,7 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
                 agent=agent,
                 bank=bank,
                 admin_key=admin_key,
-                model=model.provider.model,
+                model=name,
                 only=args.only,
                 repeat=args.repeat,
                 progress=lambda line: print(line, file=sys.stderr, flush=True),
@@ -188,7 +196,7 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
                 }
             )
         )
-    markdown = _markdown(args, results, model.provider, sections)
+    markdown = _markdown(args, results, described, sections)
     print(board if args.repeat == 1 and not args.baseline else markdown)
     if args.report:
         args.report.write_text(markdown, encoding="utf-8")
@@ -196,7 +204,7 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
         args.json.write_text(
             json.dumps(
                 {
-                    "model": model.provider.model,
+                    "model": name,
                     "results": [
                         {
                             "task": result.task.model_dump(),

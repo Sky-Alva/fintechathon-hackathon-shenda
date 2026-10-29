@@ -10,6 +10,7 @@ import type {
   Chart,
   ConversationEvent,
   PlanStep,
+  PlannedBy,
   PlanWarning,
   Subscription,
   VerificationRequested,
@@ -51,6 +52,7 @@ type Item =
       warnings: PlanWarning[]
       payees: CardPayee[]
       cards: StepCard[]
+      plannedBy: PlannedBy
       confirmIds: string[]
       status: PlanCardStatus
     }
@@ -264,6 +266,7 @@ function apply(items: Item[], event: ConversationEvent, language: Language): Ite
           warnings: event.warnings ?? [],
           payees: event.payees ?? [],
           cards: event.cards ?? [],
+          plannedBy: event.planned_by ?? 'model',
           confirmIds: [],
           status: 'proposed',
         },
@@ -685,6 +688,7 @@ export default function Chat({
                     warnings={item.warnings}
                     payees={item.payees}
                     cards={item.cards}
+                    plannedBy={item.plannedBy}
                     confirmIds={item.confirmIds}
                     status={item.status}
                     disabled={busy || staffMember !== null}

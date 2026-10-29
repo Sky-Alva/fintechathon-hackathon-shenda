@@ -114,7 +114,10 @@ export type PlanProposed = {
   warnings: PlanWarning[]
   payees: CardPayee[]
   cards: StepCard[]
+  // Who made the Plan: the model, or the Agent's built-in rules (offline, or no model reachable).
+  planned_by?: PlannedBy
 }
+export type PlannedBy = 'model' | 'rules'
 export type ConfirmationRequested = {
   type: 'confirmation_requested'
   plan_id: string
@@ -228,9 +231,15 @@ export type Trace = { type: 'trace' } & (
       // of planning it: what it offered instead, or the suspected attempt it reported.
       // `clarification`: the question the Planner asked instead of planning (#39).
       // `ask_for_human`: the Customer asked in words for a human (#46).
-      data: { intent: string; declined?: Declined; clarification?: string; ask_for_human?: true }
+      data: {
+        intent: string
+        planned_by?: PlannedBy
+        declined?: Declined
+        clarification?: string
+        ask_for_human?: true
+      }
     }
-  | { stage: 'plan'; data: { steps: PlanStep[] } }
+  | { stage: 'plan'; data: { steps: PlanStep[]; planned_by?: PlannedBy } }
   | { stage: 'bank_request'; data: { method: string; path: string; body: unknown } }
   | { stage: 'bank_response'; data: { method: string; path: string; status: number; body: unknown } }
   | { stage: 'audit_trail'; data: { session_id: string; entries: AuditEntry[] } }
