@@ -8,6 +8,7 @@ otherwise says it drew a pie chart the Channel showed as bars."""
 import re
 from typing import Any, cast, get_args
 
+from agent import untrusted
 from agent.events import Chart, ChartForm, ChartOperation
 from agent.language import Language
 
@@ -22,7 +23,7 @@ BARS = re.compile(r"\bbars?\b|bar ?chart|柱状图|条形图|柱形图", re.IGNO
 def asked_form(history: list[dict[str, Any]]) -> ChartForm:
     """The form of chart the Customer last asked for in words: a pie, or bars (the default)."""
     for message in reversed(history):
-        if message["role"] != "user":
+        if not untrusted.from_customer(message):
             continue
         if PIE.search(message["content"]):
             return "pie"

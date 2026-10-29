@@ -4,6 +4,10 @@ Before an answer is sent, the fact check confirms that every amount, date, card 
 it mentions appears in a Bank result from this turn or earlier in the conversation. A
 draft that fails is regenerated once; if that fails too, the Customer gets the raw Bank
 result instead. So do they when the model can't be asked: what ran is never left unsaid.
+The answer never writes out the Agent's internal data either (a `<bank_data>` block, a Bank
+result as JSON, a step ID or a card's Bank ID: `INTERNALS`), and whatever way it was
+written, what reaches the Channel has no such block and names cards by their last four
+digits (`for_channel`).
 
 When the turn's queries all failed (the Bank refused them or couldn't be reached), the
 answer may state no figures at all, not even earlier ones, which may be out of date: it
@@ -11,10 +15,12 @@ says the information couldn't be retrieved.
 """
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 
 from agent import untrusted
+from agent.cards import Card
 from agent.executor import StepResult
 from agent.fact_check import Facts, unsupported
 from agent.language import Language, customer_language
@@ -38,6 +44,10 @@ retrieved; never guess it.
 某个步骤被银行拒绝时，只用银行给出的原因（refusal 的 reason）说明，不要推测其他原因。
 When the Bank refused a step, give only the Bank's reason for it (the refusal's `reason`);
 never suggest any other cause.
+
+<bank_data> 块、步骤编号（s1）和银行内部编号（如 CARD-LM-001）只给你看：回答里永远不要写出它们，也不要写 JSON。
+The <bank_data> blocks, step IDs (s1) and the Bank's internal IDs (such as CARD-LM-001)
+are for you only: never write them, or any JSON, in your answer.
 
 永远不要向客户索要验证码或密码，也不要写出完整卡号（只写后四位）。
 Never ask the Customer for a verification code or a password: codes are typed into their
@@ -69,6 +79,42 @@ NEVER_ASK = """\
 Your answer asked the Customer for a code or a password: {sentences}. Rewrite it: Never ask
 the Customer for a verification code or a password.
 """
+
+INTERNAL = """\
+你的回答写出了只给你看的内部数据：{leaks}。客户看不到也不该看到这些。请重写，只用简短的句子，
+不要写出 <bank_data> 块、JSON、步骤编号或银行内部编号；卡只用后四位称呼。
+Your answer wrote out internal data that is for you only: {leaks}. Rewrite it in short
+plain sentences, without a <bank_data> block, JSON, step IDs or the Bank's internal IDs;
+name a card by its last four digits only.
+"""
+
+
+@dataclass(frozen=True)
+class Internal:
+    """Something of the Agent's internal data format that never reaches the Customer."""
+
+    pattern: re.Pattern[str]
+    what: str
+    """What it is, for the instruction to rewrite the answer."""
+
+
+NOT_IN_AN_ID = r"(?<![A-Za-z0-9_-])"
+CARD_ID = re.compile(rf"{NOT_IN_AN_ID}CARD-[A-Z0-9]+(?:-[A-Z0-9]+)*")
+BANK_DATA_BLOCK = re.compile(r"<bank_data>.*?</bank_data>\s*", re.DOTALL | re.IGNORECASE)
+BANK_DATA_TAG = re.compile(r"</?bank_data>\s*", re.IGNORECASE)
+INTERNALS = [
+    Internal(re.compile(r"</?bank_data", re.IGNORECASE), "<bank_data> 块 / a <bank_data> block"),
+    Internal(
+        re.compile(r'"(?:step_id|operation|refusal|reversal)"\s*:'),
+        "银行结果的 JSON / a Bank result as JSON",
+    ),
+    Internal(CARD_ID, "卡的银行内部编号 / a card's Bank ID"),
+    Internal(re.compile(rf"{NOT_IN_AN_ID}s\d+(?![A-Za-z0-9_-])"), "步骤编号 / a step ID"),
+]
+"""What a draft must never contain, checked in order; one more is one more entry."""
+
+A_CARD: dict[Language, str] = {"zh": "该卡", "en": "the card"}
+CARD_ENDING: dict[Language, str] = {"zh": "尾号 {last4} 的卡", "en": "card ending {last4}"}
 
 RAW_RESULTS: dict[Language, str] = {
     "zh": "以下是银行返回的结果：",
@@ -126,8 +172,11 @@ def answer(
 
 def check(draft: str, facts: Facts) -> str | None:
     """What is wrong with the draft, as the instruction to rewrite it, or None: it may
-    state only what the Bank returned, and may never ask for a code or a password."""
+    state only what the Bank returned, may never ask for a code or a password, and never
+    writes out the Agent's internal data (`INTERNALS`)."""
     problems = []
+    if leaks := [i.what for i in INTERNALS if i.pattern.search(draft)]:
+        problems.append(INTERNAL.format(leaks="；".join(leaks)))
     if mentions := unsupported(draft, facts):
         problems.append(REGENERATE.format(mentions="、".join(mentions)))
     if asking := asks_for_secret(draft):
@@ -146,3 +195,18 @@ def raw(results: list[StepResult], language: Language) -> str:
         for result in results
     ]
     return "\n".join([RAW_RESULTS[language], *lines])
+
+
+def for_channel(text: str, cards: dict[str, Card], language: Language) -> str:
+    """The answer as it may reach the Channel, whichever way it was written: no
+    `<bank_data>` block, and each card named by its last four digits (`cards`, those the
+    Bank listed) instead of its Bank ID."""
+    text = BANK_DATA_TAG.sub("", BANK_DATA_BLOCK.sub("", text)).strip()
+
+    def name(match: re.Match[str]) -> str:
+        card = cards.get(match.group())
+        if card is None:
+            return A_CARD[language]
+        return CARD_ENDING[language].format(last4=card.last4)
+
+    return CARD_ID.sub(name, text)
