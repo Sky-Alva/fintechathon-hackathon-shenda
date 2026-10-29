@@ -105,6 +105,8 @@ class OperationContext:
     session_id: str
     now: datetime
     daily_transfer_total: Decimal
+    planned_payees: frozenset[str] = frozenset()
+    """The Payees earlier steps of the same Plan would pay (see `limits.is_first_time_payee`)."""
 
 
 @dataclass(frozen=True)
@@ -147,6 +149,9 @@ class Operation:
     # The amount this Operation adds to the Daily Transfer Total (transfers, Merchant
     # payments from Reserved Funds). The policy gate keeps the total; modules never do.
     daily_transfer_amount: Callable[[Any], Decimal] | None = None
+    # The Payee and amount this Operation sends, for the First-time Payee rule (transfers and
+    # Scheduled Transfers; not Merchant orders or Split-bill Requests).
+    pays_payee: Callable[[Any], tuple[str, Decimal]] | None = None
 
     def catalogue_entry(self) -> dict[str, Any]:
         """How the Operation is described to the Agent in the Operation catalogue."""
