@@ -9,6 +9,7 @@ from agent import charts, failures
 from agent.bank import BankRefused, BankSession, BankUnavailable
 from agent.events import (
     BankRefusal,
+    ChartForm,
     Event,
     PlanStep,
     Reversal,
@@ -73,6 +74,7 @@ def execute(
     verification_tokens: Mapping[str, str] | None = None,
     stop: threading.Event | None = None,
     language: Language = "zh",
+    chart_form: ChartForm = "bars",
 ) -> Generator[Event, None, Halt | None]:
     """Run the steps in order, appending each Bank result to `results`.
 
@@ -80,7 +82,8 @@ def execute(
     run, as the Plan card showed. A step the Bank refuses (or can't be reached for) when
     it runs stops the Plan: the steps after it don't run, and its Halt is returned.
     `confirmation_tokens` holds the Customer's Confirmation for each Yellow step, by step
-    ID, and `verification_tokens` the Strong Verification of each Red step.
+    ID, and `verification_tokens` the Strong Verification of each Red step. A chart of
+    categories is drawn as `chart_form`.
 
     Nothing Red runs without its verification token: the Plan pauses at the first Red
     step that has none. Once `stop` is set (the Customer tapped stop), no further step
@@ -125,7 +128,9 @@ def execute(
         yield StepSucceeded(
             step_id=step.id, operation=step.operation, tier=result["tier"], output=result["output"]
         )
-        if (drawn := charts.chart(step.id, step.operation, result["output"], language)) is not None:
+        if (drawn := charts.chart(
+            step.id, step.operation, result["output"], language, chart_form
+        )) is not None:
             yield drawn
     return None
 

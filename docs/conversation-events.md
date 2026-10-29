@@ -118,8 +118,10 @@ Follows the `step_succeeded` of a `spending_by_category` (category summary), `mo
 
 The Channel draws a category summary and a monthly report as bars of `categories[].amount`, and an annual report as monthly income and spending bars over `labels` (`monthly_income`, `monthly_spending`), with the Bank's totals beside them.
 
+`form` is `"pie"` when the Customer's latest message that names a kind of chart asks for a pie ("pie chart", "饼图"), else `"bars"`; the Agent reads it from the Customer's words, never the model's. Only a category summary or a monthly report can be `"pie"`: the Channel then draws `categories[].amount` as a pie with a legend of the Bank's amounts. Either way the Customer can switch the chart between bars and a pie.
+
 ```jsonc
-{"type": "chart", "step_id": "s1", "operation": "spending_by_category", "title": "分类支出（2026-10-01 至 2026-10-20）",
+{"type": "chart", "step_id": "s1", "operation": "spending_by_category", "form": "bars", "title": "分类支出（2026-10-01 至 2026-10-20）",
  "data": {"start_date": "2026-10-01", "end_date": "2026-10-20", "total_spending": "7961.60",
           "categories": [{"category": "food_delivery", "amount": "162.30", "transaction_count": 3}, …]}}
 ```

@@ -217,18 +217,23 @@ class ClarificationQuestion(BaseModel):
 ChartOperation = Literal["spending_by_category", "monthly_report", "annual_report"]
 """The Bank Operations whose output the Channel draws as a chart."""
 
+ChartForm = Literal["bars", "pie"]
+"""How the Channel draws a chart's categories: bars, or a pie when the Customer asked for one."""
+
 
 class Chart(BaseModel):
     """A chart of what the Bank returned for one step: a category summary, or a monthly or
     annual report. `data` is the Bank's output for the step, unchanged: every number the
     Channel draws is the Bank's. `title` names it in the Customer's language, from the
-    period the Bank's output gives. Follows the step's `step_succeeded`."""
+    period the Bank's output gives. `form` is "pie" when the Customer asked for a pie chart
+of the categories, else "bars". Follows the step's `step_succeeded`."""
 
     type: Literal["chart"] = "chart"
     step_id: str
     operation: ChartOperation
     title: str
     data: dict[str, Any]
+    form: ChartForm = "bars"
 
 
 class Answer(BaseModel):

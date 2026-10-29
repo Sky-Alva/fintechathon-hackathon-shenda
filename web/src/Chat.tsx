@@ -1,5 +1,6 @@
 import { type FormEvent, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import AnswerText from './AnswerText'
 import { type CustomerAction, fetchUpdates, sendAction, sendMessage } from './api'
 import type {
   BankRefusal,
@@ -735,7 +736,7 @@ export default function Chat({
                   <div key={i} className="paused-card">
                     <div>{item.text}</div>
                     {item.options.length > 0 && (
-                      <div className="plan-actions">
+                      <div className="question-options">
                         {item.options.map((option) => (
                           <button
                             key={option.value}
@@ -794,7 +795,7 @@ export default function Chat({
               default:
                 return (
                   <div key={i} className={`bubble ${item.kind}`}>
-                    {item.text}
+                    {item.kind === 'agent' ? <AnswerText text={item.text} /> : item.text}
                   </div>
                 )
             }

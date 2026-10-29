@@ -5,14 +5,71 @@ The Agent writes these itself from the Bank's `list_subscriptions` output, never
 model: which Subscriptions are candidates, and why, is the Bank's rule (`reasons_it_may_
 not_be_needed`), and which were cancelled is what the Bank shows. Nothing the model says
 can add a candidate, drop one or misreport a cancellation.
+
+The Customer may also name a Subscription to cancel ("cancel TuneBox"). Its Bank ID comes
+from the Bank's list, never the model: a subscription_id the Planner made up never runs
+(`references`), the Agent lists the Subscriptions first and has the Planner complete the
+step from that list, and if it still can't tell which is meant, the Customer picks.
 """
 
+from dataclasses import dataclass
 from typing import Any
 
+from agent.executor import StepResult
 from agent.language import Language
+from agent.references import Reference
 
 LIST = "list_subscriptions"
 CANCEL = "cancel_subscription"
+
+
+@dataclass(frozen=True)
+class Listed:
+    """What the Agent keeps of a Subscription the Bank listed: how the Customer tells it
+    apart, never its status, which a later turn must read from the Bank again."""
+
+    subscription_id: str
+    merchant: str
+    current_amount: str
+    next_renewal_date: str | None
+
+    def as_data(self) -> dict[str, Any]:
+        return {"subscription_id": self.subscription_id, "merchant": self.merchant}
+
+    def label(self, language: Language) -> str:
+        """How the Customer tells this Subscription apart from their others."""
+        renews = self.next_renewal_date
+        if language == "en":
+            return f"{self.merchant} (¥{self.current_amount}" + (
+                f", renews {renews})" if renews else ")"
+            )
+        return f"{self.merchant}（¥{self.current_amount}" + (f"，{renews} 续费）" if renews else "）")
+
+
+def known(results: list[StepResult]) -> dict[str, Listed]:
+    """The Subscriptions the Bank listed in `results`, by ID, in the order it showed them
+    first."""
+    found: dict[str, Listed] = {}
+    for result in results:
+        if result.operation != LIST or result.output is None:
+            continue
+        for view in result.output["subscriptions"]:
+            found[view["subscription_id"]] = Listed(
+                subscription_id=view["subscription_id"],
+                merchant=view["merchant"],
+                current_amount=str(view["current_amount"]),
+                next_renewal_date=view.get("next_renewal_date"),
+            )
+    return found
+
+
+REFERENCE = Reference(
+    lookup=LIST,
+    key="subscription_id",
+    prefix="subscriptions",
+    known=known,
+    question={"en": "Which Subscription do you mean?", "zh": "您指的是哪一个订阅？"},
+)
 
 
 def candidates(listed: dict[str, Any]) -> list[dict[str, Any]]:
