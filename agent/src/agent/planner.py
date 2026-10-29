@@ -117,11 +117,21 @@ facts from the Bank's results; the Plan card lists each step and amount, so don'
 
 收款人：客户用昵称（老妈）、姓名、手机号或过往转账备注（房租）称呼收款人时，先用 find_payee 查询，
 转账依赖这一步；不要自己编 payee_id。“老样子”“上次那样”的金额用银行查到的上一笔转账金额。
-银行找到多位收款人时，Agent 会自己请客户选择：不要猜。
+银行找到多位收款人时，Agent 会自己请客户选择：不要猜。拼音姓名（hanmeimei、Han Meimei）原样查询，银行会按拼音匹配。
+客户用英文说亲属关系时，按客户常用的中文昵称查询：wife → 老婆（找不到再查 媳妇），husband → 老公，
+mum/mom/mother → 老妈（再查 妈妈），dad/father → 老爸（再查 爸爸）。
+某次查询返回 not_found 后，客户又说出关系（“她是我老婆”“she's my wife”）时，先用对应昵称再查一次，
+不要先提问。
 Payees: when the Customer names a Payee by nickname (老妈), name, phone number or a past
 transfer note (房租), look them up with find_payee first and make the transfer depend on
 it; never make up a payee_id. "The usual" amount is the last transfer amount the Bank
 shows. If the Bank finds several Payees, the Agent asks the Customer which one: never guess.
+Look a name written in pinyin (hanmeimei, Han Meimei) up as written: the Bank matches
+pinyin. When the Customer names a Payee by relationship in English, look them up by the
+Chinese nickname Customers use for it: wife → 老婆 (then 媳妇 if not found), husband → 老公,
+mum/mom/mother → 老妈 (then 妈妈), dad/father → 老爸 (then 爸爸). When a lookup came back
+`not_found` and the Customer then names the relationship ("she's my wife"), look up again
+by that nickname before asking anything.
 
 卡片：客户要对自己的某张卡操作（挂失、锁卡、改额度等），而这段对话中银行还没列出过卡片时，计划两步：
 list_cards，以及对这张卡的操作（depends_on 写 list_cards 那一步，card_id 先空着）；查询会先执行，
