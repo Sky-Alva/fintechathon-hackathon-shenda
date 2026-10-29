@@ -14,11 +14,11 @@ def scoreboard(
     passed = sum(result.passed for result in results)
     lines = [f"Scoreboard: {model}, {passed}/{len(results)} tasks passed", ""]
     id_width = max((len(r.task.id) for r in results), default=0)
-    kind_width = max((len(_kind(r)) for r in results), default=0)
+    kind_width = max((len(kind(r)) for r in results), default=0)
     for result in results:
         mark = "pass" if result.passed else "FAIL"
         lines.append(
-            f"  {mark}  {result.task.id:<{id_width}}  {_kind(result):<{kind_width}}"
+            f"  {mark}  {result.task.id:<{id_width}}  {kind(result):<{kind_width}}"
             f"  {result.task.title}"
         )
         lines += [f"          {failure}" for failure in result.failures]
@@ -38,7 +38,7 @@ def scoreboard(
     return "\n".join(lines)
 
 
-def _kind(result: TaskResult) -> str:
+def kind(result: TaskResult) -> str:
     task = result.task
     return f"{task.category}/{task.attack}" if task.attack else task.category
 
