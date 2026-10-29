@@ -15,7 +15,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from bank import approvals, audit, clock, limits, safety_lock, verification
+from bank import approvals, audit, clock, limits, safety_lock, sessions, verification
 from bank.approvals import Binding, TokenKind
 from bank.audit import Event
 from bank.registry import (
@@ -212,7 +212,9 @@ def run(
         if resolved.operation.daily_transfer_amount:
             limits.record(conn, session.customer_id, name, resolved.daily_transfer_amount(), now)
         if resolved.tier is Tier.RED:
-            safety_lock.record(conn, session.session_id, Signal.RED_OPERATION, now)
+            safety_lock.record(
+                conn, session.customer_id, session.session_id, Signal.RED_OPERATION, now
+            )
     _audit(conn, session, now, Event.OPERATION, call, None, detail)
     _trip_safety_lock(conn, session, now)
     output_json = output.model_dump(mode="json")
@@ -421,7 +423,9 @@ def answer_challenge(
         call.name = challenge.binding.operation
     correct = verification.check_code(conn, challenge, request.code)
     if not correct:
-        safety_lock.record(conn, session.session_id, Signal.WRONG_CODE, now)
+        safety_lock.record(
+            conn, session.customer_id, session.session_id, Signal.WRONG_CODE, now
+        )
         detail = {
             "challenge_id": challenge_id,
             "failed_attempts": verification.failed_attempts(conn, session.session_id),
@@ -488,13 +492,13 @@ def _resolve(
 
 
 def _check_safety_lock(conn: sqlite3.Connection, session: Session, now: datetime) -> None:
-    """Refuse with `session_locked` while a Safety Lock holds the session."""
-    lock = safety_lock.active(conn, session.session_id, now)
+    """Refuse with `session_locked` while a Safety Lock holds the session's Customer."""
+    lock = safety_lock.active(conn, session.customer_id, now)
     if lock is not None:
         detail = {"trigger": lock.trigger.value, "locked_until": lock.expires_at.isoformat()}
         raise Refusal(
             RefusalReason.SESSION_LOCKED,
-            "This session is under a Safety Lock: only Green Operations run until"
+            "This Customer is under a Safety Lock: only Green Operations run until"
             f" {lock.expires_at.isoformat()} or until a Staff Member lifts it",
             detail,
             audit_detail=detail,
@@ -504,8 +508,9 @@ def _check_safety_lock(conn: sqlite3.Connection, session: Session, now: datetime
 def _trip_safety_lock(
     conn: sqlite3.Connection, session: Session, now: datetime
 ) -> safety_lock.Lock | None:
-    """Lock the session if what it has done so far reaches a trigger; audited."""
-    lock = safety_lock.trip_if_due(conn, session.session_id, now)
+    """Lock the session's Customer if what their sessions have done so far reaches a
+    trigger; audited in this session's trail, as the one that tripped it."""
+    lock = safety_lock.trip_if_due(conn, session.customer_id, session.session_id, now)
     if lock is not None:
         detail = {
             "lock_id": lock.lock_id,
@@ -517,9 +522,10 @@ def _trip_safety_lock(
 
 
 def lift_safety_lock(conn: sqlite3.Connection, session_id: str) -> safety_lock.Lock:
-    """A Staff Member ends the session's Safety Lock now. Audited in the session's trail."""
+    """A Staff Member ends the Safety Lock of the session's Customer now, for all their
+    sessions. Audited in the trail of the session it was lifted from."""
     now = clock.now(conn)
-    lock = safety_lock.lift(conn, session_id, now, STAFF)
+    lock = safety_lock.lift(conn, sessions.by_id(conn, session_id).customer_id, now, STAFF)
     if lock is None:
         raise Refusal(
             RefusalReason.NOT_FOUND,

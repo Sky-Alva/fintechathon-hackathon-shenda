@@ -29,7 +29,15 @@ export type ConversationHistory = StaffConversation & { entries: HistoryEntry[] 
 
 export type SafetyLock =
   | { session_id: string; locked: false }
-  | { session_id: string; locked: true; trigger: string; locked_at: string; locked_until: string }
+  | {
+      session_id: string
+      locked: true
+      /** The session that tripped it: a lock holds every session of the Customer. */
+      locked_session_id: string
+      trigger: string
+      locked_at: string
+      locked_until: string
+    }
 
 /** One entry of the Bank's audit trail, as a Staff Member reads it with the admin key. */
 export type AuditEntry = SessionAuditEntry & { session_id: string }

@@ -56,6 +56,7 @@ function LockStatus({ lock }: { lock: SafetyLock | undefined }) {
   return (
     <span className="locked">
       安全锁 · {TRIGGERS[lock.trigger] ?? lock.trigger} · 至 {time(lock.locked_until)}
+      {lock.locked_session_id !== lock.session_id && ` · 由 ${lock.locked_session_id} 触发`}
     </span>
   )
 }

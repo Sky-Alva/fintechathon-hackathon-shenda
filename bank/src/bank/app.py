@@ -288,12 +288,14 @@ def create_app(db_path: Path, admin_key: str) -> FastAPI:
                 raise Refusal(
                     RefusalReason.NOT_FOUND, "No such session", {"session_id": session_id}
                 )
-            lock = safety_lock.active(conn, session_id, clock.now(conn))
+            customer_id = sessions.by_id(conn, session_id).customer_id
+            lock = safety_lock.active(conn, customer_id, clock.now(conn))
             if lock is None:
                 return {"session_id": session_id, "locked": False}
             return {
                 "session_id": session_id,
                 "locked": True,
+                "locked_session_id": lock.session_id,
                 "trigger": lock.trigger.value,
                 "locked_at": lock.locked_at.isoformat(),
                 "locked_until": lock.expires_at.isoformat(),
@@ -311,6 +313,7 @@ def create_app(db_path: Path, admin_key: str) -> FastAPI:
             return {
                 "session_id": session_id,
                 "lock_id": lock.lock_id,
+                "locked_session_id": lock.session_id,
                 "trigger": lock.trigger.value,
                 "lifted_at": lock.lifted_at.isoformat(),
             }
