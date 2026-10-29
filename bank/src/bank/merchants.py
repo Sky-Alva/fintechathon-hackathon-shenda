@@ -29,7 +29,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from bank import clock, customers, limits, policy, reserved_funds, sessions
+from bank import clock, customers, limits, policy, reserved_funds, sessions, spending
 from bank.money import Amount, from_cents, to_cents
 from bank.registry import (
     BankModule,
@@ -427,6 +427,7 @@ def pay_merchant_order(
         "UPDATE merchant_orders SET status = 'paid', paid_at = ? WHERE order_id = ?",
         (ctx.now.isoformat(), input.order_id),
     )
+    spending.record_merchant_payment(ctx.conn, input.order_id)
     return PayMerchantOrderOutput(order=_order_view(ctx.conn, input.order_id))
 
 

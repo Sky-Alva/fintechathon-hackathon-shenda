@@ -8,14 +8,17 @@ lookup can search; they are history only and never count toward today's Daily Tr
 Total.
 """
 
+import itertools
 import re
 import sqlite3
+import unicodedata
 from decimal import Decimal
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+from pypinyin import Style, pinyin
 
-from bank import customers, limits, phone
+from bank import customers, limits, phone, spending
 from bank.money import Amount, from_cents, to_cents
 from bank.registry import (
     BankModule,
@@ -101,7 +104,7 @@ def seed(conn: sqlite3.Connection) -> None:
 MIN_NOTE_QUERY_LENGTH = 2  # a one-character note search would match nearly everything
 PHONE_SHAPED = re.compile(r"[\d\s+-]+")
 
-MatchedBy = Literal["name", "nickname", "phone", "note"]
+MatchedBy = Literal["name", "nickname", "pinyin", "phone", "note"]
 
 
 class FindPayeeInput(BaseModel):
@@ -110,8 +113,9 @@ class FindPayeeInput(BaseModel):
         min_length=1,
         max_length=100,
         description=(
-            "A Payee's name, phone number or nickname (e.g. 老妈), or text from a past"
-            " transfer note. Must match exactly; a partial name is not a match."
+            "A Payee's name (in Chinese or pinyin, e.g. hanmeimei), phone number or"
+            " nickname (e.g. 老妈), or text from a past transfer note. Must match exactly;"
+            " a partial name is not a match."
         ),
     )
 
@@ -146,6 +150,19 @@ def _phone_digits(text: str) -> str:
     return digits[2:] if len(digits) == 13 and digits.startswith("86") else digits
 
 
+def _pinyin_key(text: str) -> str:
+    """`text` as bare pinyin letters: no case, spaces, tone marks or tone numbers, ü as u."""
+    bare = unicodedata.normalize("NFKD", text.casefold()).replace("v", "u")
+    return "".join(c for c in bare if "a" <= c <= "z")
+
+
+def _name_pinyins(name: str) -> set[str]:
+    """Every way `name` reads in pinyin, as `_pinyin_key`s; a character with several
+    readings (曾: ceng, zeng) gives one per reading."""
+    readings = pinyin(name, style=Style.NORMAL, heteronym=True, errors="default")
+    return {_pinyin_key("".join(parts)) for parts in itertools.product(*readings)}
+
+
 def _matching_payees(
     ctx: OperationContext, query: str
 ) -> list[tuple[sqlite3.Row, MatchedBy, str | None]]:
@@ -153,12 +170,15 @@ def _matching_payees(
 
     Stages run in order and the first one with any hit decides, so an exact name never
     competes with a note that merely mentions it: phone number, then name or nickname,
-    then past transfer notes. Several hits are returned together, never narrowed to one.
+    then past transfer notes. A query written in Latin letters also matches a name by its
+    pinyin ("Han Meimei" finds 韩梅梅), in the same stage as names. Several hits are returned together, never narrowed to one.
     """
     payees = ctx.conn.execute(
         "SELECT * FROM payees WHERE customer_id = ? ORDER BY payee_id", (ctx.customer_id,)
     ).fetchall()
     needle = query.casefold()
+    written_in_hanzi = any(unicodedata.category(c) == "Lo" for c in query)
+    spelled = "" if written_in_hanzi else _pinyin_key(query)
 
     if PHONE_SHAPED.fullmatch(query) and len(_phone_digits(query)) == 11:
         wanted = _phone_digits(query)
@@ -176,6 +196,8 @@ def _matching_payees(
             by_identity.append((row, "name", None))
         elif row["nickname"] and row["nickname"].casefold() == needle:
             by_identity.append((row, "nickname", None))
+        elif spelled and spelled in _name_pinyins(row["name"]):
+            by_identity.append((row, "pinyin", None))
     if by_identity:
         return by_identity
 
@@ -316,6 +338,7 @@ def transfer(ctx: OperationContext, input: TransferInput) -> TransferOutput:
             ctx.now.isoformat(),
         ),
     )
+    spending.record_transfer(ctx.conn, transfer_id)
     return TransferOutput(
         transfer_id=transfer_id,
         payee_id=payee["payee_id"],
@@ -335,12 +358,12 @@ MODULE = BankModule(
         Operation(
             name="find_payee",
             description_zh=(
-                "按姓名、手机号、昵称（如“老妈”）或过往转账备注查找当前客户的收款人；"
+                "按姓名（中文或拼音）、手机号、昵称（如“老妈”）或过往转账备注查找当前客户的收款人；"
                 "若匹配到多位则返回全部候选而不猜测，从未转过账的收款人会标记为新收款人。"
             ),
             description_en=(
-                "Find one of the current Customer's Payees by name, phone number, nickname"
-                " (e.g. 老妈) or past transfer note; several matches are all returned as"
+                "Find one of the current Customer's Payees by name (in Chinese or pinyin),"
+                " phone number, nickname (e.g. 老妈) or past transfer note; several matches are all returned as"
                 " candidates instead of guessing, and a Payee never paid before is marked new."
             ),
             input_model=FindPayeeInput,
