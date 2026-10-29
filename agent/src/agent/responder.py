@@ -5,9 +5,9 @@ it mentions appears in a Bank result from this turn or earlier in the conversati
 draft that fails is regenerated once; if that fails too, the Customer gets the raw Bank
 result instead. So do they when the model can't be asked: what ran is never left unsaid.
 The answer never writes out the Agent's internal data either (a `<bank_data>` block, a Bank
-result as JSON, a step ID or a card's Bank ID: `INTERNALS`), and whatever way it was
-written, what reaches the Channel has no such block and names cards by their last four
-digits (`for_channel`).
+result as JSON, a step ID, a card's Bank ID or a Safety Lock ID: `INTERNALS`), and
+whatever way it was written, what reaches the Channel has no such block and names cards by
+their last four digits (`for_channel`).
 
 When the turn's queries all failed (the Bank refused them or couldn't be reached), the
 answer may state no figures at all, not even earlier ones, which may be out of date: it
@@ -112,6 +112,7 @@ INTERNALS = [
     ),
     Internal(CARD_ID, "卡的银行内部编号 / a card's Bank ID"),
     Internal(re.compile(rf"{NOT_IN_AN_ID}s\d+(?![A-Za-z0-9_-])"), "步骤编号 / a step ID"),
+    Internal(re.compile(rf"{NOT_IN_AN_ID}LCK-"), "安全锁编号 / a Safety Lock ID"),
 ]
 """What a draft must never contain, checked in order; one more is one more entry."""
 
