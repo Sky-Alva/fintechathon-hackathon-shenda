@@ -120,7 +120,12 @@ def refusal_response(refusal: Refusal) -> JSONResponse:
 
 
 def create_app(db_path: Path, admin_key: str) -> FastAPI:
-    registry = Registry(MODULES)
+    return build_app(db_path, admin_key, Registry(MODULES))
+
+
+def build_app(db_path: Path, admin_key: str, registry: Registry) -> FastAPI:
+    """The Bank app over `registry`. Only `create_app` (the real Bank) and `bank.ungated`
+    (the evaluation baseline's in-process Bank) call this."""
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
