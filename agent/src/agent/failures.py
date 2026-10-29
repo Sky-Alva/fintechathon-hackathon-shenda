@@ -115,30 +115,47 @@ def _wrong_values(
 def _why(refusal: BankRefusal, language: Language) -> str | None:
     """Why the Bank refused, in plain words; None if the Agent has none for it."""
     if wrong := _wrong_values(refusal, language):
-        return ("；" if language == "zh" else "; ").join(wrong)
+        return SEPARATOR[language].join(wrong)
     words = PLAIN_WORDS.get(refusal.reason)
     return words[language] if words is not None else None
+
+
+SEPARATOR: dict[Language, str] = {"zh": "；", "en": "; "}
+UNEXPLAINED: dict[Language, str] = {
+    "zh": "银行未执行这一步（银行给出的原因：{reason}）。",
+    "en": "The Bank didn't run this step (its reason: {reason}).",
+}
+EXPLAINED: dict[Language, str] = {
+    "zh": "银行未执行这一步：{why}。",
+    "en": "The Bank didn't run this step: {why}.",
+}
+NOT_DONE: dict[Language, str] = {
+    "zh": "抱歉，未能办理：{why}。",
+    "en": "Sorry, that couldn't be done: {why}.",
+}
+NOT_DONE_UNEXPLAINED: dict[Language, str] = {
+    "zh": "银行给出的原因：{reason}",
+    "en": "the Bank gave {reason}",
+}
+CANT_BE_DONE: dict[Language, str] = {
+    "zh": "抱歉，无法办理：{wrong}。",
+    "en": "Sorry, that can't be done: {wrong}.",
+}
 
 
 def explain(refusal: BankRefusal, language: Language) -> str:
     """The Customer's explanation of a step that didn't run, from the Bank's refusal."""
     why = _why(refusal, language)
-    if language == "en":
-        if why is None:
-            return f"The Bank didn't run this step (its reason: {refusal.reason})."
-        return f"The Bank didn't run this step: {why}."
     if why is None:
-        return f"银行未执行这一步（银行给出的原因：{refusal.reason}）。"
-    return f"银行未执行这一步：{why}。"
+        return UNEXPLAINED[language].format(reason=refusal.reason)
+    return EXPLAINED[language].format(why=why)
 
 
 def not_done(refusal: BankRefusal, language: Language) -> str:
     """The answer when a step that changes something didn't run: it couldn't be done, and
     the Bank's reason for it."""
-    why = _why(refusal, language)
-    if language == "en":
-        return f"Sorry, that couldn't be done: {why or f'the Bank gave {refusal.reason}'}."
-    return f"抱歉，未能办理：{why or f'银行给出的原因：{refusal.reason}'}。"
+    why = _why(refusal, language) or NOT_DONE_UNEXPLAINED[language].format(reason=refusal.reason)
+    return NOT_DONE[language].format(why=why)
 
 
 def wrong_values(
@@ -151,6 +168,4 @@ def wrong_values(
     wrong = _wrong_values(refusal, language, ignore)
     if not wrong:
         return None
-    if language == "en":
-        return f"Sorry, that can't be done: {'; '.join(wrong)}."
-    return f"抱歉，无法办理：{'；'.join(wrong)}。"
+    return CANT_BE_DONE[language].format(wrong=SEPARATOR[language].join(wrong))

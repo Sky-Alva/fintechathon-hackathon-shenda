@@ -39,14 +39,17 @@ class Reference:
     """Which one the Customer means, asked with those listed as options."""
 
 
+def _needing(kind: Reference, catalogue: list[dict[str, Any]]) -> set[str]:
+    """The Operations that require `kind.key`, by the catalogue."""
+    return {op["name"] for op in catalogue if kind.key in op["input_schema"].get("required", [])}
+
+
 def unnamed(
     kind: Reference, steps: list[PlanStep], catalogue: list[dict[str, Any]]
 ) -> list[PlanStep]:
     """The steps of an Operation that needs `kind.key` (by the catalogue) that name none
     yet, waiting on a `kind.lookup` step or not."""
-    needs_one = {
-        op["name"] for op in catalogue if kind.key in op["input_schema"].get("required", [])
-    }
+    needs_one = _needing(kind, catalogue)
     return [
         step
         for step in steps
@@ -66,9 +69,7 @@ def made_up(
     tier preview): an ID the Planner made up. A step waiting on a `kind.lookup` step of the
     Plan isn't one, the Planner completes it from that list; and one the Bank finds, or
     refuses as another Customer's, goes ahead for the Bank to decide."""
-    needs_one = {
-        op["name"] for op in catalogue if kind.key in op["input_schema"].get("required", [])
-    }
+    needs_one = _needing(kind, catalogue)
     listing = {step.id for step in steps if step.operation == kind.lookup}
     return [
         step
