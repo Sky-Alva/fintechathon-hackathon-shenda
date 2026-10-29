@@ -178,7 +178,7 @@ def test_the_history_shows_the_plan_with_its_tiers_and_every_bank_call(
 
     assert traces(entries, "plan") == [
         {"steps": [{"id": "s1", "operation": "query_balance", "input": {}, "depends_on": [],
-                    "tier": "green"}]}
+                    "tier": "green"}], "planned_by": "model"}
     ]
     assert [(r["method"], r["path"]) for r in traces(entries, "bank_request")] == [
         ("POST", "/tier-preview"),

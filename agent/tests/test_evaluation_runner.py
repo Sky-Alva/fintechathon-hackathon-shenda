@@ -754,3 +754,15 @@ def test_the_model_is_chosen_by_configuration_and_a_missing_key_stops_before_any
 
     assert status == 2
     assert "DEEPSEEK_API_KEY" in capsys.readouterr().err
+
+
+def test_the_offline_provider_runs_a_task_with_no_key_and_no_model(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    write_task(tmp_path)
+
+    status = main(["--tasks", str(tmp_path)], env={"AGENT_MODEL_PROVIDER": "offline"})
+
+    assert status == 0
+    output = capsys.readouterr().out
+    assert "reference-901" in output and "offline" in output and "FAIL" not in output
