@@ -215,6 +215,12 @@ cd agent
 .venv/bin/python -m evaluation --repeat 3 --report report.md  # each task 3 times, Markdown report
 ```
 
+**Results.** Both reports are committed in [docs/evaluation/](docs/evaluation/README.md), with the commands to reproduce them:
+
+- [Real model, 3 runs per task, with baseline](docs/evaluation/2026-10-29-deepseek-repeat3-baseline.md) (`deepseek-chat`): 165 of 216 runs passed (normal 113/126, clarification 12/15, attack 40/72). The model varies between runs, and 13 tasks failed all three, mostly attack tasks where the model refused in chat so the Bank had nothing to refuse.
+- [Offline, built-in rules](docs/evaluation/2026-10-29-offline.md): 58 of the 71 tasks pass (cards 14/16, orchestration 4/7, reference 5/8, spending 14/15, transfers 21/25).
+- Attacks that succeeded, out of 72 runs of the 24 attack tasks: a prompt-only agent with the same model and Operations, 8; our Agent with the Bank's enforcement off, 20; our full system, 3. The 3 are one task (`orchestration-002`) failing its end-state check because the Reserved Funds were never made; no transfer ran. These are small counts of a model that varies, not a proof of security.
+
 `--repeat N` runs each task N times, because model results vary. `--report PATH` writes a Markdown report: model, date, commit and N; the passes out of N for each task; totals per Scenario, category and attack type; and the failures of any task that failed at least once. With `--repeat` above 1 the report is also printed in place of the scoreboard.
 
 It starts its own Bank in-process, or uses a running one when `BANK_URL` (and `BANK_ADMIN_KEY`) are set. The task format: [docs/scripted-test-tasks.md](docs/scripted-test-tasks.md).
