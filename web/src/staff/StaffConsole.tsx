@@ -1,5 +1,5 @@
 // The staff console (/staff): the active sessions with their Safety Lock status and
-// requests for a human, a session's full audit trail, lifting a Safety Lock, and taking a
+// requests for a human, a session's full audit trail, setting or lifting a Safety Lock, and taking a
 // conversation over from the Agent, replying and handing it back. It only displays what the
 // Agent and the Bank return, so it is checked by hand.
 import { type FormEvent, useCallback, useEffect, useState } from 'react'
@@ -16,6 +16,7 @@ import {
   handBack,
   liftSafetyLock,
   safetyLock,
+  setSafetyLock,
   staffReply,
   takeOver,
 } from './api'
@@ -28,6 +29,7 @@ const TRIGGERS: Record<string, string> = {
   wrong_codes: '验证码多次错误',
   reported_attempts: 'Agent 多次上报可疑行为',
   red_operations: '10 分钟内 Red 操作过多',
+  staff: '工作人员手动锁定',
 }
 
 /** Run `poll` now and every few seconds while mounted. */
@@ -56,6 +58,9 @@ function LockStatus({ lock }: { lock: SafetyLock | undefined }) {
   return (
     <span className="locked">
       安全锁 · {TRIGGERS[lock.trigger] ?? lock.trigger} · 至 {time(lock.locked_until)}
+      {lock.locked_session_id !== lock.session_id && ` · 由 ${lock.locked_session_id} 触发`}
+      {lock.set_by && ` · ${lock.set_by} 设置`}
+      {lock.reason && `（${lock.reason}）`}
     </span>
   )
 }
@@ -369,6 +374,9 @@ function BankEntry({ entry }: { entry: AuditEntry }) {
   return (
     <>
       <b>{entry.event}</b> {entry.operation} <Tier tier={entry.tier} />{' '}
+      {entry.event === 'safety_lock' && typeof entry.detail.set_by === 'string' && (
+        <span>由 {entry.detail.set_by} 手动锁定 </span>
+      )}
       <span className={entry.outcome === 'ok' ? 'ok' : 'refused'}>
         {entry.outcome === 'ok' ? 'ok' : `拒绝：${entry.reason}`}
       </span>{' '}
@@ -419,6 +427,8 @@ function SessionView({
   const [items, setItems] = useState<TrailItem[]>([])
   const [error, setError] = useState<string | null>(null)
   const [lifting, setLifting] = useState(false)
+  const [locking, setLocking] = useState(false)
+  const [lockReason, setLockReason] = useState('')
   const [handing, setHanding] = useState(false)
   const [reply, setReply] = useState('')
 
@@ -447,6 +457,21 @@ function SessionView({
       setError(e instanceof Error ? e.message : '解除失败')
     } finally {
       setLifting(false)
+    }
+  }
+
+  async function lockByHand(event: FormEvent) {
+    event.preventDefault()
+    setLocking(true)
+    try {
+      await setSafetyLock(keys, conversation.session_id, lockReason.trim())
+      setLockReason('')
+      onChanged()
+      await refresh()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '锁定失败')
+    } finally {
+      setLocking(false)
     }
   }
 
@@ -485,6 +510,19 @@ function SessionView({
           <button type="button" className="primary" onClick={lift} disabled={lifting}>
             {lifting ? '解除中…' : '解除安全锁'}
           </button>
+        )}
+        {lock && !lock.locked && (
+          <form className="staff-lock" onSubmit={lockByHand}>
+            <input
+              value={lockReason}
+              onChange={(e) => setLockReason(e.target.value)}
+              placeholder="锁定原因（可选，客户看不到）"
+              maxLength={1000}
+            />
+            <button type="submit" className="secondary" disabled={locking}>
+              {locking ? '锁定中…' : '安全锁定'}
+            </button>
+          </form>
         )}
         {handedOver ? (
           <button

@@ -1,10 +1,12 @@
-"""Strong Verification challenges: a simulated SMS code for one exact Red Operation call.
+"""Strong Verification challenges: one simulated SMS code for one or more exact Red
+Operation calls.
 
-A challenge is bound like an approval token (Customer, session, Operation name, input
-fingerprint). Its code goes to the Customer's simulated phone; the right code, from the
-same session's phone before the challenge expires, earns one verification token for
-exactly that call. Three wrong codes close a challenge, and wrong codes are counted per
-session for the Safety Lock. Only a hash of the code is stored.
+A challenge covers its calls in order, each bound like an approval token (Customer,
+session, Operation name, input fingerprint). Its code goes to the Customer's simulated
+phone; the right code, from the same session's phone before the challenge expires, earns
+one verification token per call, each for exactly that call. Three wrong codes close a
+challenge, and wrong codes are counted per Customer, across their sessions, for the Safety Lock. Only a hash of
+the code is stored.
 """
 
 import hashlib
@@ -25,13 +27,18 @@ CREATE TABLE verification_challenges (
     challenge_id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL,
     customer_id TEXT NOT NULL,
-    operation TEXT NOT NULL,
-    fingerprint TEXT NOT NULL,
     code_hash TEXT NOT NULL,
     issued_at TEXT NOT NULL,
     expires_at TEXT NOT NULL,
     answered_at TEXT,
     failed_attempts INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE verification_challenge_calls (
+    challenge_id TEXT NOT NULL REFERENCES verification_challenges (challenge_id),
+    position INTEGER NOT NULL,
+    operation TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    PRIMARY KEY (challenge_id, position)
 );
 """
 
@@ -39,8 +46,13 @@ CREATE TABLE verification_challenges (
 @dataclass(frozen=True)
 class Challenge:
     challenge_id: str
-    binding: Binding
+    bindings: tuple[Binding, ...]
+    """The calls it covers, in order; one verification token each."""
     expires_at: datetime
+
+    @property
+    def operations(self) -> list[str]:
+        return [binding.operation for binding in self.bindings]
 
 
 @dataclass(frozen=True)
@@ -49,42 +61,58 @@ class SentChallenge:
     sent_to: str
 
 
+@dataclass(frozen=True)
+class Call:
+    """One call a challenge is opened for, and how the SMS names it."""
+
+    binding: Binding
+    description_zh: str
+
+
 def _hash(challenge_id: str, code: str) -> str:
     return hashlib.sha256(f"{challenge_id}:{code}".encode()).hexdigest()
 
 
-def start(
-    conn: sqlite3.Connection, binding: Binding, description_zh: str, now: datetime
-) -> SentChallenge:
-    """Open a challenge and text its code to the Customer's simulated phone."""
+def start(conn: sqlite3.Connection, calls: list[Call], now: datetime) -> SentChallenge:
+    """Open one challenge for `calls` (all the same session's) and text its code to the
+    Customer's simulated phone."""
+    first = calls[0].binding
     challenge = Challenge(
         challenge_id=f"CHL-{secrets.token_hex(6)}",
-        binding=binding,
+        bindings=tuple(call.binding for call in calls),
         expires_at=now + CHALLENGE_LIFETIME,
     )
     code = f"{secrets.randbelow(1_000_000):06d}"
     conn.execute(
         "INSERT INTO verification_challenges"
-        " (challenge_id, session_id, customer_id, operation, fingerprint, code_hash,"
-        " issued_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        " (challenge_id, session_id, customer_id, code_hash, issued_at, expires_at)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
         (
             challenge.challenge_id,
-            binding.session_id,
-            binding.customer_id,
-            binding.operation,
-            binding.fingerprint,
+            first.session_id,
+            first.customer_id,
             _hash(challenge.challenge_id, code),
             now.isoformat(),
             challenge.expires_at.isoformat(),
         ),
     )
-    minutes = int(CHALLENGE_LIFETIME.total_seconds() // 60)
-    text = (
-        f"【模拟银行】验证码 {code}，用于授权「{description_zh.rstrip('。')}」"
-        f"（{binding.operation}），{minutes} 分钟内有效。银行工作人员不会向您索取验证码，"
-        "请勿告诉任何人。"
+    conn.executemany(
+        "INSERT INTO verification_challenge_calls VALUES (?, ?, ?, ?)",
+        [
+            (challenge.challenge_id, position, call.binding.operation, call.binding.fingerprint)
+            for position, call in enumerate(calls)
+        ],
     )
-    sent_to = phone.send_sms(conn, binding.customer_id, text, now)
+    minutes = int(CHALLENGE_LIFETIME.total_seconds() // 60)
+    named = "、".join(
+        f"「{call.description_zh.rstrip('。')}」（{call.binding.operation}）" for call in calls
+    )
+    approves = named if len(calls) == 1 else f"以下 {len(calls)} 项操作：{named}"
+    text = (
+        f"【模拟银行】验证码 {code}，用于授权{approves}，{minutes} 分钟内有效。"
+        "银行工作人员不会向您索取验证码，请勿告诉任何人。"
+    )
+    sent_to = phone.send_sms(conn, first.customer_id, text, now)
     return SentChallenge(challenge, sent_to)
 
 
@@ -108,9 +136,16 @@ def find_open(
             {"challenge_id": challenge_id},
             audit_detail={"challenge_id": challenge_id},
         )
-    return Challenge(
-        challenge_id, Binding.from_row(row), datetime.fromisoformat(row["expires_at"])
+    calls = conn.execute(
+        "SELECT operation, fingerprint FROM verification_challenge_calls"
+        " WHERE challenge_id = ? ORDER BY position",
+        (challenge_id,),
+    ).fetchall()
+    bindings = tuple(
+        Binding(row["session_id"], row["customer_id"], call["operation"], call["fingerprint"])
+        for call in calls
     )
+    return Challenge(challenge_id, bindings, datetime.fromisoformat(row["expires_at"]))
 
 
 def check_code(conn: sqlite3.Connection, challenge: Challenge, code: str) -> bool:

@@ -4,17 +4,25 @@ Before an answer is sent, the fact check confirms that every amount, date, card 
 it mentions appears in a Bank result from this turn or earlier in the conversation. A
 draft that fails is regenerated once; if that fails too, the Customer gets the raw Bank
 result instead. So do they when the model can't be asked: what ran is never left unsaid.
+The answer never writes out the Agent's internal data either (a `<bank_data>` block, a Bank
+result as JSON, a step ID, a card's Bank ID or a Safety Lock ID: `INTERNALS`), and
+whatever way it was written, what reaches the Channel has no such block and names cards by
+their last four digits (`for_channel`).
 
 When the turn's queries all failed (the Bank refused them or couldn't be reached), the
 answer may state no figures at all, not even earlier ones, which may be out of date: it
-says the information couldn't be retrieved.
+says the information couldn't be retrieved. A step that would have changed something says
+it couldn't be done, and why: the Bank's reason.
 """
 
 import json
+import re
+from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Any
 
-from agent import untrusted
+from agent import failures, untrusted
+from agent.cards import Card
 from agent.executor import StepResult
 from agent.fact_check import Facts, unsupported
 from agent.language import Language, customer_language
@@ -31,13 +39,17 @@ Payees); never guess or make anything up.
 
 {untrusted}
 
-如果某个步骤失败（有 refusal，没有 output），就说明无法获取该信息，不要猜测。
-If a step failed (it has a `refusal` and no `output`), say that information couldn't be
-retrieved; never guess it.
+如果查询步骤失败（有 refusal，没有 output），就说明无法获取该信息，不要猜测；如果办理步骤失败，就说明没能办成。
+If a query step failed (it has a `refusal` and no `output`), say that information couldn't
+be retrieved; never guess it. If a step that changes something failed, say it couldn't be done.
 
-某个步骤被银行拒绝时，只用银行给出的原因（refusal 的 reason）说明，不要推测其他原因。
-When the Bank refused a step, give only the Bank's reason for it (the refusal's `reason`);
-never suggest any other cause.
+某个步骤被银行拒绝时，只用银行给出的原因（refusal 的 reason，以及 detail.errors 说明的哪个值有什么问题）说明，不要推测其他原因。
+When the Bank refused a step, give only the Bank's reason for it (the refusal's `reason`,
+and what its `detail.errors` say is wrong with which value); never suggest any other cause.
+
+<bank_data> 块、步骤编号（s1）和银行内部编号（如 CARD-LM-001）只给你看：回答里永远不要写出它们，也不要写 JSON。
+The <bank_data> blocks, step IDs (s1) and the Bank's internal IDs (such as CARD-LM-001)
+are for you only: never write them, or any JSON, in your answer.
 
 永远不要向客户索要验证码或密码，也不要写出完整卡号（只写后四位）。
 Never ask the Customer for a verification code or a password: codes are typed into their
@@ -70,6 +82,54 @@ Your answer asked the Customer for a code or a password: {sentences}. Rewrite it
 the Customer for a verification code or a password.
 """
 
+INTERNAL = """\
+你的回答写出了只给你看的内部数据：{leaks}。客户看不到也不该看到这些。请重写，只用简短的句子，
+不要写出 <bank_data> 块、JSON、步骤编号或银行内部编号；卡只用后四位称呼。
+Your answer wrote out internal data that is for you only: {leaks}. Rewrite it in short
+plain sentences, without a <bank_data> block, JSON, step IDs or the Bank's internal IDs;
+name a card by its last four digits only.
+"""
+
+
+@dataclass(frozen=True)
+class Internal:
+    """Something of the Agent's internal data format that never reaches the Customer."""
+
+    pattern: re.Pattern[str]
+    what: dict[Language, str]
+    """What it is, for the instruction to rewrite the answer."""
+
+
+NOT_IN_AN_ID = r"(?<![A-Za-z0-9_-])"
+CARD_ID = re.compile(rf"{NOT_IN_AN_ID}CARD-[A-Z0-9]+(?:-[A-Z0-9]+)*")
+BANK_DATA_BLOCK = re.compile(r"<bank_data>.*?</bank_data>\s*", re.DOTALL | re.IGNORECASE)
+BANK_DATA_TAG = re.compile(r"</?bank_data>\s*", re.IGNORECASE)
+LOCK_ID = re.compile(rf"{NOT_IN_AN_ID}LCK-[A-Za-z0-9]*")
+STEP_ID = re.compile(
+    r"""["'`]s\d+["'`]|(?:(?<![A-Za-z])steps?\s+|步骤\s*)s\d+(?![A-Za-z0-9_-])""", re.IGNORECASE
+)
+"""A step ID as the model would write it out: quoted, or after "step" / "步骤". A bare s2 in
+prose is not one."""
+STEP_ID_PAIR = re.compile(r'"step_id"\s*:\s*"[^"]*"\s*,?\s*')
+JSON_KEY = re.compile(r'"(step_id|operation|refusal|reversal)"\s*:')
+INTERNALS = [
+    Internal(
+        re.compile(r"</?bank_data", re.IGNORECASE),
+        {"zh": "<bank_data> 块", "en": "a <bank_data> block"},
+    ),
+    Internal(
+        re.compile(r'"(?:step_id|operation|refusal|reversal)"\s*:'),
+        {"zh": "银行结果的 JSON", "en": "a Bank result as JSON"},
+    ),
+    Internal(CARD_ID, {"zh": "卡的银行内部编号", "en": "a card's Bank ID"}),
+    Internal(STEP_ID, {"zh": "步骤编号", "en": "a step ID"}),
+    Internal(LOCK_ID, {"zh": "安全锁编号", "en": "a Safety Lock ID"}),
+]
+"""What a draft must never contain, checked in order; one more is one more entry."""
+
+A_CARD: dict[Language, str] = {"zh": "该卡", "en": "the card"}
+CARD_ENDING: dict[Language, str] = {"zh": "尾号 {last4} 的卡", "en": "card ending {last4}"}
+
 RAW_RESULTS: dict[Language, str] = {
     "zh": "以下是银行返回的结果：",
     "en": "Here is what the Bank returned:",
@@ -94,8 +154,10 @@ def answer(
     history: list[dict[str, Any]],
     results: list[StepResult],
     earlier: list[StepResult],
+    queries: Collection[str] | None = None,
 ) -> Written:
-    """The answer to this turn: `results` are this turn's, `earlier` the conversation's."""
+    """The answer to this turn: `results` are this turn's, `earlier` the conversation's.
+    `queries` are the Operations that only look something up (all of them if None)."""
     language = customer_language(history)
     retrieved = [result.output for result in results if result.output is not None]
     if results and not retrieved:
@@ -121,13 +183,19 @@ def answer(
             return Written(draft)
     except ModelUnavailable:
         pass
-    return Written(raw(results, language), quotes_bank=True)
+    return Written(raw(results, language, queries), quotes_bank=True)
 
 
 def check(draft: str, facts: Facts) -> str | None:
     """What is wrong with the draft, as the instruction to rewrite it, or None: it may
-    state only what the Bank returned, and may never ask for a code or a password."""
+    state only what the Bank returned, may never ask for a code or a password, and never
+    writes out the Agent's internal data (`INTERNALS`)."""
     problems = []
+    if found := [i.what for i in INTERNALS if i.pattern.search(draft)]:
+        leaks = "；".join(what["zh"] for what in found) + " / " + ", ".join(
+            what["en"] for what in found
+        )
+        problems.append(INTERNAL.format(leaks=leaks))
     if mentions := unsupported(draft, facts):
         problems.append(REGENERATE.format(mentions="、".join(mentions)))
     if asking := asks_for_secret(draft):
@@ -135,14 +203,43 @@ def check(draft: str, facts: Facts) -> str | None:
     return "\n".join(problems) or None
 
 
-def raw(results: list[StepResult], language: Language) -> str:
-    """The Bank's results, as the Bank returned them, and what couldn't be retrieved."""
-    if all(result.output is None for result in results):
+def raw(
+    results: list[StepResult], language: Language, queries: Collection[str] | None = None
+) -> str:
+    """The Bank's results, as the Bank returned them; what couldn't be retrieved; and what
+    couldn't be done, with the Bank's reason. `queries` are the Operations that only look
+    something up (all of them if None)."""
+
+    def missing(result: StepResult) -> str:
+        if result.refusal is None or queries is None or result.operation in queries:
+            return NOT_RETRIEVED[language]
+        return failures.not_done(result.refusal, language)
+
+    if not results:
         return NOT_RETRIEVED[language]
+    if all(result.output is None for result in results):
+        return "\n".join(dict.fromkeys(missing(result) for result in results))
     lines = [
         f"{result.operation}: {json.dumps(result.output, ensure_ascii=False)}"
         if result.output is not None
-        else f"{result.operation}: {NOT_RETRIEVED[language]}"
+        else f"{result.operation}: {missing(result)}"
         for result in results
     ]
     return "\n".join([RAW_RESULTS[language], *lines])
+
+
+def for_channel(text: str, cards: dict[str, Card], language: Language) -> str:
+    """The answer as it may reach the Channel, whichever way it was written: no
+    `<bank_data>` block, no Safety Lock ID, no Bank JSON key (`"refusal":` becomes
+    `refusal:`; a `step_id` pair goes), and each card named by its last four digits
+    (`cards`, those the Bank listed) instead of its Bank ID."""
+    text = BANK_DATA_TAG.sub("", BANK_DATA_BLOCK.sub("", text)).strip()
+
+    def name(match: re.Match[str]) -> str:
+        card = cards.get(match.group())
+        if card is None:
+            return A_CARD[language]
+        return CARD_ENDING[language].format(last4=card.last4)
+
+    text = LOCK_ID.sub("", STEP_ID_PAIR.sub("", CARD_ID.sub(name, text)))
+    return JSON_KEY.sub(r"\1:", text)

@@ -54,7 +54,7 @@ Mark an input field the audit log must never store, such as a new password, as `
 
 The policy gate owns it. `ctx.daily_transfer_total` is the Customer's total for the Bank-clock day *before* this Operation. When the Bank tiers several steps of a Plan together (a tier preview or a Confirmation request), it also includes the earlier steps, in order, without writing anything. So a tier rule only ever needs `(input, ctx)`.
 
-The one exception is money leaving on another day: a Scheduled Transfer, or a Merchant order paid from Reserved Funds on its delivery date. Each is tiered against that day's *projected* total (`scheduled_transfers.projected_total`: sent that day, plus the Customer's Scheduled Transfers and pending Merchant orders waiting to be paid on it), read by its own tier rule and passed to `limits.tier_for_day_total`. Neither declares `daily_transfer_amount`, since nothing leaves when it is created. When the Bank clock is set or advanced to 09:00 on its date, it goes through the gate's `policy.run_approved` as what the Customer approved: a Scheduled Transfer as a `transfer`, a Merchant order as `pay_merchant_order` (an Operation of the private `merchants.PAYMENTS` registry, not in the catalogue, so nothing else can call it). The gate checks the session's Safety Lock and the tier again, adds it to that day's total and audits it in the session that created it. A Scheduled Transfer that is Red or locked then is held; a Merchant order that can't be paid then is `failed` with the refusal reason.
+The one exception is money leaving on another day: a Scheduled Transfer, or a Merchant order paid from Reserved Funds on its delivery date. Each is tiered against that day's *projected* total (`scheduled_transfers.projected_total`: sent that day, plus the Customer's Scheduled Transfers and pending Merchant orders waiting to be paid on it), read by its own tier rule and passed to `limits.tier_for_day_total`. Neither declares `daily_transfer_amount`, since nothing leaves when it is created. When the Bank clock is set or advanced to 09:00 on its date, it goes through the gate's `policy.run_approved` as what the Customer approved: a Scheduled Transfer as a `transfer`, a Merchant order as `pay_merchant_order` (an Operation of the private `merchants.PAYMENTS` registry, not in the catalogue, so nothing else can call it). The gate checks the Customer's Safety Lock and the tier again, adds it to that day's total and audits it in the session that created it. A Scheduled Transfer that is Red or locked then is held; a Merchant order that can't be paid then is `failed` with the refusal reason.
 
 ### Refusing
 
@@ -134,16 +134,16 @@ Returns one `{operation, tier, confirmation_id, confirmation_token, expires_at}`
 
 ### Strong Verification (Red)
 
-Red Operations get their own verification, one at a time, after the Customer has seen the Plan card.
+Red Operations get a Strong Verification after the Customer has seen the Plan card. One challenge (one SMS code) covers one or more Red calls, as one `/confirmations` request covers several Yellow ones (#55).
 
 ```http
 POST /verifications
 Authorization: Bearer <session_token>
 
-{"operation": "transfer", "input": {"payee_id": "PAY-HM-001", "amount": "1200.00"}}
+{"operations": [{"operation": "transfer", "input": {"payee_id": "PAY-HM-001", "amount": "1200.00"}}]}
 ```
 
-Returns `{challenge_id, operation, tier, sent_to, expires_at}` and texts a 6-digit code to the Customer's simulated phone (`sent_to` is the masked number, e.g. `138****0002`). Only a Red call gets a challenge: a Yellow or Green one is refused with `invalid_input`, and one that can never run (unknown Payee, insufficient funds) is refused with that reason, so no code is sent for it. A Red step that is only Red because of earlier steps of the same Plan becomes Red once they have run, so request its challenge when the Executor reaches it.
+Returns `{challenge_id, operations, tier, sent_to, expires_at}` (`operations`: the Operation names, in order) and texts a 6-digit code to the Customer's simulated phone (`sent_to` is the masked number, e.g. `138****0002`). Only a Red call gets a challenge: a Yellow or Green one is refused with `invalid_input`, and one that can never run (unknown Payee, insufficient funds) is refused with that reason, so no code is sent for it. A Red step that is only Red because of earlier steps of the same Plan becomes Red once they have run, so request its challenge when the Executor reaches it. The calls are tiered in order, each counting the earlier ones toward the Daily Transfer Total, and all must be Red; otherwise none gets a code (a refusal names the call by `detail.index`). The SMS names how many Operations the code approves.
 
 ```http
 POST /verifications/{challenge_id}
@@ -152,11 +152,11 @@ Authorization: Bearer <phone_token>
 {"code": "123456"}
 ```
 
-The code is typed into the Channel's SMS verification box, which sends it with the same session's `phone_token` (the session token is refused with `not_authenticated`). The right code returns `{operation, verification_id, verification_token, expires_at}`, which the Channel passes on for the call.
+The code is typed into the Channel's SMS verification box, which sends it with the same session's `phone_token` (the session token is refused with `not_authenticated`). The right code returns `{challenge_id, verifications: [{operation, verification_id, verification_token, expires_at}, ...]}`, one per call, in the order requested, which the Channel passes on for the calls.
 
-- The challenge is bound like a Confirmation token (Customer, session, Operation name, exact input), lasts 5 Bank-clock minutes and can be answered once, from its own session. Otherwise the answer is refused with `token_invalid`.
-- A wrong code is refused with `token_invalid` and `detail: {challenge_id, failed_attempts}`, where `failed_attempts` counts every wrong code in the session. The third wrong code since the session's last `wrong_codes` Safety Lock locks the session, and its refusal also carries `locked_until`. Three wrong codes close the challenge; after that, request a new one.
-- The verification token covers that one call, works once and expires 5 Bank-clock minutes after issue. Pass it as `verification_token`.
+- The challenge is bound like a Confirmation token (Customer, session, and for each call its Operation name and exact input), lasts 5 Bank-clock minutes and can be answered once, from its own session. Otherwise the answer is refused with `token_invalid`.
+- A wrong code is refused with `token_invalid` and `detail: {challenge_id, failed_attempts}`, where `failed_attempts` counts every wrong code in the session. The Customer's third wrong code, across their sessions, since their last `wrong_codes` Safety Lock locks the Customer, and its refusal also carries `locked_until`. Three wrong codes close the challenge; after that, request a new one.
+- Each verification token covers only its own call (not another call of the same challenge), works once and expires 5 Bank-clock minutes after issue. Pass it as `verification_token`.
 
 #### The simulated phone
 
@@ -164,22 +164,25 @@ The Bank's SMS go to the Customer's simulated phone, readable with `GET /phone/m
 
 ### Safety Lock
 
-A session is locked for 30 Bank-clock minutes when any of these happens in it:
+A Customer is locked for 30 Bank-clock minutes when any of these happens, counted across all their sessions:
 
 | Trigger (`detail.trigger`) | When |
 |----------------------------|------|
 | `wrong_codes` | the 3rd wrong verification code |
 | `reported_attempts` | the 2nd `report_suspected_attempt` call |
 | `red_operations` | a 6th Red Operation runs within 10 Bank-clock minutes (the 6th itself runs; the lock stops the 7th) |
+| `staff` | a Staff Member sets it by hand from the staff console (see below) |
 
 While locked, only Green Operations run. Every other call, Confirmation request, verification request and challenge answer is refused with `session_locked` and `detail: {trigger, locked_until}` (a Confirmation request also names `index`); a tier preview still answers, with a `session_locked` refusal on each non-Green step. Tokens issued before the lock are not used up, and work again once it ends, if they haven't expired.
 
-The lock holds that session only, not the Customer's other sessions. It ends at `locked_until`, or earlier when a Staff Member lifts it (`DELETE /admin/sessions/{session_id}/safety-lock`; `GET` on the same path reads it for the staff console). Nothing done while a lock holds counts toward the next one, and a lock clears the signals of its own trigger only: one reported attempt before a `wrong_codes` lock still counts afterwards. `failed_attempts` in a wrong-code refusal counts the whole session, so it can exceed 3 after a lock has ended.
+The lock holds the Customer, not one session: every session of theirs is locked, including ones opened after it was set, so logging in again doesn't get around it. Another Customer is unaffected. The Bank still records which session tripped it: its `safety_lock` audit entry is in that session's trail. It ends at `locked_until`, or earlier when a Staff Member lifts it from any of the Customer's sessions (`DELETE /admin/sessions/{session_id}/safety-lock`, which frees them all and answers `{session_id, lock_id, locked_session_id, trigger, lifted_at}`; `GET` on the same path reads it for the staff console: `{session_id, locked: false}` or `{session_id, locked: true, locked_session_id, trigger, locked_at, locked_until}`, where `locked_session_id` is the session that tripped it). The lift is audited in the trail of the session it was lifted from.
 
-The Agent reports a suspected prompt injection or impersonation attempt with the Green Operation `report_suspected_attempt` `{kind: "injection" | "impersonation", evidence}`, quoting the text that raised it. Its output `session_locked` says whether the session is now locked.
+A Staff Member can also lock a Customer by hand from any of their sessions, without waiting for a trigger: `POST /admin/sessions/{session_id}/safety-lock` `{staff, reason?}` (`staff` names the Staff Member, as the console does; `reason` is optional). It is the same lock: 30 Bank-clock minutes, only Green Operations, every session of the Customer, lifted the same way. It answers like `GET`, and for a lock set by hand both `GET` and `POST` add `set_by` and `reason`. Locking a Customer already under a Safety Lock is refused with `session_locked` and the current lock's `{trigger, locked_until}`; the lock stays as it was. It is audited as a `safety_lock` entry in that session's trail with `detail: {lock_id, trigger: "staff", locked_until, set_by, reason}`; the session's own `read_audit_trail` shows that entry without `set_by` and `reason`, so neither reaches the Agent or the Customer. It clears no signals: a reported attempt before it still counts once it ends. Nothing done while a lock holds counts toward the next one, and a lock clears the signals of its own trigger only: one reported attempt before a `wrong_codes` lock still counts afterwards. `failed_attempts` in a wrong-code refusal counts the whole session, so it can exceed 3 after a lock has ended.
+
+The Agent reports a suspected prompt injection or impersonation attempt with the Green Operation `report_suspected_attempt` `{kind: "injection" | "impersonation", evidence}`, quoting the text that raised it. Its output `session_locked` says whether the Customer is now locked, and `trigger` and `locked_until` which lock holds them (null if none): the one this report placed, or one set before it, in any of their sessions or by a Staff Member.
 
 ### Audit
 
-Every Operation call, tier preview, Confirmation request, verification challenge and code attempt is recorded in order against its session, with the Bank-clock time, event (`operation` / `tier_preview` / `confirmation_issued` / `verification_challenge` / `verification_attempt`), Operation name, raw input, tier, outcome, refusal reason and detail (e.g. which `confirmation_id`, `challenge_id` or `verification_id` was issued or used, and `failed_attempts` for a wrong code). A Safety Lock is recorded as a `safety_lock` entry right after the call that tripped it (`detail: {lock_id, trigger, locked_until}`), and a lift as `safety_lock_lifted` (`detail: {lock_id, lifted_by}`). Tokens, codes and `Secret` fields are never logged.
+Every Operation call, tier preview, Confirmation request, verification challenge and code attempt is recorded in order against its session, with the Bank-clock time, event (`operation` / `tier_preview` / `confirmation_issued` / `verification_challenge` / `verification_attempt`), Operation name, raw input, tier, outcome, refusal reason and detail (e.g. which `confirmation_id`, `challenge_id` or `verification_id` was issued or used, and `failed_attempts` for a wrong code). A Safety Lock is recorded as a `safety_lock` entry right after the call that tripped it (`detail: {lock_id, trigger, locked_until}`), a lock a Staff Member set by hand as a `safety_lock` entry with `set_by` and `reason` as well (shown to the session without them), and a lift as `safety_lock_lifted` (`detail: {lock_id, lifted_by}`). Tokens, codes and `Secret` fields are never logged.
 
 A session reads its own trail with the Green Operation `read_audit_trail` (input `{}`), for the Agent's decision trace panel. The output is `{session_id, entries}`, and each entry has `entry_id`, `at`, `event`, `operation`, `input`, `tier`, `outcome`, `reason` and `detail`. It never reaches another session's trail, not even one of the same Customer's. A refused entry's `detail` is exactly the refusal's `detail` the caller got back (e.g. `failed_attempts` for a wrong code), never the audit-only detail Staff Members see (e.g. which token a refused one turned out to be). The read is itself audited, so it shows up in the next read. A Staff Member reads any session's full trail, ended sessions included, with `GET /admin/sessions/{session_id}/audit`.

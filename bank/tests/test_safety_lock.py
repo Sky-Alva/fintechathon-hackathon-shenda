@@ -1,6 +1,7 @@
 """The Safety Lock: repeated wrong codes, Agent-reported attempts or a burst of Red
-Operations lock a session so that only Green Operations run, until a Staff Member lifts
-the lock or 30 Bank-clock minutes pass."""
+Operations, across a Customer's sessions, lock the Customer so that only Green Operations
+run in any of their sessions, until a Staff Member lifts the lock or 30 Bank-clock minutes
+pass."""
 
 from typing import Any
 
@@ -91,7 +92,9 @@ def yellow_transfer(client: TestClient, headers: dict[str, str], token: str) -> 
 def assert_locked(response: httpx.Response, trigger: str, until: str) -> None:
     assert response.status_code == 423, response.text
     assert refusal(response)["reason"] == "session_locked"
-    assert refusal(response)["detail"] == {"trigger": trigger, "locked_until": until}
+    detail = refusal(response)["detail"]
+    detail.pop("index", None)  # a verification request names which of its calls was refused
+    assert detail == {"trigger": trigger, "locked_until": until}
 
 
 # --- Triggers ---------------------------------------------------------------------------
@@ -262,7 +265,7 @@ def test_a_locked_session_cannot_answer_an_open_challenge(client: TestClient) ->
     response = submit_code(client, phone, challenge_id, latest_code(client, phone))
 
     assert_locked(response, "reported_attempts", "2026-10-20T09:30:00+08:00")
-    assert "verification_token" not in response.json()
+    assert "verifications" not in response.json()
 
 
 def test_a_tier_preview_in_a_locked_session_marks_non_green_steps_locked(
@@ -281,14 +284,68 @@ def test_a_tier_preview_in_a_locked_session_marks_non_green_steps_locked(
     assert steps[1]["refusal"]["reason"] == "session_locked"
 
 
-def test_the_lock_holds_only_the_session_that_tripped_it(client: TestClient) -> None:
-    locked = login(client, "hanmei")
+# --- The Customer, not the session ------------------------------------------------------
+
+
+def test_logging_in_again_does_not_get_around_the_lock(client: TestClient) -> None:
+    first, first_phone = login_with_phone(client, "hanmei")
+    enter_wrong_codes(client, first, first_phone, 3)
+    again = login(client, "hanmei")
+
+    yellow = request_confirmations(client, again, ("transfer", transfer(HUSBAND, "200.00")))
+    red = request_verification(client, again, "transfer", transfer(HUSBAND, "1200.00"))
+    green = call(client, again, "query_balance")
+
+    assert refusal(yellow)["reason"] == "session_locked"
+    assert refusal(yellow)["detail"]["locked_until"] == "2026-10-20T09:30:00+08:00"
+    assert_locked(red, "wrong_codes", "2026-10-20T09:30:00+08:00")
+    assert green.status_code == 200, green.text
+
+
+def test_the_lock_holds_the_customers_sessions_opened_before_it(client: TestClient) -> None:
     other = login(client, "hanmei")
+    locked = login(client, "hanmei")
     lock_by_reports(client, locked)
 
-    response = request_confirmations(client, other, ("transfer", transfer(HUSBAND, "200.00")))
+    response = call(client, other, "transfer", transfer(HUSBAND, "200.00"))
+
+    assert_locked(response, "reported_attempts", "2026-10-20T09:30:00+08:00")
+
+
+def test_the_lock_does_not_hold_another_customer(client: TestClient) -> None:
+    locked = login(client, "hanmei")
+    lock_by_reports(client, locked)
+    husband = login(client, "liming")
+
+    response = request_confirmations(
+        client, husband, ("transfer", transfer("PAY-LM-001", "200.00"))
+    )
 
     assert response.status_code == 200, response.text
+
+
+def test_reports_from_two_sessions_of_one_customer_add_up(client: TestClient) -> None:
+    first = login(client, "hanmei")
+    second = login(client, "hanmei")
+    report_attempt(client, first)
+
+    report = report_attempt(client, second)
+    response = call(client, first, "transfer", transfer(HUSBAND, "200.00"))
+
+    assert report.json()["output"]["session_locked"] is True
+    assert_locked(response, "reported_attempts", "2026-10-20T09:30:00+08:00")
+
+
+def test_wrong_codes_from_two_sessions_of_one_customer_add_up(client: TestClient) -> None:
+    first, first_phone = login_with_phone(client, "hanmei")
+    second, second_phone = login_with_phone(client, "hanmei")
+    enter_wrong_codes(client, first, first_phone, 2)
+
+    third = enter_wrong_codes(client, second, second_phone, 1)
+    response = call(client, first, "transfer", transfer(HUSBAND, "200.00"))
+
+    assert refusal(third)["detail"]["locked_until"] == "2026-10-20T09:30:00+08:00"
+    assert_locked(response, "wrong_codes", "2026-10-20T09:30:00+08:00")
 
 
 # --- Ending the lock ---------------------------------------------------------------------
@@ -355,10 +412,62 @@ def test_the_staff_console_reads_a_sessions_lock(client: TestClient) -> None:
     assert after == {
         "session_id": session_id,
         "locked": True,
+        "locked_session_id": session_id,
         "trigger": "reported_attempts",
         "locked_at": "2026-10-20T09:00:00+08:00",
         "locked_until": "2026-10-20T09:30:00+08:00",
     }
+
+
+def test_the_staff_console_reads_the_lock_on_the_customers_other_sessions(
+    client: TestClient,
+) -> None:
+    locked_id, locked, _ = login_session_with_phone(client, "hanmei")
+    other_id, _, _ = login_session_with_phone(client, "hanmei")
+    husband_id, _, _ = login_session_with_phone(client, "liming")
+    lock_by_reports(client, locked)
+
+    other = admin(client, "get", f"/admin/sessions/{other_id}/safety-lock")
+    husband = admin(client, "get", f"/admin/sessions/{husband_id}/safety-lock")
+
+    assert other["locked"] is True
+    assert other["locked_session_id"] == locked_id
+    assert other["locked_until"] == "2026-10-20T09:30:00+08:00"
+    assert husband == {"session_id": husband_id, "locked": False}
+
+
+def test_lifting_the_lock_from_any_session_frees_all_the_customers_sessions(
+    client: TestClient,
+) -> None:
+    locked_id, locked, _ = login_session_with_phone(client, "hanmei")
+    lock_by_reports(client, locked)
+    again_id, again, _ = login_session_with_phone(client, "hanmei")
+
+    lifted = lift(client, again_id)
+    from_locked = request_confirmations(
+        client, locked, ("transfer", transfer(HUSBAND, "200.00"))
+    )
+    from_again = request_confirmations(client, again, ("transfer", transfer(HUSBAND, "200.00")))
+
+    assert lifted.status_code == 200, lifted.text
+    assert lifted.json()["locked_session_id"] == locked_id
+    assert from_locked.status_code == 200, from_locked.text
+    assert from_again.status_code == 200, from_again.text
+    assert lift(client, locked_id).status_code == 404
+
+
+def test_the_lock_and_its_lift_are_audited_where_they_happened(client: TestClient) -> None:
+    locked_id, locked, _ = login_session_with_phone(client, "hanmei")
+    lock_by_reports(client, locked)
+    again_id, _, _ = login_session_with_phone(client, "hanmei")
+    lift(client, again_id)
+
+    locked_trail = admin(client, "get", f"/admin/sessions/{locked_id}/audit")["entries"]
+    again_trail = admin(client, "get", f"/admin/sessions/{again_id}/audit")["entries"]
+
+    assert [e["event"] for e in locked_trail][-1] == "safety_lock"
+    assert [e["event"] for e in again_trail] == ["safety_lock_lifted"]
+    assert again_trail[0]["detail"]["lock_id"] == locked_trail[-1]["detail"]["lock_id"]
 
 
 def test_attempts_before_a_lock_ended_do_not_count_toward_the_next(client: TestClient) -> None:
@@ -450,3 +559,201 @@ def test_lifting_the_lock_of_an_unknown_session_is_not_found(client: TestClient)
 
     assert response.status_code == 404
     assert refusal(response)["message"] == "No such session"
+
+
+# --- A Staff Member locks a session by hand ---------------------------------------------
+
+STAFF_LOCK = {"staff": "王经理", "reason": "客户来电称手机丢失"}
+
+
+def lock_by_staff(
+    client: TestClient, session_id: str, body: dict[str, Any] | None = None
+) -> httpx.Response:
+    response: httpx.Response = client.post(
+        f"/admin/sessions/{session_id}/safety-lock",
+        headers={"X-Admin-Key": ADMIN_KEY},
+        json=STAFF_LOCK if body is None else body,
+    )
+    return response
+
+
+def test_a_staff_member_can_lock_a_session_by_hand(client: TestClient) -> None:
+    session_id, headers, _ = login_session_with_phone(client, "hanmei")
+    token = confirm(client, headers, "transfer", transfer(HUSBAND, "200.00"))  # before it
+
+    locked = lock_by_staff(client, session_id)
+    yellow = yellow_transfer(client, headers, token)
+    green = call(client, headers, "query_balance")
+
+    assert locked.status_code == 200, locked.text
+    assert locked.json() == {
+        "session_id": session_id,
+        "locked": True,
+        "locked_session_id": session_id,
+        "trigger": "staff",
+        "locked_at": "2026-10-20T09:00:00+08:00",
+        "locked_until": "2026-10-20T09:30:00+08:00",
+        "set_by": "王经理",
+        "reason": "客户来电称手机丢失",
+    }
+    assert_locked(yellow, "staff", "2026-10-20T09:30:00+08:00")
+    assert green.status_code == 200, green.text
+
+
+def test_locking_by_hand_needs_the_admin_key(client: TestClient) -> None:
+    session_id, headers, _ = login_session_with_phone(client, "hanmei")
+
+    response = client.post(
+        f"/admin/sessions/{session_id}/safety-lock", headers=headers, json=STAFF_LOCK
+    )
+
+    assert response.status_code == 401
+    assert admin(client, "get", f"/admin/sessions/{session_id}/safety-lock")["locked"] is False
+
+
+def test_locking_by_hand_needs_the_staff_members_name(client: TestClient) -> None:
+    session_id, _, _ = login_session_with_phone(client, "hanmei")
+
+    response = lock_by_staff(client, session_id, {"reason": "可疑"})
+
+    assert response.status_code == 422
+    assert admin(client, "get", f"/admin/sessions/{session_id}/safety-lock")["locked"] is False
+
+
+def test_locking_an_already_locked_customer_is_refused_and_keeps_the_lock(
+    client: TestClient,
+) -> None:
+    session_id, headers, _ = login_session_with_phone(client, "hanmei")
+    lock_by_reports(client, headers)
+    advance(client, 5)
+
+    response = lock_by_staff(client, session_id)
+
+    assert response.status_code == 423
+    assert refusal(response)["reason"] == "session_locked"
+    assert refusal(response)["detail"] == {
+        "trigger": "reported_attempts",
+        "locked_until": "2026-10-20T09:30:00+08:00",
+    }
+    lock = admin(client, "get", f"/admin/sessions/{session_id}/safety-lock")
+    assert lock["trigger"] == "reported_attempts"
+
+
+def test_locking_an_unknown_session_is_not_found(client: TestClient) -> None:
+    response = lock_by_staff(client, "SES-nobody")
+
+    assert response.status_code == 404
+    assert refusal(response)["message"] == "No such session"
+
+
+def test_a_lock_by_hand_holds_every_session_of_the_customer(client: TestClient) -> None:
+    locked_id, _, _ = login_session_with_phone(client, "hanmei")
+    _, other, _ = login_session_with_phone(client, "hanmei")
+    lock_by_staff(client, locked_id, {"staff": "王经理"})
+    again_id, again, _ = login_session_with_phone(client, "hanmei")
+
+    from_other = request_confirmations(client, other, ("transfer", transfer(HUSBAND, "200.00")))
+    from_again = request_confirmations(client, again, ("transfer", transfer(HUSBAND, "200.00")))
+    read = admin(client, "get", f"/admin/sessions/{again_id}/safety-lock")
+
+    assert from_other.status_code == 423
+    assert from_again.status_code == 423
+    assert read["locked_session_id"] == locked_id
+    assert (read["trigger"], read["set_by"], read["reason"]) == ("staff", "王经理", None)
+
+
+def test_a_lock_by_hand_is_lifted_like_any_other(client: TestClient) -> None:
+    session_id, headers, _ = login_session_with_phone(client, "hanmei")
+    lock_by_staff(client, session_id)
+
+    lifted = lift(client, session_id)
+    token = confirm(client, headers, "transfer", transfer(HUSBAND, "200.00"))
+    response = yellow_transfer(client, headers, token)
+
+    assert lifted.status_code == 200, lifted.text
+    assert lifted.json()["trigger"] == "staff"
+    assert response.status_code == 200, response.text
+
+
+def test_a_lock_by_hand_ends_after_thirty_bank_clock_minutes(client: TestClient) -> None:
+    session_id, headers, _ = login_session_with_phone(client, "hanmei")
+    lock_by_staff(client, session_id)
+
+    advance(client, 30)
+
+    assert admin(client, "get", f"/admin/sessions/{session_id}/safety-lock")["locked"] is False
+    token = confirm(client, headers, "transfer", transfer(HUSBAND, "200.00"))
+    assert yellow_transfer(client, headers, token).status_code == 200
+
+
+def test_staff_see_who_locked_it_and_why_but_the_session_does_not(client: TestClient) -> None:
+    session_id, headers, _ = login_session_with_phone(client, "hanmei")
+    lock_by_staff(client, session_id)
+
+    [staff_entry] = admin(client, "get", f"/admin/sessions/{session_id}/audit")["entries"]
+    own = call(client, headers, "read_audit_trail").json()["output"]["entries"]
+    [own_entry] = [e for e in own if e["event"] == "safety_lock"]
+
+    assert (staff_entry["event"], staff_entry["outcome"]) == ("safety_lock", "ok")
+    lock_id = staff_entry["detail"]["lock_id"]
+    assert staff_entry["detail"] == {
+        "lock_id": lock_id,
+        "trigger": "staff",
+        "locked_until": "2026-10-20T09:30:00+08:00",
+        "set_by": "王经理",
+        "reason": "客户来电称手机丢失",
+    }
+    assert own_entry["detail"] == {
+        "trigger": "staff",
+        "locked_until": "2026-10-20T09:30:00+08:00",
+    }
+
+
+def test_reports_while_locked_by_hand_do_not_count_but_earlier_ones_still_do(
+    client: TestClient,
+) -> None:
+    session_id, headers, _ = login_session_with_phone(client, "hanmei")
+    report_attempt(client, headers)
+    lock_by_staff(client, session_id)
+    report_attempt(client, headers)  # while locked: not counted
+    lift(client, session_id)
+
+    after = report_attempt(client, headers)
+
+    assert after.json()["output"]["session_locked"] is True  # with the first, before it
+
+
+# --- A report says which lock holds the Customer, wherever it was set ------------------
+
+
+def test_a_report_that_locks_the_customer_says_until_when(client: TestClient) -> None:
+    headers = login(client, "hanmei")
+    first = report_attempt(client, headers)
+
+    second = report_attempt(client, headers)
+
+    assert first.json()["output"] == {
+        "session_locked": False, "trigger": None, "locked_until": None
+    }
+    assert second.json()["output"] == {
+        "session_locked": True,
+        "trigger": "reported_attempts",
+        "locked_until": "2026-10-20T09:30:00+08:00",
+    }
+
+
+def test_a_report_in_another_session_says_which_lock_already_holds_the_customer(
+    client: TestClient,
+) -> None:
+    locked_id, _, _ = login_session_with_phone(client, "hanmei")
+    lock_by_staff(client, locked_id)
+    advance(client, 5)
+    other = login(client, "hanmei")
+
+    report = report_attempt(client, other)
+
+    assert report.json()["output"] == {
+        "session_locked": True,
+        "trigger": "staff",
+        "locked_until": "2026-10-20T09:30:00+08:00",
+    }

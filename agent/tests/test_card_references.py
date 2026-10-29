@@ -15,6 +15,7 @@ from conftest import (
     log_in,
     send,
     start_conversation,
+    tokens_by_step,
     type_code,
 )
 from fake_model import FakeModel, clarify, plan, say, step
@@ -91,7 +92,7 @@ def test_card_number_two_from_the_list_is_the_banks_card_and_the_plan_card_names
         "verified",
         plan_id=requested["plan_id"],
         step_id="s1",
-        verification_token=verified["verification_token"],
+        verification_tokens=tokens_by_step(requested, verified),
     )
     reports = [
         (e["input"]["card_id"], e["outcome"])

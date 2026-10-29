@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from conftest import balance, call, confirm, login
 
+WIFE = "PAY-LM-001"  # 韩梅梅, nickname 老婆
 MUM = "PAY-LM-002"  # 王秀英, nickname 老妈
 BADMINTON_ZHANG = "PAY-LM-003"  # 张伟, paid for 羽毛球场地费
 CLASSMATE_ZHANG = "PAY-LM-004"  # 张伟, paid for 同学聚会AA
@@ -120,6 +121,34 @@ def test_a_name_wins_over_a_note_that_only_mentions_it(client: TestClient) -> No
     payee = found(client, headers, "王秀英")
 
     assert (payee["payee_id"], payee["matched_by"]) == (MUM, "name")
+
+
+def test_a_payee_is_found_by_their_name_in_pinyin(client: TestClient) -> None:
+    headers = login(client, "liming")
+
+    for query in ["hanmeimei", "Han Meimei", "HAN MEI MEI", "Hán Méiméi", "han2 mei2 mei2"]:
+        payee = found(client, headers, query)
+        assert (payee["payee_id"], payee["matched_by"]) == (WIFE, "pinyin"), query
+
+
+def test_each_customer_finds_their_own_payees_in_pinyin(client: TestClient) -> None:
+    hanmei = login(client, "hanmei")
+
+    assert found(client, hanmei, "Li Ming")["payee_id"] == "PAY-HM-001"
+
+
+def test_part_of_a_name_in_pinyin_is_not_guessed(client: TestClient) -> None:
+    response = find(client, login(client, "liming"), "meimei")
+
+    assert refusal(response)["reason"] == "not_found"
+
+
+def test_two_payees_whose_names_share_a_pinyin_are_ambiguous(client: TestClient) -> None:
+    response = find(client, login(client, "liming"), "zhang wei")
+
+    assert refusal(response)["reason"] == "ambiguous_payee"
+    candidates = refusal(response)["detail"]["candidates"]
+    assert [c["payee_id"] for c in candidates] == [BADMINTON_ZHANG, CLASSMATE_ZHANG]
 
 
 # --- Ambiguity: all candidates, never a guess -----------------------------------------

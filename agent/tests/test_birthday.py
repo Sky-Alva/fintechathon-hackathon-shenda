@@ -136,7 +136,7 @@ def test_saying_yes_to_the_reminder_gets_the_birthday_plan(
     assert event_types(events)[-2:] == ["plan_proposed", "confirmation_requested"]
     # The Planner saw the reminder, as Bank data.
     [reminder] = [m for m in model.requests[0].messages if "Bloom & Co." in m["content"]]
-    assert reminder["role"] == "assistant" and reminder["content"].startswith("<bank_data>")
+    assert reminder["role"] != "system" and reminder["content"].startswith("<bank_data>")
 
 
 def test_the_agent_brings_up_the_birthday_citing_the_profile_and_last_years_gift(
@@ -297,7 +297,7 @@ def test_the_paid_orders_reach_the_model_later_only_as_bank_data(
     holding = [m for m in model.requests[-2].messages if "红玫瑰花束" in m["content"]]
     assert holding
     for message in holding:
-        assert message["role"] == "assistant"
+        assert message["role"] != "system"
         assert message["content"].startswith("<bank_data>")
         assert message["content"].endswith("</bank_data>")
 

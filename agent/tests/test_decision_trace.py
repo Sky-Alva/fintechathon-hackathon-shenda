@@ -182,7 +182,9 @@ def approve_on_the_bank(bank: TestClient, login: Login) -> list[str]:
     )
     assert confirmed.status_code == 200, confirmed.text
     challenge = bank.post(
-        "/verifications", headers=session, json={"operation": "transfer", "input": TO_MUM_1100}
+        "/verifications",
+        headers=session,
+        json={"operations": [{"operation": "transfer", "input": TO_MUM_1100}]},
     )
     assert challenge.status_code == 200, challenge.text
     sms = bank.get("/phone/messages", headers=phone).json()["messages"][-1]["text"]
@@ -197,7 +199,7 @@ def approve_on_the_bank(bank: TestClient, login: Login) -> list[str]:
         login.session_token,
         login.phone_token,
         confirmed.json()["confirmations"][0]["confirmation_token"],
-        verified.json()["verification_token"],
+        verified.json()["verifications"][0]["verification_token"],
         code,
     ]
 

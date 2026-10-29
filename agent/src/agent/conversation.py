@@ -8,7 +8,7 @@ at its Plan card instead, and runs only when the Customer confirms it.
 import logging
 import secrets
 import threading
-from collections.abc import Callable, Generator, Iterator
+from collections.abc import Callable, Generator, Iterator, Mapping
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -16,6 +16,7 @@ from agent import (
     birthday,
     cards,
     charts,
+    failures,
     guard,
     notices,
     orders,
@@ -448,6 +449,24 @@ class Conversations:
         if failed is not None and not plan.steps:
             return  # nothing else reaches the goal: the answer already said what happened
         yield trace("intent", {"intent": plan.intent})
+        unnamed = {
+            step.id: kind.key
+            for kind in (cards.REFERENCE, subscriptions.REFERENCE)
+            for step in references.unnamed(kind, plan.steps, catalogue)
+        }
+        if unnamed:
+            # A card step with no card yet: before the cards are listed and the Customer
+            # is asked which one, the Bank checks the values the Customer did give.
+            try:
+                previewed = reviewer.review(
+                    planner.Plan(steps=[s for s in plan.steps if s.id in unnamed]), bank
+                )
+            except (BankRefused, BankUnavailable):
+                yield self._not_retrieved(conversation)
+                return
+            if (wrong := self._wrong_value(conversation, previewed.refusals, unnamed)) is not None:
+                yield wrong
+                return
         looked_up: list[StepResult] = []
         done = yield from self._complete(
             conversation, plan, catalogue, ask, looked_up, failed is not None
@@ -477,11 +496,37 @@ class Conversations:
                     kind, reviewed.steps, listed, catalogue, reviewed.refusals
                 )
             if made_up and listed:
-                # Even with the Bank's list the Planner names none it has: the Customer picks.
+                # Even with the Bank's list the Planner names none it has: the Customer picks,
+                # unless the Bank refuses a value the Customer gave anyway.
                 self._remember(conversation, looked_up)
-                yield self._clarify(conversation, references.which_one(kind, listed, language))
+                wrong = self._wrong_value(
+                    conversation,
+                    {s.id: r for s in made_up if (r := reviewed.refusals.get(s.id)) is not None},
+                    {s.id: kind.key for s in made_up},
+                )
+                yield wrong or self._clarify(
+                    conversation, references.which_one(kind, listed, language)
+                )
                 return
         yield from self._propose(conversation, reviewed, looked_up, catalogue, plan.note)
+
+    def _wrong_value(
+        self,
+        conversation: Conversation,
+        refused: Mapping[str, BankRefusal],
+        keys: Mapping[str, str],
+    ) -> Answer | None:
+        """The answer when the Bank's tier preview refused a value the Customer gave in a
+        step (a Card Limit of 0) that doesn't name its card or Subscription yet: what is
+        wrong with it, in place of asking which one. None if it refused no such value;
+        keys are the input naming each step's card or Subscription, by step ID."""
+        language = customer_language(conversation.history)
+        for step_id, refusal in refused.items():
+            text = failures.wrong_values(refusal, language, ignore={keys.get(step_id, "")})
+            if text is not None:
+                conversation.history.append({"role": "assistant", "content": text})
+                return Answer(text=text)
+        return None
 
     def _complete(
         self,
@@ -651,7 +696,7 @@ class Conversations:
             case CancelPlan(), _:
                 return self._recorded(conversation, self._cancelled(conversation))
             case VerifiedStep(), PendingVerification():
-                turn = self._verified(conversation, pending, action.verification_token)
+                turn = self._verified(conversation, pending, action.verification_tokens)
             case WrongCode(), PendingVerification():
                 turn = self._wrong_code(conversation, pending, action.failed_attempts)
             case ResumePlan(), PausedPlan():
@@ -849,7 +894,8 @@ class Conversations:
     ) -> Iterator[Event]:
         if declined.reason == "manipulation":
             # Quote the Customer's own words, never the model's account of them.
-            said = next(m["content"] for m in reversed(conversation.history) if m["role"] == "user")
+            history = reversed(conversation.history)
+            said = next((m["content"] for m in history if untrusted.from_customer(m)), "")
             yield from self._manipulation(
                 conversation,
                 guard.Suspicion(declined.kind or "impersonation", guard.quoted(said)),
@@ -911,8 +957,9 @@ class Conversations:
         self, conversation: Conversation, suspicion: guard.Suspicion
     ) -> tuple[bool, dict[str, Any] | None]:
         """Report a suspected attempt to the Bank, quoting the text that raised it: whether
-        the Bank accepted the report, and the Safety Lock it placed if this report locked
-        the session (the second in a session does)."""
+        the Bank accepted the report, and the Safety Lock holding the Customer if one does:
+        the one this report placed (the second for a Customer does), or one set before it,
+        in another of their sessions or by a Staff Member."""
         try:
             report = conversation.bank.call(
                 "report_suspected_attempt",
@@ -920,12 +967,10 @@ class Conversations:
             )
         except (BankRefused, BankUnavailable):
             return False, None
-        if not report["output"]["session_locked"]:
+        output = report["output"]
+        if not output["session_locked"]:
             return True, None
-        try:  # the Bank's trail says until when
-            return True, conversation.bank.latest_lock()
-        except (BankRefused, BankUnavailable):
-            return True, None
+        return True, {"trigger": output["trigger"], "locked_until": output["locked_until"]}
 
     def _screen(
         self, conversation: Conversation, results: list[StepResult]
@@ -1078,9 +1123,15 @@ class Conversations:
             )
 
     def _verified(
-        self, conversation: Conversation, pending: PendingVerification, verification_token: str
+        self,
+        conversation: Conversation,
+        pending: PendingVerification,
+        verification_tokens: dict[str, str],
     ) -> Iterator[Event]:
-        """Resume the Plan at its Red step, with the step's verification token."""
+        """Resume the Plan at its Red step, with the verification tokens of the steps its
+        challenge covered (any other is ignored)."""
+        covered = set(pending.requested.step_ids)
+        tokens = {id: token for id, token in verification_tokens.items() if id in covered}
         with conversation.lock:
             if conversation.handed_over_to is not None:
                 # Taken over since the Customer verified: the Agent starts nothing.
@@ -1091,7 +1142,7 @@ class Conversations:
                 pending.plan,
                 pending.results,
                 pending.confirmation_tokens,
-                {pending.requested.step_id: verification_token},
+                tokens,
                 plan_id=pending.plan_id,
                 card=pending.card,
             )
@@ -1191,9 +1242,14 @@ class Conversations:
             yield self._pause(conversation, PausedPlan(plan_id, card, remaining, kept, results))
             return
         # The challenge is asked for only now: a step may be Red only because of the
-        # steps that ran before it.
+        # steps that ran before it. One code covers every Red step still to run that the
+        # Bank tiers Red now (#55); one Red only because of a step not yet run gets its
+        # own code when it is reached.
+        covered = self._covered(conversation, plan.from_step(paused.id))
         try:
-            challenge = conversation.bank.request_verification(paused.operation, paused.input)
+            challenge = conversation.bank.request_verification(
+                [{"operation": step.operation, "input": step.input} for step in covered]
+            )
         except BankRefused as refused:
             yield failed(paused, refused.body(), results, language)
             not_run = plan.from_step(paused.id).steps[1:]
@@ -1207,6 +1263,7 @@ class Conversations:
         requested = VerificationRequested(
             plan_id=plan_id,
             step_id=paused.id,
+            step_ids=[step.id for step in covered],
             challenge_id=challenge["challenge_id"],
             sent_to=challenge["sent_to"],
             expires_at=challenge["expires_at"],
@@ -1215,6 +1272,45 @@ class Conversations:
             plan_id, plan.from_step(paused.id), results, tokens, requested, card
         )
         yield requested
+
+    @staticmethod
+    def _covered(conversation: Conversation, remaining: ReviewedPlan) -> list[PlanStep]:
+        """The Red steps one challenge can cover, from the first step of `remaining` (the
+        Red step the Plan is paused at, always covered) on.
+
+        A later Red step is covered if the Bank's tier preview of the covered steps alone
+        still tiers it Red. One that is Red only because of a Yellow step between them
+        (e.g. its transfer crosses ¥1,000 only after that one's) is left out, and the
+        preview asked again without it, until every covered step is Red. So is one that
+        depends on a step of `remaining`, which hasn't run: its input may rest on what that
+        step returns, so it isn't complete yet. If the Bank refuses the preview, only the
+        paused step is covered.
+        """
+        paused, *later = remaining.steps
+        not_run = {step.id for step in remaining.steps}
+        covered = [paused] + [
+            step
+            for step in later
+            if step.tier == "red"
+            and step.id not in remaining.refusals
+            and not not_run & set(step.depends_on)
+        ]
+        while len(covered) > 1:
+            try:
+                preview = conversation.bank.tier_preview(
+                    [{"operation": step.operation, "input": step.input} for step in covered]
+                )
+            except (BankRefused, BankUnavailable):
+                return [paused]
+            red = [paused] + [
+                step
+                for step, tiered in zip(covered[1:], preview[1:], strict=True)
+                if tiered.get("tier") == "red"
+            ]
+            if len(red) == len(covered):
+                break
+            covered = red
+        return covered
 
     def _failed(
         self,
@@ -1302,18 +1398,37 @@ class Conversations:
             written = responder.Written(reported, quotes_bank=True)
         else:
             written = responder.answer(
-                self.model, conversation.history, results, conversation.bank_results
+                self.model,
+                conversation.history,
+                results,
+                conversation.bank_results,
+                queries=self._queries(conversation),
             )
-        # The outgoing check: nothing that looks like a full card number or a code goes
-        # out, even when a Bank result contained it.
-        text = secrets_guard.mask(written.text)
         self._remember(conversation, results)
+        # The outgoing check: nothing that looks like a full card number or a code goes
+        # out, even when a Bank result contained it, and nothing of the Agent's internal
+        # data format (a `<bank_data>` block, a card's Bank ID).
+        text = responder.for_channel(
+            secrets_guard.mask(written.text),
+            cards.known(conversation.bank_results),
+            customer_language(conversation.history),
+        )
         conversation.history.append(
             untrusted.shown(text)
             if written.quotes_bank
             else {"role": "assistant", "content": text}
         )
         return Answer(text=text)
+
+    @staticmethod
+    def _queries(conversation: Conversation) -> set[str] | None:
+        """The Operations that only look something up (the catalogue fixes them as Green);
+        None if the Bank can't say."""
+        try:
+            catalogue = conversation.bank.catalogue()
+        except (BankRefused, BankUnavailable):
+            return None
+        return {op["name"] for op in catalogue if op["tier"] == {"kind": "fixed", "tier": "green"}}
 
     def _noticed(
         self, conversation: Conversation, note: str, looked_up: list[StepResult]

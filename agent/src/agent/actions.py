@@ -44,14 +44,14 @@ class AskForHuman(BaseModel):
 
 class VerifiedStep(BaseModel):
     """The Customer typed the right code into the Channel's SMS verification box, which
-    sent it straight to the Bank and hands the Agent only the verification token it got
-    back."""
+    sent it straight to the Bank and hands the Agent only the verification tokens it got
+    back: one per step the challenge covers, by step ID."""
 
     model_config = ConfigDict(extra="forbid")
     action: Literal["verified"]
     plan_id: str
     step_id: str
-    verification_token: str = Field(min_length=1)
+    verification_tokens: dict[str, Annotated[str, Field(min_length=1)]] = Field(min_length=1)
 
 
 class WrongCode(BaseModel):

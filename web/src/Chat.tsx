@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useRef, useState } from 'react'
+import { type FormEvent, type KeyboardEvent, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import AnswerText from './AnswerText'
 import { type CustomerAction, fetchUpdates, sendAction, sendMessage } from './api'
@@ -371,6 +371,7 @@ export default function Chat({
   const languageRef = useRef<Language>('zh')
   const t = UI[language]
   const bottom = useRef<HTMLDivElement>(null)
+  const messageBox = useRef<HTMLTextAreaElement>(null)
 
   // Braces matter: Chromium's scrollIntoView now returns a Promise, which React would
   // take for the effect's cleanup and crash calling.
@@ -431,6 +432,24 @@ export default function Chat({
       setBusy(false)
       setFinishedTurns((n) => n + 1)
     }
+  }
+
+  // The message box grows with the text (the CSS caps it at about 5 lines) and
+  // shrinks back to one line once it's emptied after sending.
+  useLayoutEffect(() => {
+    const box = messageBox.current
+    if (!box) return
+    box.style.height = 'auto'
+    box.style.height = `${box.scrollHeight + box.offsetHeight - box.clientHeight}px`
+  }, [draft])
+
+  // Enter sends and Shift+Enter adds a line; Enter that picks a pinyin candidate
+  // (an IME composition in progress) doesn't send.
+  function sendOnEnter(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key !== 'Enter' || event.shiftKey) return
+    if (event.nativeEvent.isComposing || event.keyCode === 229) return
+    event.preventDefault()
+    event.currentTarget.form?.requestSubmit()
   }
 
   async function submit(event: FormEvent) {
@@ -552,14 +571,14 @@ export default function Chat({
 
   /** The verification box got a verification token from the Bank for the right code: the
    * Plan runs on from its Red step, and can be stopped. */
-  async function verified(waiting: VerificationRequested, token: string) {
+  async function verified(waiting: VerificationRequested, tokens: string[]) {
     if (busy) return
     setVerification(null)
     await runPlan(waiting.plan_id, t.verifiedTap, {
       action: 'verified',
       plan_id: waiting.plan_id,
       step_id: waiting.step_id,
-      verification_token: token,
+      verification_tokens: Object.fromEntries(waiting.step_ids.map((id, i) => [id, tokens[i]])),
     })
   }
 
@@ -828,9 +847,12 @@ export default function Chat({
             smsSlot,
           )}
         <form className="composer" onSubmit={submit}>
-          <input
+          <textarea
+            ref={messageBox}
+            rows={1}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={sendOnEnter}
             placeholder={t.placeholder}
             disabled={busy}
           />

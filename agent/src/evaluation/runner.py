@@ -216,7 +216,8 @@ class _Run:
 
     def answer_verification(self, prompt: dict[str, Any]) -> list[dict[str, Any]]:
         answer = self.take("verification")
-        self.log(f"Agent: verification of {prompt['step_id']} -> {answer or 'reject (unscripted)'}")
+        steps = ", ".join(prompt["step_ids"])
+        self.log(f"Agent: verification of {steps} -> {answer or 'reject (unscripted)'}")
         if answer not in ("correct_code", "wrong_code"):
             return []  # Rejecting is leaving the code untyped: the Plan stays paused.
         code = self.latest_code()
@@ -229,8 +230,11 @@ class _Run:
             json={"code": code},
         ).json()
         ids = {"plan_id": prompt["plan_id"], "step_id": prompt["step_id"]}
-        if "verification_token" in typed:
-            return self.act("verified", **ids, verification_token=typed["verification_token"])
+        if "verifications" in typed:
+            # One token per step the code covers, in the order the prompt lists them.
+            tokens = [v["verification_token"] for v in typed["verifications"]]
+            by_step = dict(zip(prompt["step_ids"], tokens, strict=True))
+            return self.act("verified", **ids, verification_tokens=by_step)
         refusal = typed.get("refusal", {})
         failed_attempts = refusal.get("detail", {}).get("failed_attempts")
         if refusal.get("reason") == "token_invalid" and isinstance(failed_attempts, int):

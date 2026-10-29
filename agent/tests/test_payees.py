@@ -271,6 +271,72 @@ def test_an_unambiguous_request_gets_no_clarifying_question(
     assert events[-2]["payees"][0]["payee_id"] == "PAY-LM-004"
 
 
+# --- Pinyin names and relationship words (#57) ----------------------------------------
+
+
+def payees_on_the_card(events: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    assert event_types(events)[-2:] == ["plan_proposed", "confirmation_requested"]
+    return [(p["payee_id"], p["name"]) for p in events[-2]["payees"]]
+
+
+def test_a_payee_named_in_pinyin_gets_a_plan_card_for_their_chinese_name(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    model.script(plan(find("Han Meimei"), pay("100.00")), plan(pay("100.00", "PAY-LM-001")))
+    conversation = start_conversation(agent, log_in(bank, "liming"))
+
+    events = shown(send(agent, conversation, "transfer 100 to Han Meimei"))
+
+    assert payees_on_the_card(events) == [("PAY-LM-001", "韩梅梅")]
+    assert events[-2]["steps"][0]["input"]["amount"] == "100.00"
+
+
+def test_my_wife_is_looked_up_by_her_chinese_nickname_without_a_question(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    model.script(plan(find("老婆"), pay("100.00")), plan(pay("100.00", "PAY-LM-001")))
+    conversation = start_conversation(agent, log_in(bank, "liming"))
+
+    events = shown(send(agent, conversation, "send 100 to my wife"))
+
+    # The Planner is told which Chinese nicknames an English relationship word means.
+    instructions = model.requests[0].messages[0]["content"]
+    assert "wife" in instructions and "老婆" in instructions
+    assert "clarification_question" not in event_types(events)
+    assert payees_on_the_card(events) == [("PAY-LM-001", "韩梅梅")]
+
+
+def test_my_husband_is_found_by_his_nickname_for_the_other_customer(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    model.script(plan(find("老公"), pay("100.00")), plan(pay("100.00", "PAY-HM-001")))
+    conversation = start_conversation(agent, log_in(bank, "hanmei"))
+
+    events = shown(send(agent, conversation, "send 100 to my husband"))
+
+    assert payees_on_the_card(events) == [("PAY-HM-001", "李明")]
+
+
+def test_after_a_payee_is_not_found_a_relationship_word_is_looked_up_again(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    model.script(
+        plan(find("Lily"), pay("1000.00")), clarify("I couldn't find Lily. Who is she?")
+    )
+    conversation = start_conversation(agent, log_in(bank, "liming"))
+    first = shown(send(agent, conversation, "transfer 1000 to Lily"))
+    assert event_types(first) == ["step_started", "step_failed", "clarification_question"]
+    assert first[1]["reason"] == "not_found"
+    model.script(plan(find("老婆"), pay("1000.00")), plan(pay("1000.00", "PAY-LM-001")))
+
+    events = shown(send(agent, conversation, "she's my wife"))
+
+    # The Planner plans the lookup again, knowing the first one found no "Lily".
+    assert "Lily" in model.requests[-2].text()
+    assert "clarification_question" not in event_types(events)
+    assert payees_on_the_card(events) == [("PAY-LM-001", "韩梅梅")]
+
+
 # --- The question in the Customer's language, the staff history, a takeover ------------
 
 

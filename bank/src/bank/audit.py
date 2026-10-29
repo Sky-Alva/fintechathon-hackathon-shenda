@@ -2,7 +2,9 @@
 challenge and code attempt, Safety Lock and lift, its tier decision and outcome, per session, in order.
 
 A session reads its own trail with `read_audit_trail` (Green, for the Agent's decision
-trace panel, so it works under a Safety Lock); a Staff Member reads any session's with
+trace panel, so it works under a Safety Lock), plus the Safety Lock entries from the
+Customer's other sessions, without the back-office identifiers; a
+Staff Member reads any session's, identifiers and all, with
 the admin endpoint.
 """
 
@@ -35,9 +37,14 @@ CREATE TABLE audit_log (
     outcome TEXT NOT NULL CHECK (outcome IN ('ok', 'refused')),
     reason TEXT,
     detail TEXT NOT NULL,
-    refusal_detail TEXT
+    caller_detail TEXT  -- what the session itself sees instead of `detail`, if not all of it
 );
 """
+
+
+BACK_OFFICE_IDS = frozenset({"lock_id", "confirmation_id", "verification_id", "challenge_id"})
+"""Identifiers for Staff Members only: a Safety Lock's, an approval token's, a challenge's.
+The session's own trail leaves them out; what happened, when and why stays."""
 
 
 class Event(StrEnum):
@@ -61,14 +68,15 @@ def record(
     tier: Tier | None,
     reason: RefusalReason | None,
     detail: dict[str, Any] | None = None,
-    refusal_detail: dict[str, Any] | None = None,
+    caller_detail: dict[str, Any] | None = None,
 ) -> None:
-    """`detail` is what Staff Members see; for a refusal, `refusal_detail` is what the
-    caller was told, which is all the session itself sees of it."""
+    """`detail` is what Staff Members see; `caller_detail` is all the session itself sees
+    of it: for a refusal, what the caller was told, and for a Safety Lock set by hand, the
+    lock without who set it or why."""
     conn.execute(
         "INSERT INTO audit_log"
         " (session_id, at, event, operation, input, tier, outcome, reason, detail,"
-        " refusal_detail)"
+        " caller_detail)"
         " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             session_id,
@@ -80,7 +88,9 @@ def record(
             "refused" if reason else "ok",
             reason.value if reason else None,
             json.dumps(detail or {}, ensure_ascii=False, default=str),
-            json.dumps(refusal_detail or {}, ensure_ascii=False, default=str) if reason else None,
+            json.dumps(caller_detail or {}, ensure_ascii=False, default=str)
+            if reason or caller_detail is not None
+            else None,
         ),
     )
 
@@ -89,19 +99,40 @@ def trail(
     conn: sqlite3.Connection, session_id: str, *, as_caller: bool = False
 ) -> list[dict[str, Any]]:
     """One session's entries in order: as a Staff Member sees them, or `as_caller`, with
-    each refusal showing only what the caller was told (never e.g. which token a refused
-    one turned out to be)."""
-    rows = conn.execute(
-        "SELECT * FROM audit_log WHERE session_id = ? ORDER BY entry_id", (session_id,)
-    ).fetchall()
+    the Safety Lock entries of the Customer's other sessions too and each refusal showing only what the caller was told (never e.g. which token a refused
+    one turned out to be), a lock set by hand without who set it or why, and no
+    back-office identifiers (`BACK_OFFICE_IDS`)."""
+    if as_caller:
+        # A Safety Lock holds the Customer, so every session of theirs shows its set and lift.
+        rows = conn.execute(
+            "SELECT * FROM audit_log WHERE session_id = ? OR (event IN (?, ?) AND session_id IN"
+            " (SELECT session_id FROM sessions WHERE customer_id ="
+            " (SELECT customer_id FROM sessions WHERE session_id = ?))) ORDER BY entry_id",
+            (session_id, Event.SAFETY_LOCK.value, Event.SAFETY_LOCK_LIFTED.value, session_id),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM audit_log WHERE session_id = ? ORDER BY entry_id", (session_id,)
+        ).fetchall()
     entries = []
     for row in rows:
         entry = {**dict(row), "input": json.loads(row["input"])}
-        shown = row["refusal_detail"] if as_caller and row["outcome"] == "refused" else None
+        shown = row["caller_detail"] if as_caller else None
         entry["detail"] = json.loads(shown or row["detail"])
-        del entry["refusal_detail"]
+        del entry["caller_detail"]
+        if as_caller:
+            entry["input"] = _without_ids(entry["input"])
+            entry["detail"] = _without_ids(entry["detail"])
         entries.append(entry)
     return entries
+
+
+def _without_ids(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {k: _without_ids(v) for k, v in value.items() if k not in BACK_OFFICE_IDS}
+    if isinstance(value, list):
+        return [_without_ids(item) for item in value]
+    return value
 
 
 class ReadAuditTrailInput(BaseModel):

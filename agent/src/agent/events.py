@@ -98,14 +98,18 @@ class ConfirmationRequested(BaseModel):
 
 
 class VerificationRequested(BaseModel):
-    """A Red step needs Strong Verification: the Bank has texted a code to the Customer's
-    simulated phone. The Customer answers with `verified` and the verification token the
-    Channel's SMS verification box got back from the Bank; the code itself never reaches
-    the Agent."""
+    """A Red step needs Strong Verification: the Bank has texted one code to the
+    Customer's simulated phone, for it and the Plan's other Red steps it could cover. The
+    Customer answers with `verified` and the verification tokens the Channel's SMS
+    verification box got back from the Bank; the code itself never reaches the Agent."""
 
     type: Literal["verification_requested"] = "verification_requested"
     plan_id: str
     step_id: str
+    """The Red step the Plan is paused at."""
+    step_ids: list[str]
+    """Every step the one code approves, in order, `step_id` first. The Bank returns one
+    verification token per step, in this order."""
     challenge_id: str
     sent_to: str
     expires_at: str
@@ -274,14 +278,14 @@ class InjectionWarning(BaseModel):
     text: str
 
 
-LockTrigger = Literal["wrong_codes", "reported_attempts", "red_operations"]
-"""What made the Bank place a Safety Lock."""
+LockTrigger = Literal["wrong_codes", "reported_attempts", "red_operations", "staff"]
+"""What made the Bank place a Safety Lock; `staff`: a Staff Member set it by hand."""
 
 
 class SessionLocked(BaseModel):
-    """The Bank has put the session under a Safety Lock: only Green Operations run until
-    `locked_until` or until a Staff Member lifts it. `text` tells the Customer so, in
-    their language. Ends the turn."""
+    """The Bank has put the session's Customer under a Safety Lock: only Green Operations
+    run, in any of their sessions, until `locked_until` or until a Staff Member lifts it.
+    `text` tells the Customer so, in their language. Ends the turn."""
 
     type: Literal["session_locked"] = "session_locked"
     trigger: LockTrigger

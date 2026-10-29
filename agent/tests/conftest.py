@@ -196,6 +196,14 @@ def type_code(bank: TestClient, login: Login, challenge_id: str, code: str) -> d
     return body
 
 
+def tokens_by_step(requested: dict[str, Any], verified: dict[str, Any]) -> dict[str, str]:
+    """The verification tokens the Bank returned for the right code, by step ID, as the
+    Channel's SMS verification box hands them to the Agent: one per step of the
+    `verification_requested`, in its order."""
+    tokens = [v["verification_token"] for v in verified["verifications"]]
+    return dict(zip(requested["step_ids"], tokens, strict=True))
+
+
 def bank_audit(bank: TestClient, login: Login) -> list[dict[str, Any]]:
     """The session's audit trail as a Staff Member sees it."""
     entries: list[dict[str, Any]] = admin(bank, "get", f"/admin/sessions/{login.session_id}/audit")[

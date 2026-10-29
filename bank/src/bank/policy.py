@@ -15,7 +15,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from bank import approvals, audit, clock, limits, safety_lock, verification
+from bank import approvals, audit, clock, limits, safety_lock, sessions, verification
 from bank.approvals import Binding, TokenKind
 from bank.audit import Event
 from bank.registry import (
@@ -110,17 +110,10 @@ class ConfirmationResult(BaseModel):
     confirmations: list[Confirmation]
 
 
-class VerificationRequest(BaseModel):
-    """The body of a Strong Verification request: one Red Operation call."""
-
-    model_config = ConfigDict(extra="forbid")
-    operation: str
-    input: Any = Field(default_factory=dict)
-
-
 class VerificationChallenge(BaseModel):
     challenge_id: str
-    operation: str
+    operations: list[str]
+    """The Red Operations it covers, in the order requested: one verification token each."""
     tier: Tier
     sent_to: str
     expires_at: datetime
@@ -138,6 +131,14 @@ class Verification(BaseModel):
     verification_id: str
     verification_token: str
     expires_at: datetime
+
+
+class VerificationResult(BaseModel):
+    """What the right code earns: one verification token per call of the challenge, in
+    its order."""
+
+    challenge_id: str
+    verifications: list[Verification]
 
 
 @dataclass
@@ -212,7 +213,9 @@ def run(
         if resolved.operation.daily_transfer_amount:
             limits.record(conn, session.customer_id, name, resolved.daily_transfer_amount(), now)
         if resolved.tier is Tier.RED:
-            safety_lock.record(conn, session.session_id, Signal.RED_OPERATION, now)
+            safety_lock.record(
+                conn, session.customer_id, session.session_id, Signal.RED_OPERATION, now
+            )
     _audit(conn, session, now, Event.OPERATION, call, None, detail)
     _trip_safety_lock(conn, session, now)
     output_json = output.model_dump(mode="json")
@@ -365,33 +368,47 @@ def start_verification(
     session: Session,
     body: Any,
 ) -> VerificationChallenge:
-    """Open a Strong Verification challenge for one Red Operation call and text its code
-    to the Customer's simulated phone. Always audited."""
+    """Open one Strong Verification challenge for one or more Red Operation calls, all or
+    none, and text its one code to the Customer's simulated phone. Audited once per call.
+
+    Calls are tiered in order, each counting the earlier ones toward the Daily Transfer
+    Total, as a Confirmation request's are; each must be Red, so the code never approves
+    a call that needs no Strong Verification.
+    """
     now = clock.now(conn)
-    call = _Call(None, _masked_request(registry, body))
-    with _audited(conn, session, now, Event.VERIFICATION_CHALLENGE, call):
-        request = _parse(VerificationRequest, body)
-        call.name, call.raw_input = request.operation, request.input
-        resolved = _resolve(call, conn, registry, session, now)
-        if resolved.tier is not Tier.RED:
-            raise Refusal(
-                RefusalReason.INVALID_INPUT,
-                f"{call.name} is {resolved.tier.value} and needs no Strong Verification",
-                {"operation": call.name, "tier": resolved.tier.value},
-            )
-        sent = verification.start(
-            conn, resolved.binding(), resolved.operation.description_zh, now
+    envelope = _Call(None, _masked_request(registry, body))
+    with _audited(conn, session, now, Event.VERIFICATION_CHALLENGE, envelope):
+        request = _parse(PlanRequest, body)
+    calls: list[_Call] = []
+    challenged: list[verification.Call] = []
+    planned_total = Decimal("0.00")
+    for index, planned in enumerate(request.operations):
+        call = _Call(planned.operation, planned.input)
+        with _audited(conn, session, now, Event.VERIFICATION_CHALLENGE, call, index=index):
+            resolved = _resolve(call, conn, registry, session, now, planned_total)
+            if resolved.tier is not Tier.RED:
+                raise Refusal(
+                    RefusalReason.INVALID_INPUT,
+                    f"{call.name} is {resolved.tier.value} and needs no Strong Verification",
+                    {"operation": call.name, "tier": resolved.tier.value},
+                )
+            planned_total += resolved.daily_transfer_amount()
+        calls.append(call)
+        challenged.append(
+            verification.Call(resolved.binding(), resolved.operation.description_zh)
         )
+    sent = verification.start(conn, challenged, now)
     challenge = sent.challenge
     detail = {
         "challenge_id": challenge.challenge_id,
         "sent_to": sent.sent_to,
         "expires_at": challenge.expires_at.isoformat(),
     }
-    _audit(conn, session, now, Event.VERIFICATION_CHALLENGE, call, None, detail)
+    for call in calls:
+        _audit(conn, session, now, Event.VERIFICATION_CHALLENGE, call, None, detail)
     return VerificationChallenge(
         challenge_id=challenge.challenge_id,
-        operation=challenge.binding.operation,
+        operations=challenge.operations,
         tier=Tier.RED,
         sent_to=sent.sent_to,
         expires_at=challenge.expires_at,
@@ -403,10 +420,10 @@ def answer_challenge(
     session: Session,
     challenge_id: str,
     body: Any,
-) -> Verification:
+) -> VerificationResult:
     """Check a code typed into the session's simulated phone against its challenge; the
-    right code earns one verification token for exactly the challenged call. Always
-    audited, never the code.
+    right code earns one verification token for each challenged call, for exactly that
+    call. Always audited (a right code once per call), never the code.
 
     A wrong code is counted outside the audited block, so the count survives the refusal,
     and may trip the Safety Lock; a locked session can't answer at all.
@@ -418,10 +435,13 @@ def answer_challenge(
         request = _parse(CodeRequest, body)
         _check_safety_lock(conn, session, now)
         challenge = verification.find_open(conn, challenge_id, session.session_id, now)
-        call.name = challenge.binding.operation
+        # A wrong code answers no one call of several.
+        call.name = challenge.operations[0] if len(challenge.bindings) == 1 else None
     correct = verification.check_code(conn, challenge, request.code)
     if not correct:
-        safety_lock.record(conn, session.session_id, Signal.WRONG_CODE, now)
+        safety_lock.record(
+            conn, session.customer_id, session.session_id, Signal.WRONG_CODE, now
+        )
         detail = {
             "challenge_id": challenge_id,
             "failed_attempts": verification.failed_attempts(conn, session.session_id),
@@ -438,18 +458,29 @@ def answer_challenge(
         raise wrong
     with _audited(conn, session, now, Event.VERIFICATION_ATTEMPT, call):
         verification.mark_answered(conn, challenge, now)
-        token = approvals.issue(conn, TokenKind.VERIFICATION, challenge.binding, now)
-    detail = {
-        "challenge_id": challenge_id,
-        "verification_id": token.token_id,
-        "expires_at": token.expires_at.isoformat(),
-    }
-    _audit(conn, session, now, Event.VERIFICATION_ATTEMPT, call, None, detail)
-    return Verification(
-        operation=challenge.binding.operation,
-        verification_id=token.token_id,
-        verification_token=token.token,
-        expires_at=token.expires_at,
+        issued = [
+            (binding, approvals.issue(conn, TokenKind.VERIFICATION, binding, now))
+            for binding in challenge.bindings
+        ]
+    for binding, token in issued:
+        detail = {
+            "challenge_id": challenge_id,
+            "verification_id": token.token_id,
+            "expires_at": token.expires_at.isoformat(),
+        }
+        answered = _Call(binding.operation, {"challenge_id": challenge_id}, Tier.RED)
+        _audit(conn, session, now, Event.VERIFICATION_ATTEMPT, answered, None, detail)
+    return VerificationResult(
+        challenge_id=challenge_id,
+        verifications=[
+            Verification(
+                operation=binding.operation,
+                verification_id=token.token_id,
+                verification_token=token.token,
+                expires_at=token.expires_at,
+            )
+            for binding, token in issued
+        ],
     )
 
 
@@ -488,13 +519,13 @@ def _resolve(
 
 
 def _check_safety_lock(conn: sqlite3.Connection, session: Session, now: datetime) -> None:
-    """Refuse with `session_locked` while a Safety Lock holds the session."""
-    lock = safety_lock.active(conn, session.session_id, now)
+    """Refuse with `session_locked` while a Safety Lock holds the session's Customer."""
+    lock = safety_lock.active(conn, session.customer_id, now)
     if lock is not None:
         detail = {"trigger": lock.trigger.value, "locked_until": lock.expires_at.isoformat()}
         raise Refusal(
             RefusalReason.SESSION_LOCKED,
-            "This session is under a Safety Lock: only Green Operations run until"
+            "This Customer is under a Safety Lock: only Green Operations run until"
             f" {lock.expires_at.isoformat()} or until a Staff Member lifts it",
             detail,
             audit_detail=detail,
@@ -504,8 +535,9 @@ def _check_safety_lock(conn: sqlite3.Connection, session: Session, now: datetime
 def _trip_safety_lock(
     conn: sqlite3.Connection, session: Session, now: datetime
 ) -> safety_lock.Lock | None:
-    """Lock the session if what it has done so far reaches a trigger; audited."""
-    lock = safety_lock.trip_if_due(conn, session.session_id, now)
+    """Lock the session's Customer if what their sessions have done so far reaches a
+    trigger; audited in this session's trail, as the one that tripped it."""
+    lock = safety_lock.trip_if_due(conn, session.customer_id, session.session_id, now)
     if lock is not None:
         detail = {
             "lock_id": lock.lock_id,
@@ -516,10 +548,40 @@ def _trip_safety_lock(
     return lock
 
 
-def lift_safety_lock(conn: sqlite3.Connection, session_id: str) -> safety_lock.Lock:
-    """A Staff Member ends the session's Safety Lock now. Audited in the session's trail."""
+def set_safety_lock(
+    conn: sqlite3.Connection, session_id: str, by: str, reason: str | None
+) -> safety_lock.Lock:
+    """A Staff Member locks the session's Customer by hand, for all their sessions; refused
+    if they are already locked. Audited in this session's trail with who set it and why,
+    which the session itself never sees."""
     now = clock.now(conn)
-    lock = safety_lock.lift(conn, session_id, now, STAFF)
+    session = sessions.by_id(conn, session_id)
+    lock = safety_lock.place(conn, session.customer_id, session_id, now, by, reason)
+    if lock is None:
+        current = safety_lock.active(conn, session.customer_id, now)
+        assert current is not None
+        raise Refusal(
+            RefusalReason.SESSION_LOCKED,
+            "This Customer is already under a Safety Lock",
+            {"trigger": current.trigger.value, "locked_until": current.expires_at.isoformat()},
+        )
+    shown = {
+        "lock_id": lock.lock_id,
+        "trigger": lock.trigger.value,
+        "locked_until": lock.expires_at.isoformat(),
+    }
+    _audit(
+        conn, session, now, Event.SAFETY_LOCK, _Call(None, {}), None,
+        {**shown, "set_by": by, "reason": reason}, shown,
+    )
+    return lock
+
+
+def lift_safety_lock(conn: sqlite3.Connection, session_id: str) -> safety_lock.Lock:
+    """A Staff Member ends the Safety Lock of the session's Customer now, for all their
+    sessions. Audited in the trail of the session it was lifted from."""
+    now = clock.now(conn)
+    lock = safety_lock.lift(conn, sessions.by_id(conn, session_id).customer_id, now, STAFF)
     if lock is None:
         raise Refusal(
             RefusalReason.NOT_FOUND,
@@ -651,7 +713,7 @@ def _audit(
     call: _Call,
     reason: RefusalReason | None,
     detail: dict[str, Any] | None = None,
-    refusal_detail: dict[str, Any] | None = None,
+    caller_detail: dict[str, Any] | None = None,
 ) -> None:
     audit.record(
         conn,
@@ -663,5 +725,5 @@ def _audit(
         tier=call.tier,
         reason=reason,
         detail=detail,
-        refusal_detail=refusal_detail,
+        caller_detail=caller_detail,
     )

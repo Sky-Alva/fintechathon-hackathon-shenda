@@ -106,12 +106,13 @@ class BankSession:
         )["confirmations"]
         return confirmations
 
-    def request_verification(self, operation: str, input: dict[str, Any]) -> dict[str, Any]:
-        """Open a Strong Verification challenge for one Red call: the Bank texts a code to
-        the Customer's simulated phone. Returns `{challenge_id, operation, tier, sent_to,
-        expires_at}`; the code itself never comes back to the Agent's session."""
+    def request_verification(self, operations: list[dict[str, Any]]) -> dict[str, Any]:
+        """Open one Strong Verification challenge for these Red `{operation, input}` calls,
+        in order, all or none: the Bank texts one code to the Customer's simulated phone.
+        Returns `{challenge_id, operations, tier, sent_to, expires_at}`; the code itself
+        never comes back to the Agent's session."""
         challenge: dict[str, Any] = self._send(
-            "post", "/verifications", json={"operation": operation, "input": input}
+            "post", "/verifications", json={"operations": operations}
         )
         return challenge
 
@@ -138,14 +139,6 @@ class BankSession:
             "post", "/operations/read_audit_trail", json={"input": {}}, traced=False
         )["output"]
         return output
-
-    def latest_lock(self) -> dict[str, Any] | None:
-        """The session's latest Safety Lock as the Bank's audit trail recorded it
-        (`{lock_id, trigger, locked_until}`), for when the Bank has said the session is
-        locked without saying until when. Traced: it decides the Safety Lock notice."""
-        output = self._send("post", "/operations/read_audit_trail", json={"input": {}})["output"]
-        locks = [entry["detail"] for entry in output["entries"] if entry["event"] == "safety_lock"]
-        return locks[-1] if locks else None
 
     def take_exchanges(self) -> list[BankExchange]:
         """The traced calls since the last time, oldest first."""

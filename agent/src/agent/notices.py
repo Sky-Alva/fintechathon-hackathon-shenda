@@ -58,10 +58,24 @@ SAFETY_LOCK: dict[Language, str] = {
 }
 
 
+# A lock a Staff Member set by hand: never who set it or why.
+STAFF_SAFETY_LOCK: dict[Language, str] = {
+    "zh": "为保护您的账户安全，银行工作人员已为您的账户设置安全锁定。在 {until} 前，"
+    "或银行工作人员解除锁定前，只能办理查询类业务（例如查询余额）；"
+    "转账等需要确认或验证的操作暂时无法办理。",
+    "en": "To keep your account safe, the Bank's staff have put your account under a Safety"
+    " Lock. Until {until}, or until they lift it, only queries work (such as checking your"
+    " balance); transfers and anything else that needs confirming or verifying can't be"
+    " done.",
+}
+
+
 def safety_lock(trigger: str, locked_until: str, language: Language) -> str:
     """What still works while the session is locked, and until when (Bank time)."""
-    because = LOCKED_BECAUSE.get(trigger, {"zh": "安全原因", "en": "for safety"})[language]
     until = datetime.fromisoformat(locked_until).strftime("%H:%M")
+    if trigger == "staff":
+        return STAFF_SAFETY_LOCK[language].format(until=until)
+    because = LOCKED_BECAUSE.get(trigger, {"zh": "安全原因", "en": "for safety"})[language]
     return SAFETY_LOCK[language].format(because=because, until=until)
 
 
