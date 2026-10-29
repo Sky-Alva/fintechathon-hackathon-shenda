@@ -160,11 +160,13 @@ def pending_total(conn: sqlite3.Connection, customer_id: str, day: date) -> Deci
     return from_cents(cents)
 
 
-def _tier_on_run_day(ctx: OperationContext, amount: Decimal, run_date: date) -> Tier:
-    """Yellow if the run day's projected Daily Transfer Total, plus `amount`, stays within
-    the limit; otherwise Red."""
-    projected = limits.projected_total(ctx.conn, ctx.customer_id, run_date)
-    return limits.tier_for_day_total(projected, amount)
+def _tier_on_run_day(ctx: OperationContext, input: "ScheduleTransferInput") -> Tier:
+    """Yellow if the run day's projected Daily Transfer Total, plus the amount, stays within
+    the limit; otherwise Red. Red too for a First-time Payee (more than ¥500)."""
+    projected = limits.projected_total(ctx.conn, ctx.customer_id, input.run_date)
+    return limits.raised_for_first_time_payee(
+        limits.tier_for_day_total(projected, input.amount), ctx, input.payee_id, input.amount
+    )
 
 
 # --- Schedule a transfer ------------------------------------------------------------
@@ -185,7 +187,7 @@ class ScheduleTransferOutput(BaseModel):
 def schedule_transfer_tier(input: ScheduleTransferInput, ctx: OperationContext) -> Tier:
     _check_run_date(ctx, input.run_date)
     transfers.payee_of(ctx, input.payee_id)
-    return _tier_on_run_day(ctx, input.amount, input.run_date)
+    return _tier_on_run_day(ctx, input)
 
 
 def schedule_transfer(
@@ -193,7 +195,7 @@ def schedule_transfer(
 ) -> ScheduleTransferOutput:
     _check_run_date(ctx, input.run_date)
     payee = transfers.payee_of(ctx, input.payee_id)
-    tier = _tier_on_run_day(ctx, input.amount, input.run_date)
+    tier = _tier_on_run_day(ctx, input)
     count = ctx.conn.execute("SELECT COUNT(*) FROM scheduled_transfers").fetchone()[0]
     scheduled_transfer_id = f"SCH-{count + 1:06d}"  # Bank-wide, like transfer IDs
     ctx.conn.execute(
@@ -414,19 +416,21 @@ MODULE = BankModule(
                 "Schedule a transfer to a Payee for a future Bank date, run at 09:00 that day;"
                 " it is tiered when created against the projected Daily Transfer Total of its"
                 " run day (including the Customer's other Scheduled Transfers for that day)"
-                " and checked again when it runs."
+                " and checked again when it runs. More than ¥500 to a Payee the Customer has never"
+                " paid is Red."
             ),
             input_model=ScheduleTransferInput,
             output_model=ScheduleTransferOutput,
             tier=TierRule(
                 description_zh=(
                     "执行当日预计累计转账额（已转出 + 当日其他待执行的预约转账 + 本笔）"
-                    "≤ ¥1,000 为黄色，否则为红色。"
+                    "≤ ¥1,000 为黄色，否则为红色；向从未转过账的收款人预约超过 ¥500 也为红色。"
                 ),
                 description_en=(
                     "Yellow if the run day's projected Daily Transfer Total (already sent,"
                     " plus other Scheduled Transfers for that day, plus this one) stays at or"
-                    " below ¥1,000, otherwise Red."
+                    " below ¥1,000, otherwise Red. Also Red for more than ¥500 to a Payee the"
+                    " Customer has never paid."
                 ),
                 resolve=schedule_transfer_tier,
             ),
@@ -437,6 +441,7 @@ MODULE = BankModule(
                 ),
             ),
             handler=schedule_transfer,
+            pays_payee=lambda input: (input.payee_id, input.amount),
         ),
         Operation(
             name="cancel_scheduled_transfer",
