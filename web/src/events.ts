@@ -87,7 +87,7 @@ export type InjectionWarning = {
 // Why a Red step needs Strong Verification, in the Customer's language (#37).
 export type PlanWarning = {
   step_id: string
-  reason: 'daily_transfer_total' | 'strong_verification'
+  reason: 'daily_transfer_total' | 'strong_verification' | 'first_time_payee'
   text: string
 }
 // Who a step pays, as the Bank's Payee lookup found them (#39); `is_new`: never paid before.
@@ -114,7 +114,10 @@ export type PlanProposed = {
   warnings: PlanWarning[]
   payees: CardPayee[]
   cards: StepCard[]
+  // Who made the Plan: the model, or the Agent's built-in rules (offline, or no model reachable).
+  planned_by?: PlannedBy
 }
+export type PlannedBy = 'model' | 'rules'
 export type ConfirmationRequested = {
   type: 'confirmation_requested'
   plan_id: string
@@ -216,6 +219,7 @@ export type AuditEntry = {
   outcome: 'ok' | 'refused'
   reason: string | null
   detail: Record<string, unknown>
+  hash: string // SHA-256 hash chain; shown shortened in the trace panel
 }
 export type Declined =
   | { reason: 'out_of_scope' | 'secret'; can_do: string[] }
@@ -227,9 +231,15 @@ export type Trace = { type: 'trace' } & (
       // of planning it: what it offered instead, or the suspected attempt it reported.
       // `clarification`: the question the Planner asked instead of planning (#39).
       // `ask_for_human`: the Customer asked in words for a human (#46).
-      data: { intent: string; declined?: Declined; clarification?: string; ask_for_human?: true }
+      data: {
+        intent: string
+        planned_by?: PlannedBy
+        declined?: Declined
+        clarification?: string
+        ask_for_human?: true
+      }
     }
-  | { stage: 'plan'; data: { steps: PlanStep[] } }
+  | { stage: 'plan'; data: { steps: PlanStep[]; planned_by?: PlannedBy } }
   | { stage: 'bank_request'; data: { method: string; path: string; body: unknown } }
   | { stage: 'bank_response'; data: { method: string; path: string; status: number; body: unknown } }
   | { stage: 'audit_trail'; data: { session_id: string; entries: AuditEntry[] } }

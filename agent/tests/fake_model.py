@@ -8,9 +8,9 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-from agent.model import ModelReply, ModelUnavailable, ToolCall
+from agent.model import ModelNotConfigured, ModelReply, ModelUnavailable, ToolCall
 
-__all__ = ["FakeModel", "ModelReply", "ModelRequest", "ToolCall"]
+__all__ = ["FakeModel", "ModelNotConfigured", "ModelReply", "ModelRequest", "ToolCall"]
 """`ModelReply` and `ToolCall` are what a scripted reply is made of, for type hints and
 hand-made replies: tests import them from here."""
 

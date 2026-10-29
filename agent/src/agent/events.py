@@ -46,10 +46,11 @@ class StepRefusal(BankRefusal):
 
 class PlanWarning(BaseModel):
     """Why a Red step on the Plan card needs Strong Verification, in the Customer's
-    language: it takes the Daily Transfer Total above ¥1,000, or it is Red in itself."""
+    language: it takes the Daily Transfer Total above ¥1,000, it is a large first transfer to
+    a Payee the Customer has never paid, or it is Red in itself."""
 
     step_id: str
-    reason: Literal["daily_transfer_total", "strong_verification"]
+    reason: Literal["daily_transfer_total", "strong_verification", "first_time_payee"]
     text: str
 
 
@@ -87,6 +88,9 @@ class PlanProposed(BaseModel):
     warnings: list[PlanWarning] = []
     payees: list[CardPayee] = []
     cards: list[StepCard] = []
+    planned_by: Literal["model", "rules"] = "model"
+    """Who made the Plan: the model, or the built-in rules (offline, or the model was
+    unavailable)."""
 
 
 class ConfirmationRequested(BaseModel):

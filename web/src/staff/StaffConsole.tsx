@@ -7,6 +7,7 @@ import type { HistoryEntry, Trace } from '../events'
 import { describeIntent, json } from '../traceText'
 import {
   type AuditEntry,
+  type ChainVerification,
   type SafetyLock,
   type StaffConversation,
   type StaffKeys,
@@ -19,6 +20,7 @@ import {
   setSafetyLock,
   staffReply,
   takeOver,
+  verifyAuditChain,
 } from './api'
 import { type TrailItem, mergeTrail } from './trail'
 import './staff.css'
@@ -380,7 +382,10 @@ function BankEntry({ entry }: { entry: AuditEntry }) {
       <span className={entry.outcome === 'ok' ? 'ok' : 'refused'}>
         {entry.outcome === 'ok' ? 'ok' : `拒绝：${entry.reason}`}
       </span>{' '}
-      <span className="muted">{time(entry.at)}（银行时钟）</span>
+      <span className="muted">{time(entry.at)}（银行时钟）</span>{' '}
+      <span className="muted" title={entry.hash}>
+        哈希 {entry.hash.slice(0, 8)}
+      </span>
       <details>
         <summary>详情</summary>
         <pre>{json({ input: entry.input, detail: entry.detail })}</pre>
@@ -567,6 +572,43 @@ function SessionView({
   )
 }
 
+function ChainCheck({ keys }: { keys: StaffKeys }) {
+  const [result, setResult] = useState<ChainVerification | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  async function verify() {
+    setBusy(true)
+    try {
+      setResult(await verifyAuditChain(keys))
+      setError(null)
+    } catch (e) {
+      setResult(null)
+      setError(e instanceof Error ? e.message : '校验失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="chain-check">
+      <button type="button" disabled={busy} onClick={() => void verify()}>
+        校验审计链
+      </button>
+      {error && <p className="error">{error}</p>}
+      {result &&
+        (result.ok ? (
+          <p className="ok">审计链完整：已校验 {result.entries_checked} 条记录。</p>
+        ) : (
+          <p className="refused">
+            审计链被破坏：第 {result.first_broken_entry_id} 号记录起不一致（已检查{' '}
+            {result.entries_checked} 条）。
+          </p>
+        ))}
+    </div>
+  )
+}
+
 function Console({ keys, onLeave }: { keys: StaffKeys; onLeave: () => void }) {
   const [conversations, setConversations] = useState<StaffConversation[]>([])
   const [locks, setLocks] = useState<Record<string, SafetyLock>>({})
@@ -600,6 +642,7 @@ function Console({ keys, onLeave }: { keys: StaffKeys; onLeave: () => void }) {
           </button>
         </header>
         {error && <p className="error">{error}</p>}
+        <ChainCheck keys={keys} />
         <h3>活跃会话</h3>
         {conversations.length === 0 && <p className="muted">暂无活跃会话。</p>}
         <ul className="sessions">

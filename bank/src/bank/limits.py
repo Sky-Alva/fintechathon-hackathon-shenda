@@ -15,6 +15,8 @@ from bank.money import from_cents, to_cents
 from bank.registry import BankModule, OperationContext, Tier
 
 DAILY_TRANSFER_LIMIT = Decimal("1000.00")  # a total above this makes a transfer Red
+FIRST_PAYMENT_LIMIT = Decimal("500.00")  # more than this to a First-time Payee makes it Red
+FIRST_TIME_PAYEE = "first_time_payee"  # the tier reason the Bank reports for that rule
 
 SCHEMA = """
 CREATE TABLE daily_transfer_ledger (
@@ -67,9 +69,35 @@ def record(
     )
 
 
-def tier_for_outgoing(amount: Decimal, ctx: OperationContext) -> Tier:
-    """Yellow while the Daily Transfer Total including `amount` stays ≤ ¥1,000, else Red."""
-    return tier_for_day_total(ctx.daily_transfer_total, amount)
+def is_first_time_payee(ctx: OperationContext, payee_id: str, amount: Decimal) -> bool:
+    """True when `amount` is over ¥500 and the Customer has no completed transfer to the
+    Payee before this one, earlier steps of the same Plan included (as for the Daily
+    Transfer Total). The rule only ever raises a tier."""
+    if amount <= FIRST_PAYMENT_LIMIT or payee_id in ctx.planned_payees:
+        return False
+    paid = ctx.conn.execute(
+        "SELECT 1 FROM transfers WHERE customer_id = ? AND payee_id = ? LIMIT 1",
+        (ctx.customer_id, payee_id),
+    ).fetchone()
+    return paid is None
+
+
+def tier_for_outgoing(amount: Decimal, ctx: OperationContext, payee_id: str | None = None) -> Tier:
+    """Yellow while the Daily Transfer Total including `amount` stays ≤ ¥1,000, else Red.
+    Red too for more than ¥500 to a First-time Payee, when `payee_id` is given."""
+    return raised_for_first_time_payee(
+        tier_for_day_total(ctx.daily_transfer_total, amount), ctx, payee_id, amount
+    )
+
+
+def raised_for_first_time_payee(
+    tier: Tier, ctx: OperationContext, payee_id: str | None, amount: Decimal
+) -> Tier:
+    """`tier` raised to Red if `amount` goes to a First-time Payee (see `is_first_time_payee`);
+    otherwise unchanged. The rule only ever raises a tier."""
+    if payee_id is not None and is_first_time_payee(ctx, payee_id, amount):
+        return Tier.RED
+    return tier
 
 
 def tier_for_day_total(day_total: Decimal, amount: Decimal) -> Tier:

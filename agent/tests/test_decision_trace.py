@@ -24,7 +24,7 @@ def test_the_trace_shows_the_intent_the_agent_understood(
 
     events = send(agent, start_conversation(agent, log_in(bank, "liming")), BALANCE_QUESTION)
 
-    assert traces(events, "intent") == [{"intent": "查询活期账户余额"}]
+    assert traces(events, "intent") == [{"intent": "查询活期账户余额", "planned_by": "model"}]
 
 
 def test_the_trace_shows_why_a_request_was_declined(
@@ -69,7 +69,8 @@ def test_the_trace_shows_the_plan_graph_with_the_banks_tier_for_each_step(
                     "depends_on": ["s2"],
                     "tier": "green",
                 },
-            ]
+            ],
+            "planned_by": "model",
         }
     ]
 

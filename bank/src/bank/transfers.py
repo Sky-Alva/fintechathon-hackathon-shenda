@@ -314,7 +314,7 @@ def transfer_tier(input: TransferInput, ctx: OperationContext) -> Tier:
     # Refuse a transfer that can never run before the Customer is asked to confirm it.
     payee_of(ctx, input.payee_id)
     funded_current_account(ctx, input.amount)
-    return limits.tier_for_outgoing(input.amount, ctx)
+    return limits.tier_for_outgoing(input.amount, ctx, input.payee_id)
 
 
 def transfer(ctx: OperationContext, input: TransferInput) -> TransferOutput:
@@ -379,16 +379,18 @@ MODULE = BankModule(
             input_model=TransferInput,
             output_model=TransferOutput,
             tier=TierRule(
-                description_zh="转账后当日累计转账额 ≤ ¥1,000 为黄色，否则为红色。",
+                description_zh="转账后当日累计转账额 ≤ ¥1,000 为黄色，否则为红色；向从未转过账的收款人转账超过 ¥500 也为红色。",
                 description_en=(
                     "Yellow if the Daily Transfer Total including this transfer stays"
-                    " at or below ¥1,000, otherwise Red."
+                    " at or below ¥1,000, otherwise Red. Also Red for more than ¥500 to a"
+                    " Payee the Customer has never paid."
                 ),
                 resolve=transfer_tier,
             ),
             reversibility=Irreversible(),
             handler=transfer,
             daily_transfer_amount=lambda input: input.amount,
+            pays_payee=lambda input: (input.payee_id, input.amount),
         )
     ],
 )

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { BankRefusal, CardPayee, PlanStep, PlanWarning, StepCard, Tier } from './events'
+import type { BankRefusal, CardPayee, PlannedBy, PlanStep, PlanWarning, StepCard, Tier } from './events'
 import { type Language, useLanguage } from './language'
 
 /** proposed → awaiting (confirmation_requested) → confirmed | rejected | edited (steps taken
@@ -21,6 +21,8 @@ type Props = {
   payees: CardPayee[]
   /** Which card each card step acts on, as the Bank listed it, so the Customer can check it. */
   cards: StepCard[]
+  /** `rules`: the built-in rules planned it, not the model; the card says so. */
+  plannedBy?: PlannedBy
   confirmIds: string[]
   status: PlanCardStatus
   disabled: boolean
@@ -109,6 +111,7 @@ const CATEGORY_LABELS: Record<Language, Record<string, string>> = {
 const WORDS = {
   zh: {
     title: '请确认以下计划',
+    byRules: '由内置规则制定',
     restore: '恢复',
     remove: '移除',
     newPayee: (name: string) => `新收款人：您从未向 ${name} 转过账，请核对收款人信息`,
@@ -123,6 +126,7 @@ const WORDS = {
   },
   en: {
     title: 'Please confirm this Plan',
+    byRules: 'Planned by the built-in rules',
     restore: 'Restore',
     remove: 'Remove',
     newPayee: (name: string) => `New Payee: you've never sent money to ${name}. Please check.`,
@@ -187,6 +191,7 @@ export default function PlanCard({
   warnings,
   payees,
   cards,
+  plannedBy,
   confirmIds,
   status,
   disabled,
@@ -207,6 +212,7 @@ export default function PlanCard({
   return (
     <div className="plan-card">
       <div className="plan-title">{w.title}</div>
+      {plannedBy === 'rules' && <div className="muted planned-by">{w.byRules}</div>}
       <ol>
         {steps.map((step, index) => {
           const refusal = refusalOf(step.id)

@@ -19,6 +19,11 @@ CROSSES_DAILY_LINE: dict[Language, str] = {
     "en": "This transfer takes today's transfers above ¥1,000, so it needs an SMS code"
     " before it runs.",
 }
+FIRST_TIME_PAYEE_LINE: dict[Language, str] = {
+    "zh": "这是你首次向该收款人转账，金额较大，执行前需要短信验证。",
+    "en": "This is your first transfer to this Payee and the amount is large, so it needs an SMS"
+    " code before it runs.",
+}
 STRONG_VERIFICATION: dict[Language, str] = {
     "zh": "这是高风险操作，执行前需要短信验证。",
     "en": "This is a high-risk Operation, so it needs an SMS code before it runs.",
@@ -96,15 +101,26 @@ def removed_with(numbers: list[str], language: Language) -> str:
 
 
 def red_warnings(
-    steps: list[PlanStep], catalogue: list[dict[str, Any]], language: Language
+    steps: list[PlanStep],
+    catalogue: list[dict[str, Any]],
+    language: Language,
+    reasons: dict[str, list[str]] | None = None,
 ) -> list[PlanWarning]:
-    """One warning per Red step: a step that counts toward the Daily Transfer Total is Red
-    only because it takes the total above ¥1,000."""
+    """One warning per Red step: the Bank's reason if it gave one (a first transfer to a new
+    Payee); else a step that counts toward the Daily Transfer Total is Red only because it
+    takes the total above ¥1,000."""
+    reasons = reasons or {}
     counts = {
         op["name"] for op in catalogue if op.get("counts_toward_daily_transfer_total")
     }
     return [
-        PlanWarning(step_id=step.id, reason="daily_transfer_total", text=CROSSES_DAILY_LINE[language])
+        PlanWarning(
+            step_id=step.id, reason="first_time_payee", text=FIRST_TIME_PAYEE_LINE[language]
+        )
+        if "first_time_payee" in reasons.get(step.id, [])
+        else PlanWarning(
+            step_id=step.id, reason="daily_transfer_total", text=CROSSES_DAILY_LINE[language]
+        )
         if step.operation in counts
         else PlanWarning(
             step_id=step.id, reason="strong_verification", text=STRONG_VERIFICATION[language]

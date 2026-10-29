@@ -10,7 +10,7 @@ import secrets
 import threading
 from collections.abc import Callable, Generator, Iterator, Mapping
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from agent import (
     birthday,
@@ -26,6 +26,7 @@ from agent import (
     refusals,
     responder,
     reviewer,
+    rules,
     secrets_guard,
     subscriptions,
     untrusted,
@@ -75,7 +76,7 @@ from agent.events import (
 from agent.executor import BANK_UNAVAILABLE, StepResult, execute, failed
 from agent.fact_check import Facts
 from agent.language import customer_language
-from agent.model import ModelClient, ModelUnavailable
+from agent.model import ModelClient, ModelUnavailable, OfflineModel
 from agent.prompts import (
     CancellationOffer,
     PausedPlan,
@@ -129,6 +130,8 @@ class Conversation:
     offer: CancellationOffer | None = None
     """The Subscriptions offered for cancelling, until the Customer picks or moves on.
     Apart from `pending`, like `reversal`."""
+    planned_by: Literal["model", "rules"] = "model"
+    """Who made the latest Plan: the model, or the built-in rules."""
     plans_proposed: int = 0
     offers_made: int = 0
     bank_results: list[StepResult] = field(default_factory=list)
@@ -190,10 +193,17 @@ def asked(clarification: planner.Clarification) -> ClarificationQuestion:
     )
 
 
-def plan_data(plan: ReviewedPlan, look_ups: bool = False) -> dict[str, Any]:
+def plan_data(
+    plan: ReviewedPlan,
+    look_ups: bool = False,
+    planned_by: Literal["model", "rules"] | None = None,
+) -> dict[str, Any]:
     """A reviewed Plan for the decision trace: its look-ups, which run first, are marked
-    `look_ups`, and the steps the tier preview refused are listed under `refusals`."""
+    `look_ups`, the steps the tier preview refused are listed under `refusals`, and
+    `planned_by` says whether the model or the built-in rules made it."""
     data: dict[str, Any] = {"steps": [step.model_dump(mode="json") for step in plan.steps]}
+    if planned_by is not None:
+        data["planned_by"] = planned_by
     if look_ups:
         data["look_ups"] = True
     if plan.refusals:
@@ -372,11 +382,30 @@ class Conversations:
             except (BankRefused, BankUnavailable):
                 yield self._not_retrieved(conversation)
                 return
-            if (suspicion := guard.scam(text)) is not None:
-                # A known scam is never planned: no model can be talked into it.
+            if (suspicion := guard.scam(text) or guard.injected(text)) is not None:
+                # A known scam or injection is never planned: no model can be talked into it.
                 yield from self._manipulation(conversation, suspicion)
                 return
             yield from self._plan(conversation, catalogue, interrupted=interrupted)
+
+    def _ask_planner(self, conversation: Conversation, *args: Any, **kwargs: Any) -> PlannerReply:
+        """The model Planner's reply, or the rules Planner's: always the rules offline, and
+        for this one call when the model can't be asked (`ModelUnavailable`, no API key
+        included). A reachable model's `PlannerFailed` is not covered: the model answered,
+        and the rules don't override it. Records who planned in `conversation.planned_by`."""
+        if not isinstance(self.model, OfflineModel):
+            try:
+                reply = planner.make_plan(self.model, *args, **kwargs)
+                conversation.planned_by = "model"
+                return reply
+            except ModelUnavailable:
+                log.warning(
+                    "Model unavailable for conversation %s: the rules plan",
+                    conversation.conversation_id,
+                    exc_info=True,
+                )
+        conversation.planned_by = "rules"
+        return rules.make_plan(*args, **kwargs)
 
     def _plan(
         self,
@@ -399,8 +428,8 @@ class Conversations:
             return
 
         def ask(looked_up: list[StepResult] | None = None) -> PlannerReply:
-            plan = planner.make_plan(
-                self.model,
+            plan = self._ask_planner(
+                conversation,
                 conversation.history,
                 catalogue,
                 [result.as_data() for result in looked_up] if looked_up else None,
@@ -448,7 +477,7 @@ class Conversations:
             return
         if failed is not None and not plan.steps:
             return  # nothing else reaches the goal: the answer already said what happened
-        yield trace("intent", {"intent": plan.intent})
+        yield trace("intent", {"intent": plan.intent, "planned_by": conversation.planned_by})
         unnamed = {
             step.id: kind.key
             for kind in (cards.REFERENCE, subscriptions.REFERENCE)
@@ -551,7 +580,10 @@ class Conversations:
             except (BankRefused, BankUnavailable):
                 yield self._not_retrieved(conversation)
                 return None
-            yield trace("plan", plan_data(reviewed_look_ups, look_ups=True))
+            yield trace(
+                "plan",
+                plan_data(reviewed_look_ups, look_ups=True, planned_by=conversation.planned_by),
+            )
             if reviewed_look_ups.other_customers:
                 yield from self._other_customer(conversation, reviewed_look_ups)
                 return None
@@ -614,7 +646,7 @@ class Conversations:
     ) -> Iterator[Event]:
         """The reviewed Plan's Plan card, or, if it needs none, its run. A Plan card comes
         after the Planner's `note` of what it noticed, if the Bank's results back it."""
-        yield trace("plan", plan_data(reviewed))
+        yield trace("plan", plan_data(reviewed, planned_by=conversation.planned_by))
         if reviewed.other_customers:
             yield from self._other_customer(conversation, reviewed)
             return
@@ -634,7 +666,10 @@ class Conversations:
             steps=reviewed.steps,
             refusals=reviewed.card_refusals,
             warnings=notices.red_warnings(
-                reviewed.steps, catalogue, customer_language(conversation.history)
+                reviewed.steps,
+                catalogue,
+                customer_language(conversation.history),
+                reviewed.reasons,
             ),
             payees=payees.on_card(
                 reviewed.steps, payees.known([*conversation.bank_results, *looked_up])
@@ -642,6 +677,7 @@ class Conversations:
             cards=cards.on_card(
                 reviewed.steps, cards.known([*conversation.bank_results, *looked_up])
             ),
+            planned_by=conversation.planned_by,
         )
         yield ConfirmationRequested(
             plan_id=pending.plan_id, step_ids=[step.id for step in reviewed.yellow_steps]

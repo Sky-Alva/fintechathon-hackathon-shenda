@@ -19,6 +19,9 @@ class ReviewedPlan:
     refusals: dict[str, BankRefusal] = field(default_factory=dict)
     """The Bank's refusal (`reason`, `message`, `detail`) of each step that can't run, by
     step ID. Those steps have no tier."""
+    reasons: dict[str, list[str]] = field(default_factory=dict)
+    """Why the Bank tiered a step as it did, by step ID, when a rule beyond the amount raised
+    it (`first_time_payee`)."""
 
     @property
     def green_only(self) -> bool:
@@ -54,7 +57,9 @@ class ReviewedPlan:
         """The steps still to run from this one on, as when the Plan resumes after it
         paused for this step's Strong Verification."""
         ids = [step.id for step in self.steps]
-        return ReviewedPlan(steps=self.steps[ids.index(step_id) :], refusals=self.refusals)
+        return ReviewedPlan(
+            steps=self.steps[ids.index(step_id) :], refusals=self.refusals, reasons=self.reasons
+        )
 
     @property
     def card_refusals(self) -> list[StepRefusal]:
@@ -119,4 +124,5 @@ def review(
             for step, tiered in pairs
             if tiered.get("refusal")
         },
+        reasons={step.id: tiered["reasons"] for step, tiered in pairs if tiered.get("reasons")},
     )

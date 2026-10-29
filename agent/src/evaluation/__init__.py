@@ -2,7 +2,9 @@
 and the Bank and prints a scoreboard. Run it with `python -m evaluation` (see __main__.py).
 """
 
+from evaluation.baseline import attack_table, run_baseline
 from evaluation.runner import TaskResult, matches, run_task
+from evaluation.report import report
 from evaluation.scoreboard import scoreboard
 from evaluation.suite import evaluate
 from evaluation.tasks import InvalidTask, Task, load_task, load_tasks
@@ -11,10 +13,13 @@ __all__ = [
     "InvalidTask",
     "Task",
     "TaskResult",
+    "attack_table",
     "evaluate",
     "load_task",
     "load_tasks",
     "matches",
+    "report",
+    "run_baseline",
     "run_task",
     "scoreboard",
 ]

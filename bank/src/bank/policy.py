@@ -91,6 +91,9 @@ class PreviewStep(BaseModel):
     index: int
     operation: str
     tier: Tier | None = None
+    reasons: list[str] | None = None
+    """Why the tier is what it is, when a rule beyond the amount raised it
+    (`first_time_payee`)."""
     refusal: dict[str, Any] | None = None
 
 
@@ -178,6 +181,18 @@ class _Resolved:
     def daily_transfer_amount(self) -> Decimal:
         amount = self.operation.daily_transfer_amount
         return amount(self.validated) if amount else Decimal("0.00")
+
+    @property
+    def payee(self) -> str | None:
+        pays = self.operation.pays_payee
+        return pays(self.validated)[0] if pays else None
+
+    def reasons(self) -> list[str] | None:
+        """`first_time_payee` when that rule applies to this step (it is then Red)."""
+        pays = self.operation.pays_payee
+        if pays is not None and limits.is_first_time_payee(self.ctx, *pays(self.validated)):
+            return [limits.FIRST_TIME_PAYEE]
+        return None
 
 
 def run(
@@ -286,6 +301,7 @@ def preview_tiers(
     calls: list[_Call] = []
     steps: list[PreviewStep] = []
     planned_total = Decimal("0.00")
+    planned_payees: set[str] = set()
     # Tier rules must not write; the savepoint makes sure a preview never does.
     conn.execute("SAVEPOINT preview")
     try:
@@ -294,12 +310,13 @@ def preview_tiers(
             calls.append(call)
             step = PreviewStep(index=index, operation=planned.operation)
             try:
-                resolved = _resolve(call, conn, registry, session, now, planned_total)
+                resolved = _resolve(call, conn, registry, session, now, planned_total, planned_payees)
             except Refusal as refusal:
                 step.refusal = refusal.body()
             else:
                 step.tier = resolved.tier
-                planned_total += resolved.daily_transfer_amount()
+                step.reasons = resolved.reasons()
+                planned_total = _planned(resolved, planned_total, planned_payees)
             steps.append(step)
     finally:
         conn.execute("ROLLBACK TO preview")
@@ -331,10 +348,11 @@ def issue_confirmations(
         request = _parse(PlanRequest, body)
     issued: list[tuple[_Call, Confirmation]] = []
     planned_total = Decimal("0.00")
+    planned_payees: set[str] = set()
     for index, planned in enumerate(request.operations):
         call = _Call(planned.operation, planned.input)
         with _audited(conn, session, now, Event.CONFIRMATION_ISSUED, call, index=index):
-            resolved = _resolve(call, conn, registry, session, now, planned_total)
+            resolved = _resolve(call, conn, registry, session, now, planned_total, planned_payees)
             if resolved.tier is Tier.GREEN:
                 raise Refusal(
                     RefusalReason.INVALID_INPUT,
@@ -344,7 +362,7 @@ def issue_confirmations(
             if resolved.tier is Tier.RED:
                 raise _needs_approval(planned.operation, resolved.tier)
             token = approvals.issue(conn, TokenKind.CONFIRMATION, resolved.binding(), now)
-            planned_total += resolved.daily_transfer_amount()
+            planned_total = _planned(resolved, planned_total, planned_payees)
         confirmation = Confirmation(
             operation=planned.operation,
             tier=resolved.tier,
@@ -382,17 +400,18 @@ def start_verification(
     calls: list[_Call] = []
     challenged: list[verification.Call] = []
     planned_total = Decimal("0.00")
+    planned_payees: set[str] = set()
     for index, planned in enumerate(request.operations):
         call = _Call(planned.operation, planned.input)
         with _audited(conn, session, now, Event.VERIFICATION_CHALLENGE, call, index=index):
-            resolved = _resolve(call, conn, registry, session, now, planned_total)
+            resolved = _resolve(call, conn, registry, session, now, planned_total, planned_payees)
             if resolved.tier is not Tier.RED:
                 raise Refusal(
                     RefusalReason.INVALID_INPUT,
                     f"{call.name} is {resolved.tier.value} and needs no Strong Verification",
                     {"operation": call.name, "tier": resolved.tier.value},
                 )
-            planned_total += resolved.daily_transfer_amount()
+            planned_total = _planned(resolved, planned_total, planned_payees)
         calls.append(call)
         challenged.append(
             verification.Call(resolved.binding(), resolved.operation.description_zh)
@@ -484,6 +503,14 @@ def answer_challenge(
     )
 
 
+def _planned(resolved: _Resolved, planned_total: Decimal, planned_payees: set[str]) -> Decimal:
+    """Count `resolved` among the steps planned so far: the Payee it pays joins
+    `planned_payees` and the new Daily Transfer Total of the Plan is returned."""
+    if resolved.payee is not None:
+        planned_payees.add(resolved.payee)
+    return planned_total + resolved.daily_transfer_amount()
+
+
 def _resolve(
     call: _Call,
     conn: sqlite3.Connection,
@@ -491,9 +518,11 @@ def _resolve(
     session: Session,
     now: datetime,
     planned_total: Decimal = Decimal("0.00"),
+    planned_payees: set[str] | None = None,
 ) -> _Resolved:
     """Look up the Operation, validate its input and resolve its tier. `planned_total` is
-    what earlier steps of the same Plan would add to the Daily Transfer Total."""
+    what earlier steps of the same Plan would add to the Daily Transfer Total, and
+    `planned_payees` the Payees they would pay."""
     operation = registry.get(call.name or "")
     call.secrets = _secret_fields(operation)
     if isinstance(operation.tier, Tier):
@@ -508,11 +537,14 @@ def _resolve(
         now=now,
         daily_transfer_total=limits.daily_transfer_total(conn, session.customer_id, now.date())
         + planned_total,
+        planned_payees=frozenset(planned_payees or ()),
     )
     _check_ownership(validated, ctx)
     if not isinstance(operation.tier, Tier):
         call.tier = operation.tier.resolve(validated, ctx)
     assert call.tier is not None
+    if registry.ungated:
+        call.tier = Tier.GREEN
     if call.tier is not Tier.GREEN:
         _check_safety_lock(conn, session, now)
     return _Resolved(operation, validated, ctx, call.tier)

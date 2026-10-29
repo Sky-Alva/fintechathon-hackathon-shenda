@@ -120,7 +120,12 @@ def refusal_response(refusal: Refusal) -> JSONResponse:
 
 
 def create_app(db_path: Path, admin_key: str) -> FastAPI:
-    registry = Registry(MODULES)
+    return build_app(db_path, admin_key, Registry(MODULES))
+
+
+def build_app(db_path: Path, admin_key: str, registry: Registry) -> FastAPI:
+    """The Bank app over `registry`. Only `create_app` (the real Bank) and `bank.ungated`
+    (the evaluation baseline's in-process Bank) call this."""
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -302,6 +307,12 @@ def create_app(db_path: Path, admin_key: str) -> FastAPI:
                     RefusalReason.NOT_FOUND, "No such session", {"session_id": session_id}
                 )
             return {"session_id": session_id, "entries": audit.trail(conn, session_id)}
+
+    @admin.get("/audit/verify")
+    def verify_audit_chain() -> dict[str, Any]:
+        """Check the whole audit chain. Not an Operation: not in the catalogue."""
+        with db.transaction(db_path) as conn:
+            return audit.verify_chain(conn).model_dump()
 
     @admin.get("/sessions/{session_id}/safety-lock")
     def read_safety_lock(session_id: str) -> dict[str, Any]:
