@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { fetchAuditTrail } from './api'
-import type { AuditEntry, PlanStep, Trace } from './events'
+import type { AuditEntry, PlannedBy, PlanStep, Trace } from './events'
 import { describeIntent, json } from './traceText'
 
 /** One Customer turn and the `trace` events it streamed, in order. */
@@ -82,6 +82,9 @@ function TraceItem({ trace }: { trace: Trace }) {
         <div className="trace-item">
           <span className="trace-label">意图 Intent</span>
           <span>{describeIntent(trace.data)}</span>
+          {trace.data.planned_by && (
+            <span className="muted"> · {plannerName(trace.data.planned_by)}</span>
+          )}
         </div>
       )
     case 'plan':
@@ -89,6 +92,9 @@ function TraceItem({ trace }: { trace: Trace }) {
         <div className="trace-item">
           <span className="trace-label">计划 Plan</span>
           <PlanGraph steps={trace.data.steps} />
+          {trace.data.planned_by && (
+            <span className="muted">{plannerName(trace.data.planned_by)}</span>
+          )}
         </div>
       )
     case 'bank_request':
@@ -113,6 +119,10 @@ function TraceItem({ trace }: { trace: Trace }) {
     case 'audit_trail':
       return <AuditTable entries={trace.data.entries} />
   }
+}
+
+function plannerName(by: PlannedBy): string {
+  return by === 'rules' ? '内置规则 Rules' : '模型 Model'
 }
 
 function PlanGraph({ steps }: { steps: PlanStep[] }) {
