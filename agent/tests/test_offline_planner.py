@@ -1,5 +1,5 @@
 """With no model API key, or while the model API is failing, the built-in rules plan what
-they recognise (today: balance look-ups) and say so; anything else is declined, never
+they recognise and say so; anything else is declined, never
 guessed. A reachable model that answers badly keeps today's answer: no fallback.
 """
 
@@ -8,9 +8,8 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from agent.model import ModelNotConfigured
 from conftest import bank_audit, log_in, send, start_conversation, traces
-from fake_model import FakeModel, ModelReply, plan, step, unavailable
+from fake_model import FakeModel, ModelNotConfigured, ModelReply, plan, step, unavailable
 
 
 def answers(events: list[dict[str, Any]]) -> list[str]:
@@ -30,7 +29,7 @@ def planned_by(events: list[dict[str, Any]]) -> list[str]:
 
 
 @pytest.mark.parametrize("question", ["我卡里还有多少钱？", "what's my balance?", "查一下余额"])
-def test_offline_a_balance_question_is_answered_from_the_banks_result(
+def test_a_balance_question_is_answered_from_the_banks_result(
     offline_agent: TestClient, bank: TestClient, question: str
 ) -> None:
     login = log_in(bank, "liming")
@@ -44,7 +43,7 @@ def test_offline_a_balance_question_is_answered_from_the_banks_result(
     assert [t["planned_by"] for t in traces(events, "intent")] == ["rules"]
 
 
-def test_offline_an_unrecognised_request_is_declined_with_what_the_agent_can_do(
+def test_an_unrecognised_request_is_declined_with_what_the_agent_can_do(
     offline_agent: TestClient, bank: TestClient
 ) -> None:
     login = log_in(bank, "liming")
@@ -60,7 +59,7 @@ def test_offline_an_unrecognised_request_is_declined_with_what_the_agent_can_do(
     assert operations_run(bank, login) == []
 
 
-def test_offline_an_injection_in_the_message_is_declined_and_reported(
+def test_an_injection_in_the_message_is_declined_and_reported(
     offline_agent: TestClient, bank: TestClient
 ) -> None:
     login = log_in(bank, "liming")

@@ -7,7 +7,6 @@ from typing import Any
 
 from agent import planner
 from agent.language import Language
-from agent.rules.slots import normalise
 
 Reply = (
     planner.Plan
@@ -26,7 +25,7 @@ class Request:
     text: str
     """The Customer's latest message as written."""
     matching: str
-    """The same, normalised for matching only (full-width made plain, lower case)."""
+    """The same, normalised for matching only (`guard.normalise`: full-width made plain, disguises undone, lower case)."""
     language: Language
     history: list[dict[str, Any]]
     catalogue: list[dict[str, Any]]
@@ -72,7 +71,3 @@ class Intent:
 def pattern(expression: str) -> re.Pattern[str]:
     """A trigger pattern. The message is lower-cased and in half-width before matching."""
     return re.compile(expression, re.IGNORECASE)
-
-
-def matching(text: str) -> str:
-    return normalise(text)

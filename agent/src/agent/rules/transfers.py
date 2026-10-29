@@ -7,6 +7,7 @@ balance", a date that has passed, shares that don't add up) is a `Clarification`
 """
 
 import re
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -251,8 +252,6 @@ def parse(request: Request) -> Transfer:
 
 def _original_note(original: str, lowered: str) -> str | None:
     """The note as the Customer wrote it (the match was made on a lower-cased copy)."""
-    import unicodedata
-
     plain = unicodedata.normalize("NFKC", original)
     start = plain.lower().rfind(lowered.lower())
     return plain[start : start + len(lowered)] if start >= 0 else None
@@ -274,6 +273,11 @@ def chosen(request: Request) -> str | None:
     return None
 
 
+def names_of(payee: dict[str, Any]) -> set[str]:
+    """The names a Payee goes by (its name and nickname), lower-cased, for matching a term."""
+    return {str(payee.get("name", "")).lower(), str(payee.get("nickname") or "").lower()}
+
+
 def known_payee(request: Request, term: str | None, pronoun: bool = False) -> str | None:
     """The ID of the Payee the Bank's lookup has already found for `term`, if exactly one
     fits; the Customer's pick settles a name that matched several."""
@@ -285,15 +289,14 @@ def known_payee(request: Request, term: str | None, pronoun: bool = False) -> st
         payee = known[pick]
         if pronoun:
             return pick
-        names = {str(payee.get("name", "")).lower(), str(payee.get("nickname") or "").lower()}
-        if term is not None and term.lower() in names:
+        if term is not None and term.lower() in names_of(payee):
             return pick
     if term is None:
         return None
     fits = [
         p["payee_id"]
         for p in request.payees
-        if term.lower() in {str(p.get("name", "")).lower(), str(p.get("nickname") or "").lower()}
+        if term.lower() in names_of(p)
     ]
     return fits[0] if len(fits) == 1 else None
 
@@ -429,7 +432,8 @@ def complete_transfer(request: Request) -> Reply:
         when, question = _when(request, transfer)
         if question is not None:
             return question
-    assert transfer.payee is not None
+    if transfer.payee is None:  # the message, read alone, names nobody: ask as the first stage does
+        return plan_transfer(request)
     payee = looked_up_payee(request, transfer.payee)
     if payee is None:
         return ask(

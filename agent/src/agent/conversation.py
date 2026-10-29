@@ -194,7 +194,9 @@ def asked(clarification: planner.Clarification) -> ClarificationQuestion:
 
 
 def plan_data(
-    plan: ReviewedPlan, look_ups: bool = False, planned_by: str | None = None
+    plan: ReviewedPlan,
+    look_ups: bool = False,
+    planned_by: Literal["model", "rules"] | None = None,
 ) -> dict[str, Any]:
     """A reviewed Plan for the decision trace: its look-ups, which run first, are marked
     `look_ups`, the steps the tier preview refused are listed under `refusals`, and

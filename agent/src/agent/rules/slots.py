@@ -6,8 +6,9 @@ cards and Subscriptions are not extracted here: they are always resolved through
 """
 
 import re
-import unicodedata
 from decimal import Decimal, InvalidOperation
+
+from agent import guard
 
 DIGITS = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6,
           "七": 7, "八": 8, "九": 9}
@@ -22,11 +23,6 @@ AMOUNT = re.compile(
     re.IGNORECASE,
 )
 BARE = re.compile(rf"(?<![\d.]){ARABIC}(?![\d.])")
-
-
-def normalise(text: str) -> str:
-    """The text for matching only: full-width letters and digits made plain, lower case."""
-    return unicodedata.normalize("NFKC", text).lower()
 
 
 def chinese_number(text: str) -> int | None:
@@ -60,7 +56,7 @@ def amounts(text: str) -> list[Decimal]:
     with a unit (200块, 2,500元, 三百元, 1.5万元) or after ¥; failing that, bare Arabic
     numbers. Empty if there are none; the caller asks. Amounts of zero or less are kept
     out, as the Bank would refuse them anyway."""
-    text = unicodedata.normalize("NFKC", text)
+    text = guard.normalise(text)
     found: list[Decimal] = []
     for match in AMOUNT.finditer(text):
         try:

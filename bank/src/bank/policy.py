@@ -316,9 +316,7 @@ def preview_tiers(
             else:
                 step.tier = resolved.tier
                 step.reasons = resolved.reasons()
-                planned_total += resolved.daily_transfer_amount()
-                if resolved.payee is not None:
-                    planned_payees.add(resolved.payee)
+                planned_total = _planned(resolved, planned_total, planned_payees)
             steps.append(step)
     finally:
         conn.execute("ROLLBACK TO preview")
@@ -364,9 +362,7 @@ def issue_confirmations(
             if resolved.tier is Tier.RED:
                 raise _needs_approval(planned.operation, resolved.tier)
             token = approvals.issue(conn, TokenKind.CONFIRMATION, resolved.binding(), now)
-            planned_total += resolved.daily_transfer_amount()
-            if resolved.payee is not None:
-                planned_payees.add(resolved.payee)
+            planned_total = _planned(resolved, planned_total, planned_payees)
         confirmation = Confirmation(
             operation=planned.operation,
             tier=resolved.tier,
@@ -415,9 +411,7 @@ def start_verification(
                     f"{call.name} is {resolved.tier.value} and needs no Strong Verification",
                     {"operation": call.name, "tier": resolved.tier.value},
                 )
-            planned_total += resolved.daily_transfer_amount()
-            if resolved.payee is not None:
-                planned_payees.add(resolved.payee)
+            planned_total = _planned(resolved, planned_total, planned_payees)
         calls.append(call)
         challenged.append(
             verification.Call(resolved.binding(), resolved.operation.description_zh)
@@ -507,6 +501,14 @@ def answer_challenge(
             for binding, token in issued
         ],
     )
+
+
+def _planned(resolved: _Resolved, planned_total: Decimal, planned_payees: set[str]) -> Decimal:
+    """Count `resolved` among the steps planned so far: the Payee it pays joins
+    `planned_payees` and the new Daily Transfer Total of the Plan is returned."""
+    if resolved.payee is not None:
+        planned_payees.add(resolved.payee)
+    return planned_total + resolved.daily_transfer_amount()
 
 
 def _resolve(

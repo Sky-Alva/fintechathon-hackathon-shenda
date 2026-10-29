@@ -37,6 +37,7 @@ ORDINALS = {
     "first": 1, "1st": 1, "second": 2, "2nd": 2, "third": 3, "3rd": 3, "fourth": 4,
     "4th": 4, "fifth": 5, "5th": 5,
 }
+SUBSCRIPTION_ID = re.compile(r"\bSUB-[A-Z]+-\d+\b", re.IGNORECASE)
 CATEGORY_WORDS = {"音乐": "music", "music": "music", "视频": "video", "video": "video"}
 
 
@@ -319,6 +320,12 @@ def cancel(request: Request) -> Reply:
     only source of an ID) and finish in `cancel_listed`."""
     if picked := resolve(request, request.subscriptions):
         return cancel_plan(picked)
+    if (literal := SUBSCRIPTION_ID.search(request.text)) is not None:
+        # An ID the Customer typed goes to the Bank as typed: it refuses another Customer's.
+        step = PlanStep(
+            id="s1", operation=CANCEL, input={"subscription_id": literal[0].upper()}, depends_on=[]
+        )
+        return Plan(intent="cancel_subscriptions", steps=[step])
     return Plan(
         intent="cancel_subscriptions",
         steps=[

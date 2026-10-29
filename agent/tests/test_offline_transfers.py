@@ -410,3 +410,41 @@ def test_a_payee_told_apart_by_a_past_transfer_note_is_found_through_the_bank(
 
     [transfer] = of_type(events, "plan_proposed")["steps"]
     assert transfer["input"]["payee_id"] == "PAY-LM-003" and transfer["input"]["amount"] == "60.00"
+
+
+# --- Answering the rules' question -----------------------------------------------------
+
+
+def test_a_bare_amount_answers_how_much_to_send(
+    offline_agent: TestClient, bank: TestClient
+) -> None:
+    conversation = start_conversation(offline_agent, log_in(bank, "liming"))
+    assert asked(shown(send(offline_agent, conversation, "给老妈转账")))
+
+    events = shown(send(offline_agent, conversation, "200"))
+
+    [transfer] = of_type(events, "plan_proposed")["steps"]
+    assert transfer["input"]["payee_id"] == "PAY-LM-002"
+    assert transfer["input"]["amount"] == "200.00"
+
+
+def test_a_name_answers_who_to_send_to(offline_agent: TestClient, bank: TestClient) -> None:
+    conversation = start_conversation(offline_agent, log_in(bank, "liming"))
+    assert asked(shown(send(offline_agent, conversation, "转200块")))
+
+    events = shown(send(offline_agent, conversation, "老妈"))
+
+    [transfer] = of_type(events, "plan_proposed")["steps"]
+    assert transfer["input"]["payee_id"] == "PAY-LM-002"
+    assert transfer["input"]["amount"] == "200.00"
+
+
+def test_a_new_request_after_a_question_is_not_taken_for_the_answer(
+    offline_agent: TestClient, bank: TestClient
+) -> None:
+    conversation = start_conversation(offline_agent, log_in(bank, "liming"))
+    assert asked(shown(send(offline_agent, conversation, "给老妈转账")))
+
+    events = shown(send(offline_agent, conversation, "我的余额是多少"))
+
+    assert not proposed(events) and not asked(events)
