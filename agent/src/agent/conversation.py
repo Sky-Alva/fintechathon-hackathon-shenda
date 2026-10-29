@@ -1281,11 +1281,19 @@ class Conversations:
         A later Red step is covered if the Bank's tier preview of the covered steps alone
         still tiers it Red. One that is Red only because of a Yellow step between them
         (e.g. its transfer crosses ¥1,000 only after that one's) is left out, and the
-        preview asked again without it, until every covered step is Red.
+        preview asked again without it, until every covered step is Red. So is one that
+        depends on a step of `remaining`, which hasn't run: its input may rest on what that
+        step returns, so it isn't complete yet. If the Bank refuses the preview, only the
+        paused step is covered.
         """
         paused, *later = remaining.steps
+        not_run = {step.id for step in remaining.steps}
         covered = [paused] + [
-            step for step in later if step.tier == "red" and step.id not in remaining.refusals
+            step
+            for step in later
+            if step.tier == "red"
+            and step.id not in remaining.refusals
+            and not not_run & set(step.depends_on)
         ]
         while len(covered) > 1:
             try:

@@ -25,6 +25,10 @@ SpendingCategory = Literal[
 # Money moved between people, not spent or earned: kept out of spending and income totals,
 # Unusual Transaction rules and Recurring Charges (docs/adr/0002).
 TRANSFER = "transfer"
+NOT_A_TRANSFER = f"category != '{TRANSFER}'"
+"""The clause that keeps transfers out of a spending or income query."""
+GIFTS = "gifts"
+"""A Merchant purchase's category."""
 Category = SpendingCategory | Literal["transfer"]
 AccountId = customers.AccountId
 
@@ -201,7 +205,7 @@ def record_merchant_payment(conn: sqlite3.Connection, order_id: str) -> None:
     conn.execute(
         "INSERT OR IGNORE INTO transactions (transaction_id, customer_id, account_id, "
         "occurred_at, category, merchant, description, direction, amount_cents) "
-        "SELECT 'TXN-' || o.order_id, o.customer_id, r.account_id, o.paid_at, 'gifts', m.name,"
+        f"SELECT 'TXN-' || o.order_id, o.customer_id, r.account_id, o.paid_at, '{GIFTS}', m.name,"
         " CASE WHEN o.note != '' THEN o.note ELSE p.name END, 'debit', o.amount_cents"
         " FROM merchant_orders o JOIN merchants m ON m.merchant_id = o.merchant_id"
         " JOIN merchant_products p ON p.product_id = o.product_id"
@@ -386,8 +390,7 @@ def detect_unusual_transactions(
     if input.account_id:
         clauses.append("account_id = ?")
         params.append(input.account_id)
-    clauses.append("category != ?")
-    params.append(TRANSFER)
+    clauses.append(NOT_A_TRANSFER)
     rows = ctx.conn.execute(
         "SELECT transaction_id, account_id, occurred_at, category, merchant, description, "
         "direction, amount_cents, location FROM transactions "
@@ -482,8 +485,8 @@ def detect_recurring_charges(
     ctx: OperationContext, input: RecurringChargesInput
 ) -> RecurringChargesOutput:
     """Find merchant charges with at least three regular debit occurrences."""
-    clauses = ["customer_id = ?", "direction = 'debit'", "category != ?", "date(occurred_at) <= ?"]
-    params: list[object] = [ctx.customer_id, TRANSFER, ctx.now.date().isoformat()]
+    clauses = ["customer_id = ?", "direction = 'debit'", NOT_A_TRANSFER, "date(occurred_at) <= ?"]
+    params: list[object] = [ctx.customer_id, ctx.now.date().isoformat()]
     if input.account_id:
         clauses.append("account_id = ?")
         params.append(input.account_id)
@@ -740,9 +743,9 @@ def spending_by_category(ctx: OperationContext, input: SpendingByCategoryInput) 
     where, params = _where(ctx, input)
     rows = ctx.conn.execute(
         f"SELECT category, SUM(amount_cents) AS cents, COUNT(*) AS count "
-        f"FROM transactions WHERE {where} AND direction = 'debit' AND category != ? "
+        f"FROM transactions WHERE {where} AND direction = 'debit' AND {NOT_A_TRANSFER} "
         "GROUP BY category ORDER BY category",
-        [*params, TRANSFER],
+        params,
     ).fetchall()
     totals = [CategoryTotal(category=row["category"], amount=from_cents(row["cents"]),
                             transaction_count=row["count"]) for row in rows]
@@ -779,8 +782,10 @@ class MonthlyReportOutput(BaseModel):
 def monthly_report(ctx: OperationContext, input: MonthlyReportInput) -> MonthlyReportOutput:
     start = date(input.year, input.month, 1)
     end = date(input.year + (input.month == 12), input.month % 12 + 1, 1)
-    clauses = ["customer_id = ?", "category != ?", "date(occurred_at) >= ?", "date(occurred_at) < ?"]
-    params: list[object] = [ctx.customer_id, TRANSFER, start.isoformat(), end.isoformat()]
+    clauses = [
+        "customer_id = ?", NOT_A_TRANSFER, "date(occurred_at) >= ?", "date(occurred_at) < ?"
+    ]
+    params: list[object] = [ctx.customer_id, start.isoformat(), end.isoformat()]
     if input.account_id:
         clauses.append("account_id = ?")
         params.append(input.account_id)
@@ -833,9 +838,11 @@ class AnnualReportOutput(BaseModel):
 
 
 def annual_report(ctx: OperationContext, input: AnnualReportInput) -> AnnualReportOutput:
-    clauses = ["customer_id = ?", "category != ?", "date(occurred_at) >= ?", "date(occurred_at) < ?"]
+    clauses = [
+        "customer_id = ?", NOT_A_TRANSFER, "date(occurred_at) >= ?", "date(occurred_at) < ?"
+    ]
     params: list[object] = [
-        ctx.customer_id, TRANSFER, f"{input.year:04d}-01-01", f"{input.year + 1:04d}-01-01"
+        ctx.customer_id, f"{input.year:04d}-01-01", f"{input.year + 1:04d}-01-01"
     ]
     if input.account_id:
         clauses.append("account_id = ?")

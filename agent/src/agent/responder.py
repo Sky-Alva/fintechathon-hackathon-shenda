@@ -96,7 +96,7 @@ class Internal:
     """Something of the Agent's internal data format that never reaches the Customer."""
 
     pattern: re.Pattern[str]
-    what: str
+    what: dict[Language, str]
     """What it is, for the instruction to rewrite the answer."""
 
 
@@ -104,15 +104,26 @@ NOT_IN_AN_ID = r"(?<![A-Za-z0-9_-])"
 CARD_ID = re.compile(rf"{NOT_IN_AN_ID}CARD-[A-Z0-9]+(?:-[A-Z0-9]+)*")
 BANK_DATA_BLOCK = re.compile(r"<bank_data>.*?</bank_data>\s*", re.DOTALL | re.IGNORECASE)
 BANK_DATA_TAG = re.compile(r"</?bank_data>\s*", re.IGNORECASE)
+LOCK_ID = re.compile(rf"{NOT_IN_AN_ID}LCK-[A-Za-z0-9]*")
+STEP_ID = re.compile(
+    r"""["'`]s\d+["'`]|(?:(?<![A-Za-z])steps?\s+|步骤\s*)s\d+(?![A-Za-z0-9_-])""", re.IGNORECASE
+)
+"""A step ID as the model would write it out: quoted, or after "step" / "步骤". A bare s2 in
+prose is not one."""
+STEP_ID_PAIR = re.compile(r'"step_id"\s*:\s*"[^"]*"\s*,?\s*')
+JSON_KEY = re.compile(r'"(step_id|operation|refusal|reversal)"\s*:')
 INTERNALS = [
-    Internal(re.compile(r"</?bank_data", re.IGNORECASE), "<bank_data> 块 / a <bank_data> block"),
+    Internal(
+        re.compile(r"</?bank_data", re.IGNORECASE),
+        {"zh": "<bank_data> 块", "en": "a <bank_data> block"},
+    ),
     Internal(
         re.compile(r'"(?:step_id|operation|refusal|reversal)"\s*:'),
-        "银行结果的 JSON / a Bank result as JSON",
+        {"zh": "银行结果的 JSON", "en": "a Bank result as JSON"},
     ),
-    Internal(CARD_ID, "卡的银行内部编号 / a card's Bank ID"),
-    Internal(re.compile(rf"{NOT_IN_AN_ID}s\d+(?![A-Za-z0-9_-])"), "步骤编号 / a step ID"),
-    Internal(re.compile(rf"{NOT_IN_AN_ID}LCK-"), "安全锁编号 / a Safety Lock ID"),
+    Internal(CARD_ID, {"zh": "卡的银行内部编号", "en": "a card's Bank ID"}),
+    Internal(STEP_ID, {"zh": "步骤编号", "en": "a step ID"}),
+    Internal(LOCK_ID, {"zh": "安全锁编号", "en": "a Safety Lock ID"}),
 ]
 """What a draft must never contain, checked in order; one more is one more entry."""
 
@@ -180,8 +191,11 @@ def check(draft: str, facts: Facts) -> str | None:
     state only what the Bank returned, may never ask for a code or a password, and never
     writes out the Agent's internal data (`INTERNALS`)."""
     problems = []
-    if leaks := [i.what for i in INTERNALS if i.pattern.search(draft)]:
-        problems.append(INTERNAL.format(leaks="；".join(leaks)))
+    if found := [i.what for i in INTERNALS if i.pattern.search(draft)]:
+        leaks = "；".join(what["zh"] for what in found) + " / " + ", ".join(
+            what["en"] for what in found
+        )
+        problems.append(INTERNAL.format(leaks=leaks))
     if mentions := unsupported(draft, facts):
         problems.append(REGENERATE.format(mentions="、".join(mentions)))
     if asking := asks_for_secret(draft):
@@ -216,8 +230,9 @@ def raw(
 
 def for_channel(text: str, cards: dict[str, Card], language: Language) -> str:
     """The answer as it may reach the Channel, whichever way it was written: no
-    `<bank_data>` block, and each card named by its last four digits (`cards`, those the
-    Bank listed) instead of its Bank ID."""
+    `<bank_data>` block, no Safety Lock ID, no Bank JSON key (`"refusal":` becomes
+    `refusal:`; a `step_id` pair goes), and each card named by its last four digits
+    (`cards`, those the Bank listed) instead of its Bank ID."""
     text = BANK_DATA_TAG.sub("", BANK_DATA_BLOCK.sub("", text)).strip()
 
     def name(match: re.Match[str]) -> str:
@@ -226,4 +241,5 @@ def for_channel(text: str, cards: dict[str, Card], language: Language) -> str:
             return A_CARD[language]
         return CARD_ENDING[language].format(last4=card.last4)
 
-    return CARD_ID.sub(name, text)
+    text = LOCK_ID.sub("", STEP_ID_PAIR.sub("", CARD_ID.sub(name, text)))
+    return JSON_KEY.sub(r"\1:", text)

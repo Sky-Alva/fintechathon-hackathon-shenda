@@ -12,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from agent import responder
+from agent.executor import StepResult
 from agent.fact_check import Facts
 from conftest import (
     Login,
@@ -176,6 +177,33 @@ def test_a_draft_writing_out_internal_data_is_written_again(draft: str) -> None:
 )
 def test_a_plain_answer_is_not_taken_for_internal_data(draft: str) -> None:
     assert responder.check(draft, Facts.of([{"masked_number": "**** **** **** 5678"}])) is None
+
+
+def test_prose_mentioning_s2_is_not_taken_for_a_step_id() -> None:
+    assert responder.check("Your plan costs 30 yuan, or 20 on the s2 tier.", Facts.of([{"fee": "30 20"}])) is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The Safety Lock LCK-2981ae2874f3 was lifted.",
+        '结果：{"step_id": "s1", "refusal": null}',
+        'transfer: {"operation": "transfer", "reversal": null}',
+    ],
+)
+def test_the_channel_gets_no_lock_id_or_bank_json_fragment(text: str) -> None:
+    sent = responder.for_channel(text, {}, "en")
+    assert not any(i.pattern.search(sent) for i in responder.INTERNALS)
+
+
+def test_the_raw_bank_result_reaches_the_channel_without_json_fragments() -> None:
+    result = StepResult(
+        step_id="s1", operation="read_audit_trail", input={},
+        output={"entries": [{"operation": None, "event": "safety_lock_lifted"}]},
+    )
+    sent = responder.for_channel(responder.raw([result], "en"), {}, "en")
+    assert "safety_lock_lifted" in sent
+    assert not any(i.pattern.search(sent) for i in responder.INTERNALS)
 
 
 def test_whatever_reaches_the_channel_has_no_bank_data_block() -> None:
