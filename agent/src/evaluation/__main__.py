@@ -9,6 +9,12 @@ Configuration, from the environment, then the repo's `.env` for anything not set
   http://localhost:8000), which the runner resets before every task. Without `BANK_URL`,
   the runner starts its own Bank in-process on a temporary database.
 
+`--baseline` also replays the attack tasks against a prompt-only agent and against our Agent
+with the Bank's enforcement off (both on an in-process ungated Bank) and adds an attack
+comparison table to the report. The prompt-only agent needs a real model: without one its
+column reads n/a. Both extra set-ups use the same `--repeat`; the report is printed
+instead of the scoreboard.
+
 `--repeat N` runs each task N times; `--report PATH` writes a Markdown report (header,
 pass counts out of N per task, totals, failures). With `--repeat` above 1, the report is
 printed instead of the scoreboard.
@@ -36,6 +42,7 @@ from fastapi.testclient import TestClient
 from agent.app import create_app as create_agent
 from agent.bank import HttpClient as AgentBankClient
 from agent.model import ModelNotConfigured, Provider, model_from_env
+from evaluation.baseline import AGENT_UNGATED, FULL_SYSTEM, PROMPT_ONLY, attack_table, run_baseline
 from evaluation.report import report
 from evaluation.runner import HttpClient, TaskResult
 from evaluation.suite import evaluate
@@ -98,13 +105,19 @@ def _commit() -> str:
     return done.stdout.strip() or "unknown"
 
 
-def _markdown(args: argparse.Namespace, results: Sequence[TaskResult], provider: Provider) -> str:
+def _markdown(
+    args: argparse.Namespace,
+    results: Sequence[TaskResult],
+    provider: Provider,
+    extra_sections: Sequence[str] = (),
+) -> str:
     return report(
         results,
         model=f"{provider.model} ({provider.base_url})",
         repeat=args.repeat,
         date=date.today().isoformat(),
         commit=_commit(),
+        extra_sections=extra_sections,
     )
 
 
@@ -120,6 +133,11 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
     )
     parser.add_argument(
         "--report", type=Path, help="also write a Markdown report (pass counts out of N)"
+    )
+    parser.add_argument(
+        "--baseline",
+        action="store_true",
+        help="add the attack comparison table (prompt-only agent, Bank enforcement off)",
     )
     args = parser.parse_args(argv)
     if env is None:
@@ -150,9 +168,30 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
                 repeat=args.repeat,
                 progress=lambda line: print(line, file=sys.stderr, flush=True),
             )
-    print(board if args.repeat == 1 else _markdown(args, results, model.provider))
+    sections: list[str] = []
+    if args.baseline:
+        columns = run_baseline(
+            args.tasks,
+            model=model,
+            only=args.only,
+            repeat=args.repeat,
+            # The prompt-only agent is the same model in a bare loop: it needs a real one.
+            prompt_only=bool(getattr(model, "api_key", None)),
+            progress=lambda line: print(line, file=sys.stderr, flush=True),
+        )
+        sections.append(
+            attack_table(
+                {
+                    PROMPT_ONLY: columns[PROMPT_ONLY],
+                    AGENT_UNGATED: columns[AGENT_UNGATED],
+                    FULL_SYSTEM: [r for r in results if r.task.attack],
+                }
+            )
+        )
+    markdown = _markdown(args, results, model.provider, sections)
+    print(board if args.repeat == 1 and not args.baseline else markdown)
     if args.report:
-        args.report.write_text(_markdown(args, results, model.provider), encoding="utf-8")
+        args.report.write_text(markdown, encoding="utf-8")
     if args.json:
         args.json.write_text(
             json.dumps(

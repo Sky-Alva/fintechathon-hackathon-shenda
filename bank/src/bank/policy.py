@@ -541,6 +541,8 @@ def _resolve(
     if not isinstance(operation.tier, Tier):
         call.tier = operation.tier.resolve(validated, ctx)
     assert call.tier is not None
+    if registry.ungated:
+        call.tier = Tier.GREEN
     if call.tier is not Tier.GREEN:
         _check_safety_lock(conn, session, now)
     return _Resolved(operation, validated, ctx, call.tier)

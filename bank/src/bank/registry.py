@@ -199,8 +199,10 @@ class BankModule:
 
 
 class Registry:
-    def __init__(self, modules: list[BankModule]):
+    def __init__(self, modules: list[BankModule], *, ungated: bool = False):
         self.modules = modules
+        self.ungated = ungated
+        """Tier every Operation Green at the policy gate. Set only by `bank.ungated`."""
         self.operations: dict[str, Operation] = {}
         for module in modules:
             for operation in module.operations:
