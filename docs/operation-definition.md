@@ -134,16 +134,16 @@ Returns one `{operation, tier, confirmation_id, confirmation_token, expires_at}`
 
 ### Strong Verification (Red)
 
-Red Operations get their own verification, one at a time, after the Customer has seen the Plan card.
+Red Operations get a Strong Verification after the Customer has seen the Plan card. One challenge (one SMS code) covers one or more Red calls, as one `/confirmations` request covers several Yellow ones (#55).
 
 ```http
 POST /verifications
 Authorization: Bearer <session_token>
 
-{"operation": "transfer", "input": {"payee_id": "PAY-HM-001", "amount": "1200.00"}}
+{"operations": [{"operation": "transfer", "input": {"payee_id": "PAY-HM-001", "amount": "1200.00"}}]}
 ```
 
-Returns `{challenge_id, operation, tier, sent_to, expires_at}` and texts a 6-digit code to the Customer's simulated phone (`sent_to` is the masked number, e.g. `138****0002`). Only a Red call gets a challenge: a Yellow or Green one is refused with `invalid_input`, and one that can never run (unknown Payee, insufficient funds) is refused with that reason, so no code is sent for it. A Red step that is only Red because of earlier steps of the same Plan becomes Red once they have run, so request its challenge when the Executor reaches it.
+Returns `{challenge_id, operations, tier, sent_to, expires_at}` (`operations`: the Operation names, in order) and texts a 6-digit code to the Customer's simulated phone (`sent_to` is the masked number, e.g. `138****0002`). Only a Red call gets a challenge: a Yellow or Green one is refused with `invalid_input`, and one that can never run (unknown Payee, insufficient funds) is refused with that reason, so no code is sent for it. A Red step that is only Red because of earlier steps of the same Plan becomes Red once they have run, so request its challenge when the Executor reaches it. The calls are tiered in order, each counting the earlier ones toward the Daily Transfer Total, and all must be Red; otherwise none gets a code (a refusal names the call by `detail.index`). The SMS names how many Operations the code approves.
 
 ```http
 POST /verifications/{challenge_id}
@@ -152,11 +152,11 @@ Authorization: Bearer <phone_token>
 {"code": "123456"}
 ```
 
-The code is typed into the Channel's SMS verification box, which sends it with the same session's `phone_token` (the session token is refused with `not_authenticated`). The right code returns `{operation, verification_id, verification_token, expires_at}`, which the Channel passes on for the call.
+The code is typed into the Channel's SMS verification box, which sends it with the same session's `phone_token` (the session token is refused with `not_authenticated`). The right code returns `{challenge_id, verifications: [{operation, verification_id, verification_token, expires_at}, ...]}`, one per call, in the order requested, which the Channel passes on for the calls.
 
-- The challenge is bound like a Confirmation token (Customer, session, Operation name, exact input), lasts 5 Bank-clock minutes and can be answered once, from its own session. Otherwise the answer is refused with `token_invalid`.
+- The challenge is bound like a Confirmation token (Customer, session, and for each call its Operation name and exact input), lasts 5 Bank-clock minutes and can be answered once, from its own session. Otherwise the answer is refused with `token_invalid`.
 - A wrong code is refused with `token_invalid` and `detail: {challenge_id, failed_attempts}`, where `failed_attempts` counts every wrong code in the session. The Customer's third wrong code, across their sessions, since their last `wrong_codes` Safety Lock locks the Customer, and its refusal also carries `locked_until`. Three wrong codes close the challenge; after that, request a new one.
-- The verification token covers that one call, works once and expires 5 Bank-clock minutes after issue. Pass it as `verification_token`.
+- Each verification token covers only its own call (not another call of the same challenge), works once and expires 5 Bank-clock minutes after issue. Pass it as `verification_token`.
 
 #### The simulated phone
 

@@ -144,6 +144,8 @@ export type VerificationRequested = {
   type: 'verification_requested'
   plan_id: string
   step_id: string
+  // Every step the one code approves (#55), step_id first; the Bank returns one token each.
+  step_ids: string[]
   challenge_id: string
   sent_to: string
   expires_at: string

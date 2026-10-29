@@ -571,14 +571,14 @@ export default function Chat({
 
   /** The verification box got a verification token from the Bank for the right code: the
    * Plan runs on from its Red step, and can be stopped. */
-  async function verified(waiting: VerificationRequested, token: string) {
+  async function verified(waiting: VerificationRequested, tokens: string[]) {
     if (busy) return
     setVerification(null)
     await runPlan(waiting.plan_id, t.verifiedTap, {
       action: 'verified',
       plan_id: waiting.plan_id,
       step_id: waiting.step_id,
-      verification_token: token,
+      verification_tokens: Object.fromEntries(waiting.step_ids.map((id, i) => [id, tokens[i]])),
     })
   }
 

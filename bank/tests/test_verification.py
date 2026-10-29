@@ -17,6 +17,7 @@ from conftest import (
     login_with_phone,
     phone_messages,
     request_verification,
+    request_verifications,
     submit_code,
     verify,
 )
@@ -85,7 +86,7 @@ def test_a_challenge_sends_a_code_to_the_customers_simulated_phone(client: TestC
     assert response.status_code == 200, response.text
     challenge = response.json()
     assert challenge["challenge_id"]
-    assert challenge["operation"] == "transfer"
+    assert challenge["operations"] == ["transfer"]
     assert challenge["tier"] == "red"
     assert challenge["sent_to"] == "138****0002"
     assert challenge["expires_at"] == "2026-10-20T09:05:00+08:00"
@@ -252,7 +253,7 @@ def test_three_wrong_codes_close_the_challenge(client: TestClient) -> None:
     response = submit_code(client, phone, challenge_id, code)
 
     assert refusal(response)["reason"] == "token_invalid"
-    assert "verification_token" not in response.json()
+    assert "verifications" not in response.json()
 
 
 def test_the_agents_session_token_cannot_answer_a_challenge(client: TestClient) -> None:
@@ -337,7 +338,7 @@ def test_challenges_attempts_and_outcomes_are_audited(client: TestClient) -> Non
     ).json()["challenge_id"]
     code = latest_code(client, phone)
     submit_code(client, phone, challenge_id, wrong_code(code))
-    token = submit_code(client, phone, challenge_id, code).json()["verification_token"]
+    token = submit_code(client, phone, challenge_id, code).json()["verifications"][0]["verification_token"]
     call(client, headers, "transfer", transfer(HUSBAND, "1200.00"), verification_token=token)
 
     entries = admin(client, "get", f"/admin/sessions/{session_id}/audit")["entries"]
@@ -356,3 +357,148 @@ def test_challenges_attempts_and_outcomes_are_audited(client: TestClient) -> Non
     assert entries[3]["detail"] == {"verification_id": verification_id}
     assert code not in str(entries)
     assert token not in str(entries)
+
+
+# --- One challenge for several Red calls (#55) -------------------------------------------
+
+LM_DEBIT, LM_CREDIT = "CARD-LM-001", "CARD-LM-003"
+HM_DEBIT = "CARD-HM-001"
+TWO_LOSS_REPORTS = [
+    ("file_loss_report", {"card_id": LM_CREDIT}),
+    ("file_loss_report", {"card_id": LM_DEBIT}),
+]
+
+
+def tokens(response: httpx.Response) -> list[str]:
+    assert response.status_code == 200, response.text
+    return [v["verification_token"] for v in response.json()["verifications"]]
+
+
+def test_one_challenge_covers_several_red_calls_with_one_code(client: TestClient) -> None:
+    headers, phone = login_with_phone(client, "liming")
+
+    response = request_verifications(client, headers, *TWO_LOSS_REPORTS)
+
+    assert response.status_code == 200, response.text
+    challenge = response.json()
+    assert challenge["operations"] == ["file_loss_report", "file_loss_report"]
+    assert challenge["tier"] == "red"
+    [sms] = phone_messages(client, phone)
+    assert "2 项操作" in sms["text"]
+
+
+def test_the_right_code_earns_one_token_per_call_and_each_runs(client: TestClient) -> None:
+    headers, phone = login_with_phone(client, "liming")
+    challenge_id = request_verifications(client, headers, *TWO_LOSS_REPORTS).json()["challenge_id"]
+
+    answered = submit_code(client, phone, challenge_id, latest_code(client, phone))
+
+    assert [v["operation"] for v in answered.json()["verifications"]] == [
+        "file_loss_report",
+        "file_loss_report",
+    ]
+    for (operation, input), token in zip(TWO_LOSS_REPORTS, tokens(answered), strict=True):
+        ran = call(client, headers, operation, input, verification_token=token)
+        assert ran.status_code == 200, ran.text
+        assert ran.json()["tier"] == "red"
+
+
+def test_a_token_from_a_multi_call_challenge_covers_only_its_own_call_once(
+    client: TestClient,
+) -> None:
+    headers, phone = login_with_phone(client, "hanmei")
+    large, other = transfer(HUSBAND, "1200.00"), transfer(HUSBAND, "1300.00")
+    challenge_id = request_verifications(
+        client, headers, ("transfer", large), ("transfer", other)
+    ).json()["challenge_id"]
+    first, _ = tokens(submit_code(client, phone, challenge_id, latest_code(client, phone)))
+
+    other_call = call(client, headers, "transfer", other, verification_token=first)
+    own_call = call(client, headers, "transfer", large, verification_token=first)
+    again = call(client, headers, "transfer", large, verification_token=first)
+
+    assert refusal(other_call)["reason"] == "token_invalid"
+    assert own_call.status_code == 200, own_call.text
+    assert refusal(again)["reason"] == "token_invalid"
+    assert balance(client, headers, "ACC-HM-001") == "7450.00"
+
+
+def test_a_raised_card_limit_and_a_large_transfer_share_one_code(client: TestClient) -> None:
+    headers, phone = login_with_phone(client, "hanmei")
+    calls = [
+        ("raise_card_limit", {"card_id": HM_DEBIT, "new_limit": "20000.00"}),
+        ("transfer", transfer(HUSBAND, "2000.00")),
+    ]
+    challenge_id = request_verifications(client, headers, *calls).json()["challenge_id"]
+
+    answered = submit_code(client, phone, challenge_id, latest_code(client, phone))
+
+    for (operation, input), token in zip(calls, tokens(answered), strict=True):
+        ran = call(client, headers, operation, input, verification_token=token)
+        assert ran.status_code == 200, ran.text
+    assert len(phone_messages(client, phone)) == 1
+
+
+def test_three_wrong_codes_close_a_multi_call_challenge_and_lock_the_customer(
+    client: TestClient,
+) -> None:
+    session_id, headers, phone = login_session_with_phone(client, "liming")
+    challenge_id = request_verifications(client, headers, *TWO_LOSS_REPORTS).json()["challenge_id"]
+    code = latest_code(client, phone)
+
+    attempts = [submit_code(client, phone, challenge_id, wrong_code(code)) for _ in range(3)]
+
+    assert [refusal(a)["detail"]["failed_attempts"] for a in attempts] == [1, 2, 3]
+    assert "locked_until" in refusal(attempts[-1])["detail"]
+    lock = admin(client, "get", f"/admin/sessions/{session_id}/safety-lock")
+    assert lock["trigger"] == "wrong_codes"
+    admin(client, "delete", f"/admin/sessions/{session_id}/safety-lock")
+    assert refusal(submit_code(client, phone, challenge_id, code))["reason"] == "token_invalid"
+
+
+def test_calls_are_tiered_in_order_and_one_that_is_not_red_gets_no_code_for_any(
+    client: TestClient,
+) -> None:
+    headers, phone = login_with_phone(client, "hanmei")
+
+    # ¥200 is Red after ¥1,200; the first ¥600 of two is Yellow on its own.
+    after_a_large_one = request_verifications(
+        client,
+        headers,
+        ("transfer", transfer(HUSBAND, "1200.00")),
+        ("transfer", transfer(HUSBAND, "200.00")),
+    )
+    yellow_first = request_verifications(
+        client,
+        headers,
+        ("transfer", transfer(HUSBAND, "600.00")),
+        ("transfer", transfer(HUSBAND, "600.00")),
+    )
+
+    assert after_a_large_one.status_code == 200, after_a_large_one.text
+    assert yellow_first.status_code == 422
+    assert refusal(yellow_first)["reason"] == "invalid_input"
+    assert refusal(yellow_first)["detail"]["index"] == 0
+    assert len(phone_messages(client, phone)) == 1
+
+
+def test_a_multi_call_challenge_is_audited_per_call(client: TestClient) -> None:
+    session_id, headers, phone = login_session_with_phone(client, "liming")
+    challenge_id = request_verifications(client, headers, *TWO_LOSS_REPORTS).json()["challenge_id"]
+    code = latest_code(client, phone)
+    submit_code(client, phone, challenge_id, wrong_code(code))
+    submit_code(client, phone, challenge_id, code)
+
+    entries = admin(client, "get", f"/admin/sessions/{session_id}/audit")["entries"]
+
+    summary = [(e["event"], e["operation"], e["outcome"]) for e in entries]
+    assert summary == [
+        ("verification_challenge", "file_loss_report", "ok"),
+        ("verification_challenge", "file_loss_report", "ok"),
+        ("verification_attempt", None, "refused"),
+        ("verification_attempt", "file_loss_report", "ok"),
+        ("verification_attempt", "file_loss_report", "ok"),
+    ]
+    assert {e["detail"]["challenge_id"] for e in entries} == {challenge_id}
+    assert [e["input"] for e in entries[:2]] == [input for _, input in TWO_LOSS_REPORTS]
+    assert len({e["detail"]["verification_id"] for e in entries[3:]}) == 2

@@ -21,6 +21,7 @@ from conftest import (
     log_in,
     send,
     start_conversation,
+    tokens_by_step,
     type_code,
 )
 from fake_model import FakeModel, plan, say, step
@@ -69,7 +70,7 @@ def run_red_plan(
         "verified",
         plan_id=requested["plan_id"],
         step_id=requested["step_id"],
-        verification_token=verified["verification_token"],
+        verification_tokens=tokens_by_step(requested, verified),
     )
 
 

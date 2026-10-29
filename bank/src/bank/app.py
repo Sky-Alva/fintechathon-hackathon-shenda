@@ -260,7 +260,7 @@ def create_app(db_path: Path, admin_key: str) -> FastAPI:
         challenge_id: str,
         authorization: Annotated[str | None, Header()] = None,
         body: Annotated[Any, Body()] = None,
-    ) -> policy.Verification:
+    ) -> policy.VerificationResult:
         return gated(
             authorization,
             lambda conn, session: policy.answer_challenge(conn, session, challenge_id, body),

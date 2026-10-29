@@ -92,7 +92,9 @@ def yellow_transfer(client: TestClient, headers: dict[str, str], token: str) -> 
 def assert_locked(response: httpx.Response, trigger: str, until: str) -> None:
     assert response.status_code == 423, response.text
     assert refusal(response)["reason"] == "session_locked"
-    assert refusal(response)["detail"] == {"trigger": trigger, "locked_until": until}
+    detail = refusal(response)["detail"]
+    detail.pop("index", None)  # a verification request names which of its calls was refused
+    assert detail == {"trigger": trigger, "locked_until": until}
 
 
 # --- Triggers ---------------------------------------------------------------------------
@@ -263,7 +265,7 @@ def test_a_locked_session_cannot_answer_an_open_challenge(client: TestClient) ->
     response = submit_code(client, phone, challenge_id, latest_code(client, phone))
 
     assert_locked(response, "reported_attempts", "2026-10-20T09:30:00+08:00")
-    assert "verification_token" not in response.json()
+    assert "verifications" not in response.json()
 
 
 def test_a_tier_preview_in_a_locked_session_marks_non_green_steps_locked(

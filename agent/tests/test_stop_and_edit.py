@@ -18,6 +18,7 @@ from conftest import (
     start_conversation,
     take_over,
     traces,
+    tokens_by_step,
     type_code,
 )
 from fake_model import FakeModel, ModelReply, plan, say, step
@@ -249,7 +250,7 @@ def test_resuming_a_stopped_plan_asks_again_to_verify_its_red_step(
             "verified",
             plan_id=plan_id,
             step_id="s2",
-            verification_token=verification["verification_token"],
+            verification_tokens=tokens_by_step(requested, verification),
         )
     )
     assert event_types(events) == ["step_started", "step_succeeded", "answer"]
@@ -289,7 +290,7 @@ def test_a_verified_red_step_can_be_stopped_before_the_steps_after_it(
             "verified",
             plan_id=plan_id,
             step_id="s2",
-            verification_token=verification["verification_token"],
+            verification_tokens=tokens_by_step(requested, verification),
         )
     )
 

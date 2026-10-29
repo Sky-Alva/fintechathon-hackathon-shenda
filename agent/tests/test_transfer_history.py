@@ -16,11 +16,14 @@ def send_household_money(bank: TestClient, login: Login) -> None:
     """韩梅梅 sends 李明 ¥2,000 for 家用 in the Channel, passing Strong Verification."""
     headers = {"Authorization": f"Bearer {login.session_token}"}
     challenge = bank.post(
-        "/verifications", headers=headers, json={"operation": "transfer", "input": HOUSEHOLD}
+        "/verifications",
+        headers=headers,
+        json={"operations": [{"operation": "transfer", "input": HOUSEHOLD}]},
     )
     assert challenge.status_code == 200, challenge.text
     challenge_id = challenge.json()["challenge_id"]
-    token = type_code(bank, login, challenge_id, latest_code(bank, login))["verification_token"]
+    verified = type_code(bank, login, challenge_id, latest_code(bank, login))
+    token = verified["verifications"][0]["verification_token"]
     sent = bank.post(
         "/operations/transfer",
         headers=headers,

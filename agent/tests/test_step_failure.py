@@ -22,6 +22,7 @@ from conftest import (
     send,
     start_conversation,
     take_over,
+    tokens_by_step,
     type_code,
 )
 from fake_model import FakeModel, plan, say, step
@@ -314,7 +315,7 @@ def test_an_accepted_reversal_is_a_new_plan_card_and_lifting_the_lock_asks_for_v
             "verified",
             plan_id=proposed["plan_id"],
             step_id=undo["id"],
-            verification_token=typed["verification_token"],
+            verification_tokens=tokens_by_step(verification[0], typed),
         )
     )
     assert event_types(events) == ["step_started", "step_succeeded", "answer"]
