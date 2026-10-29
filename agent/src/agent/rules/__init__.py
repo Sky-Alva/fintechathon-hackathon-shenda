@@ -26,13 +26,15 @@ from typing import Any
 from agent import guard, planner, untrusted
 from agent.events import ClarificationOption
 from agent.language import Language, customer_language
-from agent.rules import balance
+from agent.rules import balance, orchestration, safety
 from agent.rules.core import Intent, Reply, Request, matching
 
 log = logging.getLogger(__name__)
 
 MODULES: list[Sequence[Intent]] = [
     balance.INTENTS,
+    safety.INTENTS,
+    orchestration.INTENTS,
 ]
 """Every module of intents, one per Scenario."""
 
@@ -75,7 +77,7 @@ def make_plan(
     )
     if failed is not None:
         return planner.Plan(steps=[])  # a step failed: the rules never re-plan around it
-    if guard.injection({"message": request.matching}) is not None:
+    if guard.injected(request.text) is not None:
         return planner.Declined(reason="manipulation", kind="injection")
     if guard.scam(request.matching) is not None:
         return planner.Declined(reason="manipulation", kind="impersonation")
