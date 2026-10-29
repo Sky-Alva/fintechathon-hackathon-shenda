@@ -2,7 +2,8 @@
 challenge and code attempt, Safety Lock and lift, its tier decision and outcome, per session, in order.
 
 A session reads its own trail with `read_audit_trail` (Green, for the Agent's decision
-trace panel, so it works under a Safety Lock), without the back-office identifiers; a
+trace panel, so it works under a Safety Lock), plus the Safety Lock entries from the
+Customer's other sessions, without the back-office identifiers; a
 Staff Member reads any session's, identifiers and all, with
 the admin endpoint.
 """
@@ -98,12 +99,21 @@ def trail(
     conn: sqlite3.Connection, session_id: str, *, as_caller: bool = False
 ) -> list[dict[str, Any]]:
     """One session's entries in order: as a Staff Member sees them, or `as_caller`, with
-    each refusal showing only what the caller was told (never e.g. which token a refused
+    the Safety Lock entries of the Customer's other sessions too and each refusal showing only what the caller was told (never e.g. which token a refused
     one turned out to be), a lock set by hand without who set it or why, and no
     back-office identifiers (`BACK_OFFICE_IDS`)."""
-    rows = conn.execute(
-        "SELECT * FROM audit_log WHERE session_id = ? ORDER BY entry_id", (session_id,)
-    ).fetchall()
+    if as_caller:
+        # A Safety Lock holds the Customer, so every session of theirs shows its set and lift.
+        rows = conn.execute(
+            "SELECT * FROM audit_log WHERE session_id = ? OR (event IN (?, ?) AND session_id IN"
+            " (SELECT session_id FROM sessions WHERE customer_id ="
+            " (SELECT customer_id FROM sessions WHERE session_id = ?))) ORDER BY entry_id",
+            (session_id, Event.SAFETY_LOCK.value, Event.SAFETY_LOCK_LIFTED.value, session_id),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM audit_log WHERE session_id = ? ORDER BY entry_id", (session_id,)
+        ).fetchall()
     entries = []
     for row in rows:
         entry = {**dict(row), "input": json.loads(row["input"])}
