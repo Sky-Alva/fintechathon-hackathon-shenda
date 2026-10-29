@@ -8,11 +8,16 @@ verification token, never the code or the phone token.
 """
 
 import json
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
+from agent.bank import BankRefused
+from agent.conversation import Conversations
+from agent.events import PlanStep
+from agent.reviewer import ReviewedPlan
 from conftest import (
     Login,
     act,
@@ -589,3 +594,41 @@ def test_a_verification_for_a_step_not_waiting_for_one_is_refused(
 
     assert response.status_code == 409
     assert response.json() == {"error": "plan_not_pending"}
+
+
+def test_a_red_step_depending_on_a_step_not_yet_run_gets_its_own_code(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    model.script(
+        plan(
+            step("s1", "file_loss_report", {"card_id": LM_CREDIT}),
+            step("s2", "file_loss_report", {"card_id": LM_DEBIT}, depends_on=["s1"]),
+        ),
+        say("两张卡都已挂失。"),
+    )
+    login = log_in(bank, "liming")
+    conversation = start_conversation(agent, login)
+    proposed = shown(send(agent, conversation, "我的两张卡都丢了，帮我挂失"))[0]
+
+    first = shown(act(agent, conversation, "confirm", plan_id=proposed["plan_id"]))
+    second = verify_with_the_phone(agent, bank, login, conversation, first[-1])
+
+    # s2's input may rest on what s1 returns, which isn't known yet: not one code for both.
+    assert first[-1]["step_ids"] == ["s1"]
+    assert second[-1]["step_ids"] == ["s2"]
+
+
+def test_when_the_bank_refuses_the_tier_preview_only_the_paused_step_is_covered() -> None:
+    class RefusingBank:
+        def tier_preview(self, operations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            raise BankRefused("invalid_input", "no", {})
+
+    steps = [
+        PlanStep(id=f"s{n}", operation="file_loss_report", input={}, depends_on=[], tier="red")
+        for n in (1, 2, 3)
+    ]
+    conversation = SimpleNamespace(bank=RefusingBank())
+
+    covered = Conversations._covered(conversation, ReviewedPlan(steps=steps))  # type: ignore[arg-type]
+
+    assert [s.id for s in covered] == ["s1"]
