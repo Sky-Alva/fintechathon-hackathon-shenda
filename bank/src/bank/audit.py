@@ -8,6 +8,7 @@ Staff Member reads any session's, identifiers and all, with
 the admin endpoint.
 """
 
+import hashlib
 import json
 import sqlite3
 from datetime import datetime
@@ -37,9 +38,41 @@ CREATE TABLE audit_log (
     outcome TEXT NOT NULL CHECK (outcome IN ('ok', 'refused')),
     reason TEXT,
     detail TEXT NOT NULL,
-    caller_detail TEXT  -- what the session itself sees instead of `detail`, if not all of it
+    caller_detail TEXT,  -- what the session itself sees instead of `detail`, if not all of it
+    prev_hash TEXT NOT NULL,  -- the previous entry hash, or GENESIS_HASH for the first
+    hash TEXT NOT NULL  -- SHA-256 of prev_hash + the canonical JSON of every other column
 );
 """
+
+
+GENESIS_HASH = "0" * 64
+"""The `prev_hash` of the first entry in the Bank's one chain."""
+
+CHAINED_COLUMNS = (
+    "entry_id",
+    "session_id",
+    "at",
+    "event",
+    "operation",
+    "input",
+    "tier",
+    "outcome",
+    "reason",
+    "detail",
+    "caller_detail",
+)
+
+
+def entry_hash(prev_hash: str, row: dict[str, Any]) -> str:
+    """SHA-256 of `prev_hash` followed by the canonical JSON (sorted keys, no whitespace) of
+    every stored column except the two hashes."""
+    canonical = json.dumps(
+        {column: row[column] for column in CHAINED_COLUMNS},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return hashlib.sha256((prev_hash + canonical).encode()).hexdigest()
 
 
 BACK_OFFICE_IDS = frozenset({"lock_id", "confirmation_id", "verification_id", "challenge_id"})
@@ -73,11 +106,15 @@ def record(
     """`detail` is what Staff Members see; `caller_detail` is all the session itself sees
     of it: for a refusal, what the caller was told, and for a Safety Lock set by hand, the
     lock without who set it or why."""
-    conn.execute(
+    # One chain for the whole Bank. The caller's write transaction (BEGIN IMMEDIATE) makes
+    # reading the last hash and appending the next entry atomic.
+    last = conn.execute("SELECT hash FROM audit_log ORDER BY entry_id DESC LIMIT 1").fetchone()
+    prev_hash = last["hash"] if last else GENESIS_HASH
+    cursor = conn.execute(
         "INSERT INTO audit_log"
         " (session_id, at, event, operation, input, tier, outcome, reason, detail,"
-        " caller_detail)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " caller_detail, prev_hash, hash)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')",
         (
             session_id,
             at.isoformat(),
@@ -91,8 +128,39 @@ def record(
             json.dumps(caller_detail or {}, ensure_ascii=False, default=str)
             if reason or caller_detail is not None
             else None,
+            prev_hash,
         ),
     )
+    row = conn.execute("SELECT * FROM audit_log WHERE entry_id = ?", (cursor.lastrowid,)).fetchone()
+    conn.execute(
+        "UPDATE audit_log SET hash = ? WHERE entry_id = ?",
+        (entry_hash(prev_hash, dict(row)), cursor.lastrowid),
+    )
+
+
+class ChainVerification(BaseModel):
+    ok: bool
+    entries_checked: int
+    first_broken_entry_id: int | None
+
+
+def verify_chain(conn: sqlite3.Connection) -> ChainVerification:
+    """Walk the whole log in order: each entry must name the previous one's hash and carry
+    the hash of its own columns. A deleted entry shows at the one after it; an edited or
+    inserted entry shows at itself."""
+    expected_prev = GENESIS_HASH
+    checked = 0
+    for row in conn.execute("SELECT * FROM audit_log ORDER BY entry_id"):
+        checked += 1
+        values = dict(row)
+        if values["prev_hash"] != expected_prev or values["hash"] != entry_hash(
+            expected_prev, values
+        ):
+            return ChainVerification(
+                ok=False, entries_checked=checked, first_broken_entry_id=values["entry_id"]
+            )
+        expected_prev = values["hash"]
+    return ChainVerification(ok=True, entries_checked=checked, first_broken_entry_id=None)
 
 
 def trail(
@@ -119,7 +187,7 @@ def trail(
         entry = {**dict(row), "input": json.loads(row["input"])}
         shown = row["caller_detail"] if as_caller else None
         entry["detail"] = json.loads(shown or row["detail"])
-        del entry["caller_detail"]
+        del entry["caller_detail"], entry["prev_hash"]
         if as_caller:
             entry["input"] = _without_ids(entry["input"])
             entry["detail"] = _without_ids(entry["detail"])
@@ -149,6 +217,7 @@ class AuditEntry(BaseModel):
     outcome: Literal["ok", "refused"]
     reason: RefusalReason | None
     detail: dict[str, Any]
+    hash: str
 
 
 class ReadAuditTrailOutput(BaseModel):
