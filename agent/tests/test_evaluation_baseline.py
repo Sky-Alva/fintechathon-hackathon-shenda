@@ -9,7 +9,7 @@ import importlib.util
 from pathlib import Path
 from typing import Any
 
-import agent as agent_package
+import agent as agent_package  # the exception to "no Agent internals": ticket #69 asks to prove the prompt-only agent is not importable
 import yaml
 from fastapi.testclient import TestClient
 

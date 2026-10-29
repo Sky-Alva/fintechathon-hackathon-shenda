@@ -10,7 +10,7 @@ conversation interface.
 import pytest
 from fastapi.testclient import TestClient
 
-from agent import guard
+from agent import guard  # the exception to "no Agent internals": ticket #72 asks for guard-level tests
 from conftest import bank_audit, event_types, log_in, send, start_conversation, traces
 from fake_model import FakeModel, plan, step
 
