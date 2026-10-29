@@ -278,8 +278,8 @@ class InjectionWarning(BaseModel):
     text: str
 
 
-LockTrigger = Literal["wrong_codes", "reported_attempts", "red_operations"]
-"""What made the Bank place a Safety Lock."""
+LockTrigger = Literal["wrong_codes", "reported_attempts", "red_operations", "staff"]
+"""What made the Bank place a Safety Lock; `staff`: a Staff Member set it by hand."""
 
 
 class SessionLocked(BaseModel):

@@ -37,6 +37,9 @@ export type SafetyLock =
       trigger: string
       locked_at: string
       locked_until: string
+      /** For a lock a Staff Member set by hand: who, and why if they said. */
+      set_by?: string
+      reason?: string | null
     }
 
 /** One entry of the Bank's audit trail, as a Staff Member reads it with the admin key. */
@@ -62,10 +65,14 @@ function agentPost<T>(keys: StaffKeys, url: string, body?: unknown): Promise<T> 
   }).then(read<T>)
 }
 
-function bankAdmin<T>(keys: StaffKeys, url: string, method = 'GET'): Promise<T> {
+function bankAdmin<T>(keys: StaffKeys, url: string, method = 'GET', body?: unknown): Promise<T> {
   return fetch(`/bank/admin${url}`, {
     method,
-    headers: { 'X-Admin-Key': keys.bankAdminKey },
+    headers:
+      body === undefined
+        ? { 'X-Admin-Key': keys.bankAdminKey }
+        : { 'X-Admin-Key': keys.bankAdminKey, 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
   }).then(read<T>)
 }
 
@@ -88,6 +95,19 @@ export async function auditTrail(keys: StaffKeys, sessionId: string): Promise<Au
 
 export function safetyLock(keys: StaffKeys, sessionId: string): Promise<SafetyLock> {
   return bankAdmin(keys, `/sessions/${sessionId}/safety-lock`)
+}
+
+/** Put the session's Customer under a Safety Lock by hand, as this Staff Member. The
+ * Customer is told the Bank's staff locked it, never who or why. */
+export function setSafetyLock(
+  keys: StaffKeys,
+  sessionId: string,
+  reason: string,
+): Promise<SafetyLock> {
+  return bankAdmin(keys, `/sessions/${sessionId}/safety-lock`, 'POST', {
+    staff: keys.staffName,
+    reason: reason || null,
+  })
 }
 
 export function liftSafetyLock(keys: StaffKeys, sessionId: string): Promise<unknown> {

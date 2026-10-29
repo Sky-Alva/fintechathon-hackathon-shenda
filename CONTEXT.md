@@ -23,7 +23,7 @@ A simulated business inside the Bank (e.g. a flower shop, a cake shop) that acce
 _Avoid_: Vendor, shop, third-party service
 
 **Staff Member**:
-A bank employee who can watch sessions, take over a conversation from the Agent, and lift a Safety Lock.
+A bank employee who can watch sessions, take over a conversation from the Agent, and set or lift a Safety Lock.
 _Avoid_: Admin, operator, human agent
 
 **Channel**:
@@ -53,7 +53,7 @@ A multi-factor check (such as an SMS code or face check) the Customer must pass 
 _Avoid_: MFA, 2FA, authentication
 
 **Safety Lock**:
-A restriction on a Customer, triggered by repeated failed verifications or suspicious behaviour in any of their sessions, under which only Green Operations may run in every session of theirs (including ones opened after it was set) until a Staff Member lifts it or it expires.
+A restriction on a Customer, triggered by repeated failed verifications or suspicious behaviour in any of their sessions, or set by hand by a Staff Member, under which only Green Operations may run in every session of theirs (including ones opened after it was set) until a Staff Member lifts it or it expires.
 _Avoid_: Circuit breaker, freeze, lockout
 
 **Daily Transfer Total**:

@@ -235,3 +235,13 @@
 .staff-reply input {
   flex: 1;
 }
+
+.staff-lock {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.staff-lock input {
+  min-width: 12em;
+}

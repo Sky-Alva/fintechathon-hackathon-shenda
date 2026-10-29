@@ -548,6 +548,35 @@ def _trip_safety_lock(
     return lock
 
 
+def set_safety_lock(
+    conn: sqlite3.Connection, session_id: str, by: str, reason: str | None
+) -> safety_lock.Lock:
+    """A Staff Member locks the session's Customer by hand, for all their sessions; refused
+    if they are already locked. Audited in this session's trail with who set it and why,
+    which the session itself never sees."""
+    now = clock.now(conn)
+    session = sessions.by_id(conn, session_id)
+    lock = safety_lock.place(conn, session.customer_id, session_id, now, by, reason)
+    if lock is None:
+        current = safety_lock.active(conn, session.customer_id, now)
+        assert current is not None
+        raise Refusal(
+            RefusalReason.SESSION_LOCKED,
+            "This Customer is already under a Safety Lock",
+            {"trigger": current.trigger.value, "locked_until": current.expires_at.isoformat()},
+        )
+    shown = {
+        "lock_id": lock.lock_id,
+        "trigger": lock.trigger.value,
+        "locked_until": lock.expires_at.isoformat(),
+    }
+    _audit(
+        conn, session, now, Event.SAFETY_LOCK, _Call(None, {}), None,
+        {**shown, "set_by": by, "reason": reason}, shown,
+    )
+    return lock
+
+
 def lift_safety_lock(conn: sqlite3.Connection, session_id: str) -> safety_lock.Lock:
     """A Staff Member ends the Safety Lock of the session's Customer now, for all their
     sessions. Audited in the trail of the session it was lifted from."""
@@ -684,7 +713,7 @@ def _audit(
     call: _Call,
     reason: RefusalReason | None,
     detail: dict[str, Any] | None = None,
-    refusal_detail: dict[str, Any] | None = None,
+    caller_detail: dict[str, Any] | None = None,
 ) -> None:
     audit.record(
         conn,
@@ -696,5 +725,5 @@ def _audit(
         tier=call.tier,
         reason=reason,
         detail=detail,
-        refusal_detail=refusal_detail,
+        caller_detail=caller_detail,
     )

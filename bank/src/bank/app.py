@@ -4,7 +4,7 @@ Customer-facing: log in, read which session a token is, read the Bank clock, rea
 Operation, preview a Plan's tiers, get Confirmation tokens, pass Strong Verification,
 read the simulated phone.
 Admin (X-Admin-Key): reset, set or advance the Bank clock, read any session's audit
-trail, read or lift a session's Safety Lock, read any Customer's simulated phone.
+trail, read, set or lift a session's Safety Lock, read any Customer's simulated phone.
 """
 
 import os
@@ -19,7 +19,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Body, Depends, FastAPI, Header, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from bank import (
     approvals,
@@ -80,6 +80,28 @@ HTTP_STATUS = {
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+
+class SetSafetyLockRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    staff: str = Field(min_length=1, max_length=100)
+    """The Staff Member setting it, as the staff console names them."""
+    reason: str | None = Field(default=None, max_length=1000)
+
+
+def lock_view(session_id: str, lock: safety_lock.Lock) -> dict[str, Any]:
+    """A Customer's Safety Lock as the staff console reads it from one of their sessions."""
+    view = {
+        "session_id": session_id,
+        "locked": True,
+        "locked_session_id": lock.session_id,
+        "trigger": lock.trigger.value,
+        "locked_at": lock.locked_at.isoformat(),
+        "locked_until": lock.expires_at.isoformat(),
+    }
+    if lock.set_by is not None:
+        view |= {"set_by": lock.set_by, "reason": lock.reason}
+    return view
 
 
 class SetClockRequest(BaseModel):
@@ -292,14 +314,17 @@ def create_app(db_path: Path, admin_key: str) -> FastAPI:
             lock = safety_lock.active(conn, customer_id, clock.now(conn))
             if lock is None:
                 return {"session_id": session_id, "locked": False}
-            return {
-                "session_id": session_id,
-                "locked": True,
-                "locked_session_id": lock.session_id,
-                "trigger": lock.trigger.value,
-                "locked_at": lock.locked_at.isoformat(),
-                "locked_until": lock.expires_at.isoformat(),
-            }
+            return lock_view(session_id, lock)
+
+    @admin.post("/sessions/{session_id}/safety-lock")
+    def set_safety_lock(session_id: str, body: SetSafetyLockRequest) -> dict[str, Any]:
+        with db.transaction(db_path) as conn:
+            if not sessions.exists(conn, session_id):
+                raise Refusal(
+                    RefusalReason.NOT_FOUND, "No such session", {"session_id": session_id}
+                )
+            lock = policy.set_safety_lock(conn, session_id, body.staff, body.reason)
+            return lock_view(session_id, lock)
 
     @admin.delete("/sessions/{session_id}/safety-lock")
     def lift_safety_lock(session_id: str) -> dict[str, Any]:
