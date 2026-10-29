@@ -89,7 +89,7 @@ def scam(text: str) -> Suspicion | None:
 
 
 ADDRESSED_TO_THE_AGENT = [
-    re.compile(r"(系统|管理员)(指令|命令|提示)"),
+    re.compile(r"(系统|管理员)(指令|命令|提示|通知)"),
     re.compile(r"(忽略|无视|忘记)(掉)?(此前|之前|以上|上述|前面|先前)?的?(所有|全部|一切)?(规则|指令|指示|提示|限制)"),
     re.compile(r"\bsystem (prompt|instruction|command|override)", re.IGNORECASE),
     re.compile(
