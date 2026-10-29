@@ -26,13 +26,14 @@ from typing import Any
 from agent import guard, planner, untrusted
 from agent.events import ClarificationOption
 from agent.language import Language, customer_language
-from agent.rules import balance, orchestration, safety, spending
+from agent.rules import balance, cards, orchestration, safety, spending
 from agent.rules.core import Intent, Reply, Request, matching
 
 log = logging.getLogger(__name__)
 
 MODULES: list[Sequence[Intent]] = [
     balance.INTENTS,
+    cards.INTENTS,
     spending.INTENTS,
     safety.INTENTS,
     orchestration.INTENTS,
