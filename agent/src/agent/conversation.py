@@ -894,7 +894,8 @@ class Conversations:
     ) -> Iterator[Event]:
         if declined.reason == "manipulation":
             # Quote the Customer's own words, never the model's account of them.
-            said = next(m["content"] for m in reversed(conversation.history) if m["role"] == "user")
+            history = reversed(conversation.history)
+            said = next((m["content"] for m in history if untrusted.from_customer(m)), "")
             yield from self._manipulation(
                 conversation,
                 guard.Suspicion(declined.kind or "impersonation", guard.quoted(said)),
@@ -1353,10 +1354,15 @@ class Conversations:
                 conversation.bank_results,
                 queries=self._queries(conversation),
             )
-        # The outgoing check: nothing that looks like a full card number or a code goes
-        # out, even when a Bank result contained it.
-        text = secrets_guard.mask(written.text)
         self._remember(conversation, results)
+        # The outgoing check: nothing that looks like a full card number or a code goes
+        # out, even when a Bank result contained it, and nothing of the Agent's internal
+        # data format (a `<bank_data>` block, a card's Bank ID).
+        text = responder.for_channel(
+            secrets_guard.mask(written.text),
+            cards.known(conversation.bank_results),
+            customer_language(conversation.history),
+        )
         conversation.history.append(
             untrusted.shown(text)
             if written.quotes_bank
