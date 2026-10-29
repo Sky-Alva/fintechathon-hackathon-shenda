@@ -1,6 +1,7 @@
 """The Safety Lock: repeated wrong codes, Agent-reported attempts or a burst of Red
-Operations lock a session so that only Green Operations run, until a Staff Member lifts
-the lock or 30 Bank-clock minutes pass."""
+Operations, across a Customer's sessions, lock the Customer so that only Green Operations
+run in any of their sessions, until a Staff Member lifts the lock or 30 Bank-clock minutes
+pass."""
 
 from typing import Any
 
@@ -281,14 +282,68 @@ def test_a_tier_preview_in_a_locked_session_marks_non_green_steps_locked(
     assert steps[1]["refusal"]["reason"] == "session_locked"
 
 
-def test_the_lock_holds_only_the_session_that_tripped_it(client: TestClient) -> None:
-    locked = login(client, "hanmei")
+# --- The Customer, not the session ------------------------------------------------------
+
+
+def test_logging_in_again_does_not_get_around_the_lock(client: TestClient) -> None:
+    first, first_phone = login_with_phone(client, "hanmei")
+    enter_wrong_codes(client, first, first_phone, 3)
+    again = login(client, "hanmei")
+
+    yellow = request_confirmations(client, again, ("transfer", transfer(HUSBAND, "200.00")))
+    red = request_verification(client, again, "transfer", transfer(HUSBAND, "1200.00"))
+    green = call(client, again, "query_balance")
+
+    assert refusal(yellow)["reason"] == "session_locked"
+    assert refusal(yellow)["detail"]["locked_until"] == "2026-10-20T09:30:00+08:00"
+    assert_locked(red, "wrong_codes", "2026-10-20T09:30:00+08:00")
+    assert green.status_code == 200, green.text
+
+
+def test_the_lock_holds_the_customers_sessions_opened_before_it(client: TestClient) -> None:
     other = login(client, "hanmei")
+    locked = login(client, "hanmei")
     lock_by_reports(client, locked)
 
-    response = request_confirmations(client, other, ("transfer", transfer(HUSBAND, "200.00")))
+    response = call(client, other, "transfer", transfer(HUSBAND, "200.00"))
+
+    assert_locked(response, "reported_attempts", "2026-10-20T09:30:00+08:00")
+
+
+def test_the_lock_does_not_hold_another_customer(client: TestClient) -> None:
+    locked = login(client, "hanmei")
+    lock_by_reports(client, locked)
+    husband = login(client, "liming")
+
+    response = request_confirmations(
+        client, husband, ("transfer", transfer("PAY-LM-001", "200.00"))
+    )
 
     assert response.status_code == 200, response.text
+
+
+def test_reports_from_two_sessions_of_one_customer_add_up(client: TestClient) -> None:
+    first = login(client, "hanmei")
+    second = login(client, "hanmei")
+    report_attempt(client, first)
+
+    report = report_attempt(client, second)
+    response = call(client, first, "transfer", transfer(HUSBAND, "200.00"))
+
+    assert report.json()["output"]["session_locked"] is True
+    assert_locked(response, "reported_attempts", "2026-10-20T09:30:00+08:00")
+
+
+def test_wrong_codes_from_two_sessions_of_one_customer_add_up(client: TestClient) -> None:
+    first, first_phone = login_with_phone(client, "hanmei")
+    second, second_phone = login_with_phone(client, "hanmei")
+    enter_wrong_codes(client, first, first_phone, 2)
+
+    third = enter_wrong_codes(client, second, second_phone, 1)
+    response = call(client, first, "transfer", transfer(HUSBAND, "200.00"))
+
+    assert refusal(third)["detail"]["locked_until"] == "2026-10-20T09:30:00+08:00"
+    assert_locked(response, "wrong_codes", "2026-10-20T09:30:00+08:00")
 
 
 # --- Ending the lock ---------------------------------------------------------------------
@@ -355,10 +410,62 @@ def test_the_staff_console_reads_a_sessions_lock(client: TestClient) -> None:
     assert after == {
         "session_id": session_id,
         "locked": True,
+        "locked_session_id": session_id,
         "trigger": "reported_attempts",
         "locked_at": "2026-10-20T09:00:00+08:00",
         "locked_until": "2026-10-20T09:30:00+08:00",
     }
+
+
+def test_the_staff_console_reads_the_lock_on_the_customers_other_sessions(
+    client: TestClient,
+) -> None:
+    locked_id, locked, _ = login_session_with_phone(client, "hanmei")
+    other_id, _, _ = login_session_with_phone(client, "hanmei")
+    husband_id, _, _ = login_session_with_phone(client, "liming")
+    lock_by_reports(client, locked)
+
+    other = admin(client, "get", f"/admin/sessions/{other_id}/safety-lock")
+    husband = admin(client, "get", f"/admin/sessions/{husband_id}/safety-lock")
+
+    assert other["locked"] is True
+    assert other["locked_session_id"] == locked_id
+    assert other["locked_until"] == "2026-10-20T09:30:00+08:00"
+    assert husband == {"session_id": husband_id, "locked": False}
+
+
+def test_lifting_the_lock_from_any_session_frees_all_the_customers_sessions(
+    client: TestClient,
+) -> None:
+    locked_id, locked, _ = login_session_with_phone(client, "hanmei")
+    lock_by_reports(client, locked)
+    again_id, again, _ = login_session_with_phone(client, "hanmei")
+
+    lifted = lift(client, again_id)
+    from_locked = request_confirmations(
+        client, locked, ("transfer", transfer(HUSBAND, "200.00"))
+    )
+    from_again = request_confirmations(client, again, ("transfer", transfer(HUSBAND, "200.00")))
+
+    assert lifted.status_code == 200, lifted.text
+    assert lifted.json()["locked_session_id"] == locked_id
+    assert from_locked.status_code == 200, from_locked.text
+    assert from_again.status_code == 200, from_again.text
+    assert lift(client, locked_id).status_code == 404
+
+
+def test_the_lock_and_its_lift_are_audited_where_they_happened(client: TestClient) -> None:
+    locked_id, locked, _ = login_session_with_phone(client, "hanmei")
+    lock_by_reports(client, locked)
+    again_id, _, _ = login_session_with_phone(client, "hanmei")
+    lift(client, again_id)
+
+    locked_trail = admin(client, "get", f"/admin/sessions/{locked_id}/audit")["entries"]
+    again_trail = admin(client, "get", f"/admin/sessions/{again_id}/audit")["entries"]
+
+    assert [e["event"] for e in locked_trail][-1] == "safety_lock"
+    assert [e["event"] for e in again_trail] == ["safety_lock_lifted"]
+    assert again_trail[0]["detail"]["lock_id"] == locked_trail[-1]["detail"]["lock_id"]
 
 
 def test_attempts_before_a_lock_ended_do_not_count_toward_the_next(client: TestClient) -> None:

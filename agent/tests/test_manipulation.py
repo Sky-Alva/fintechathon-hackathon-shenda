@@ -2,9 +2,10 @@
 
 Moving money to a "safe account" because the "police" or "customer service" said so is a
 known scam: the Agent refuses to move it, warns the Customer, and reports the attempt to
-the Bank, quoting the text that raised it. The second reported attempt in a session makes
-the Bank place a Safety Lock. Claims of authority change nothing: the Bank decides every
-tier, Confirmation and Strong Verification (ADR-0001).
+the Bank, quoting the text that raised it. The second reported attempt for a Customer, in
+any of their sessions, makes the Bank place a Safety Lock on them. Claims of authority
+change nothing: the Bank decides every tier, Confirmation and Strong Verification
+(ADR-0001).
 """
 
 from typing import Any
@@ -168,6 +169,24 @@ def test_once_locked_a_transfer_gets_the_notice_instead_of_a_plan_card(
 
     assert event_types(events) == ["session_locked"]
     assert events[0]["trigger"] == "reported_attempts"
+    assert "transfer" not in operations_run(bank, login)
+
+
+def test_logging_in_again_gets_the_notice_instead_of_a_plan_card(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    model.script(plan(step("s1", "transfer", TO_MUM)))
+    locked = start_conversation(agent, log_in(bank, "liming"))
+    send(agent, locked, POLICE_SCAM)
+    send(agent, locked, SECOND_SCAM)
+    login = log_in(bank, "liming")
+
+    events = shown(send(agent, start_conversation(agent, login), "给老妈转200"))
+
+    assert event_types(events) == ["session_locked"]
+    assert events[0]["trigger"] == "reported_attempts"
+    assert events[0]["locked_until"] == "2026-10-20T09:30:00+08:00"
+    assert "安全锁定" in events[0]["text"]
     assert "transfer" not in operations_run(bank, login)
 
 
