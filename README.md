@@ -210,7 +210,10 @@ cd agent
 .venv/bin/python -m evaluation                          # every task
 .venv/bin/python -m evaluation cards reference-00[1-3]  # a Scenario, or some tasks
 .venv/bin/python -m evaluation --json results.json      # also save the results
+.venv/bin/python -m evaluation --repeat 3 --report report.md  # each task 3 times, Markdown report
 ```
+
+`--repeat N` runs each task N times, because model results vary. `--report PATH` writes a Markdown report: model, date, commit and N; the passes out of N for each task; totals per Scenario, category and attack type; and the failures of any task that failed at least once. With `--repeat` above 1 the report is also printed in place of the scoreboard.
 
 It starts its own Bank in-process, or uses a running one when `BANK_URL` (and `BANK_ADMIN_KEY`) are set. The task format: [docs/scripted-test-tasks.md](docs/scripted-test-tasks.md).
 

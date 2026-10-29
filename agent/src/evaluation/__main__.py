@@ -9,6 +9,10 @@ Configuration, from the environment, then the repo's `.env` for anything not set
   http://localhost:8000), which the runner resets before every task. Without `BANK_URL`,
   the runner starts its own Bank in-process on a temporary database.
 
+`--repeat N` runs each task N times; `--report PATH` writes a Markdown report (header,
+pass counts out of N per task, totals, failures). With `--repeat` above 1, the report is
+printed instead of the scoreboard.
+
 The Agent runs in-process with the configured model and talks to that Bank as an
 untrusted caller, without the admin key. Results aren't deterministic: the runner
 measures and compares, it doesn't gate merges, so it exits 0 whatever the score.
@@ -18,10 +22,12 @@ import argparse
 import json
 import os
 import secrets
+import subprocess
 import sys
 import tempfile
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
+from datetime import date
 from pathlib import Path
 
 import httpx
@@ -29,8 +35,9 @@ from fastapi.testclient import TestClient
 
 from agent.app import create_app as create_agent
 from agent.bank import HttpClient as AgentBankClient
-from agent.model import ModelNotConfigured, model_from_env
-from evaluation.runner import HttpClient
+from agent.model import ModelNotConfigured, Provider, model_from_env
+from evaluation.report import report
+from evaluation.runner import HttpClient, TaskResult
 from evaluation.suite import evaluate
 
 REPO = Path(__file__).resolve().parents[3]
@@ -70,6 +77,37 @@ def bank_from(env: Mapping[str, str]) -> Iterator[tuple[HttpClient, AgentBankCli
             yield client, client, admin_key
 
 
+def _positive(text: str) -> int:
+    number = int(text)
+    if number < 1:
+        raise argparse.ArgumentTypeError("must be 1 or more")
+    return number
+
+
+def _commit() -> str:
+    try:
+        done = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=REPO,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+    return done.stdout.strip() or "unknown"
+
+
+def _markdown(args: argparse.Namespace, results: Sequence[TaskResult], provider: Provider) -> str:
+    return report(
+        results,
+        model=f"{provider.model} ({provider.base_url})",
+        repeat=args.repeat,
+        date=date.today().isoformat(),
+        commit=_commit(),
+    )
+
+
 def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m evaluation", description=__doc__.split("\n")[0]
@@ -77,6 +115,12 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
     parser.add_argument("only", nargs="*", help="Scenarios or task ids to run (globs); all if none")
     parser.add_argument("--tasks", type=Path, default=REPO / "tasks", help="the tasks directory")
     parser.add_argument("--json", type=Path, help="also write every result to this file")
+    parser.add_argument(
+        "--repeat", type=_positive, default=1, metavar="N", help="run each task N times"
+    )
+    parser.add_argument(
+        "--report", type=Path, help="also write a Markdown report (pass counts out of N)"
+    )
     args = parser.parse_args(argv)
     if env is None:
         env = {**read_env_file(REPO / ".env"), **os.environ}
@@ -103,9 +147,12 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
                 admin_key=admin_key,
                 model=model.provider.model,
                 only=args.only,
+                repeat=args.repeat,
                 progress=lambda line: print(line, file=sys.stderr, flush=True),
             )
-    print(board)
+    print(board if args.repeat == 1 else _markdown(args, results, model.provider))
+    if args.report:
+        args.report.write_text(_markdown(args, results, model.provider), encoding="utf-8")
     if args.json:
         args.json.write_text(
             json.dumps(
