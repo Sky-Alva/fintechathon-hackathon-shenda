@@ -303,6 +303,12 @@ def create_app(db_path: Path, admin_key: str) -> FastAPI:
                 )
             return {"session_id": session_id, "entries": audit.trail(conn, session_id)}
 
+    @admin.get("/audit/verify")
+    def verify_audit_chain() -> dict[str, Any]:
+        """Check the whole audit chain. Not an Operation: not in the catalogue."""
+        with db.transaction(db_path) as conn:
+            return audit.verify_chain(conn).model_dump()
+
     @admin.get("/sessions/{session_id}/safety-lock")
     def read_safety_lock(session_id: str) -> dict[str, Any]:
         with db.transaction(db_path) as conn:
