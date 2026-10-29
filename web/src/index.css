@@ -578,15 +578,28 @@ button.secondary {
 
 .composer {
   display: flex;
+  align-items: flex-end;
   gap: 8px;
   padding: 10px 12px 18px;
   background: var(--surface);
   border-top: 1px solid var(--border);
 }
 
-.composer input {
+.composer textarea {
   flex: 1;
+  min-width: 0;
+  font: inherit;
+  line-height: 1.4;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
   border-radius: 20px;
+  background: var(--surface);
+  color: inherit;
+  resize: none;
+  /* about 5 lines, then it scrolls vertically */
+  max-height: calc(5lh + 22px); /* + padding and border */
+  overflow-y: auto;
+  overflow-wrap: anywhere;
 }
 
 /* --- Presenter's demo control (not part of the Customer's chat) --- */
