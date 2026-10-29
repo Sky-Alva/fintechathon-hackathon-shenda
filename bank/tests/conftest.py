@@ -14,8 +14,13 @@ SEED_NOW = "2026-10-20T09:00:00+08:00"
 
 
 @pytest.fixture
-def client(tmp_path: Path) -> Iterator[TestClient]:
-    app = create_app(db_path=tmp_path / "bank.sqlite3", admin_key=ADMIN_KEY)
+def db_path(tmp_path: Path) -> Path:
+    return tmp_path / "bank.sqlite3"
+
+
+@pytest.fixture
+def client(db_path: Path) -> Iterator[TestClient]:
+    app = create_app(db_path=db_path, admin_key=ADMIN_KEY)
     with TestClient(app) as client:
         admin(client, "post", "/admin/reset")
         admin(client, "put", "/admin/clock", json={"now": SEED_NOW})
