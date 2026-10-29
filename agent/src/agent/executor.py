@@ -140,7 +140,7 @@ def failed(
 ) -> StepFailed:
     """The step didn't run: record the Bank's refusal and explain it by its reason."""
     results.append(StepResult(step.id, step.operation, step.input, None, refusal))
-    text = failures.explain(refusal.reason, language)
+    text = failures.explain(refusal, language)
     return StepFailed(
         step_id=step.id, operation=step.operation, text=text, **refusal.model_dump()
     )

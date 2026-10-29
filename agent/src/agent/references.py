@@ -39,6 +39,21 @@ class Reference:
     """Which one the Customer means, asked with those listed as options."""
 
 
+def unnamed(
+    kind: Reference, steps: list[PlanStep], catalogue: list[dict[str, Any]]
+) -> list[PlanStep]:
+    """The steps of an Operation that needs `kind.key` (by the catalogue) that name none
+    yet, waiting on a `kind.lookup` step or not."""
+    needs_one = {
+        op["name"] for op in catalogue if kind.key in op["input_schema"].get("required", [])
+    }
+    return [
+        step
+        for step in steps
+        if step.operation in needs_one and not isinstance(step.input.get(kind.key), str)
+    ]
+
+
 def made_up(
     kind: Reference,
     steps: list[PlanStep],

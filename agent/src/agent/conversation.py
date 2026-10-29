@@ -8,7 +8,7 @@ at its Plan card instead, and runs only when the Customer confirms it.
 import logging
 import secrets
 import threading
-from collections.abc import Callable, Generator, Iterator
+from collections.abc import Callable, Generator, Iterator, Mapping
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -16,6 +16,7 @@ from agent import (
     birthday,
     cards,
     charts,
+    failures,
     guard,
     notices,
     orders,
@@ -448,6 +449,24 @@ class Conversations:
         if failed is not None and not plan.steps:
             return  # nothing else reaches the goal: the answer already said what happened
         yield trace("intent", {"intent": plan.intent})
+        unnamed = {
+            step.id: kind.key
+            for kind in (cards.REFERENCE, subscriptions.REFERENCE)
+            for step in references.unnamed(kind, plan.steps, catalogue)
+        }
+        if unnamed:
+            # A card step with no card yet: before the cards are listed and the Customer
+            # is asked which one, the Bank checks the values the Customer did give.
+            try:
+                previewed = reviewer.review(
+                    planner.Plan(steps=[s for s in plan.steps if s.id in unnamed]), bank
+                )
+            except (BankRefused, BankUnavailable):
+                yield self._not_retrieved(conversation)
+                return
+            if (wrong := self._wrong_value(conversation, previewed.refusals, unnamed)) is not None:
+                yield wrong
+                return
         looked_up: list[StepResult] = []
         done = yield from self._complete(
             conversation, plan, catalogue, ask, looked_up, failed is not None
@@ -477,11 +496,37 @@ class Conversations:
                     kind, reviewed.steps, listed, catalogue, reviewed.refusals
                 )
             if made_up and listed:
-                # Even with the Bank's list the Planner names none it has: the Customer picks.
+                # Even with the Bank's list the Planner names none it has: the Customer picks,
+                # unless the Bank refuses a value the Customer gave anyway.
                 self._remember(conversation, looked_up)
-                yield self._clarify(conversation, references.which_one(kind, listed, language))
+                wrong = self._wrong_value(
+                    conversation,
+                    {s.id: r for s in made_up if (r := reviewed.refusals.get(s.id)) is not None},
+                    {s.id: kind.key for s in made_up},
+                )
+                yield wrong or self._clarify(
+                    conversation, references.which_one(kind, listed, language)
+                )
                 return
         yield from self._propose(conversation, reviewed, looked_up, catalogue, plan.note)
+
+    def _wrong_value(
+        self,
+        conversation: Conversation,
+        refused: Mapping[str, BankRefusal],
+        keys: Mapping[str, str],
+    ) -> Answer | None:
+        """The answer when the Bank's tier preview refused a value the Customer gave in a
+        step (a Card Limit of 0) that doesn't name its card or Subscription yet: what is
+        wrong with it, in place of asking which one. None if it refused no such value;
+        keys are the input naming each step's card or Subscription, by step ID."""
+        language = customer_language(conversation.history)
+        for step_id, refusal in refused.items():
+            text = failures.wrong_values(refusal, language, ignore={keys.get(step_id, "")})
+            if text is not None:
+                conversation.history.append({"role": "assistant", "content": text})
+                return Answer(text=text)
+        return None
 
     def _complete(
         self,
@@ -1302,7 +1347,11 @@ class Conversations:
             written = responder.Written(reported, quotes_bank=True)
         else:
             written = responder.answer(
-                self.model, conversation.history, results, conversation.bank_results
+                self.model,
+                conversation.history,
+                results,
+                conversation.bank_results,
+                queries=self._queries(conversation),
             )
         # The outgoing check: nothing that looks like a full card number or a code goes
         # out, even when a Bank result contained it.
@@ -1314,6 +1363,16 @@ class Conversations:
             else {"role": "assistant", "content": text}
         )
         return Answer(text=text)
+
+    @staticmethod
+    def _queries(conversation: Conversation) -> set[str] | None:
+        """The Operations that only look something up (the catalogue fixes them as Green);
+        None if the Bank can't say."""
+        try:
+            catalogue = conversation.bank.catalogue()
+        except (BankRefused, BankUnavailable):
+            return None
+        return {op["name"] for op in catalogue if op["tier"] == {"kind": "fixed", "tier": "green"}}
 
     def _noticed(
         self, conversation: Conversation, note: str, looked_up: list[StepResult]
