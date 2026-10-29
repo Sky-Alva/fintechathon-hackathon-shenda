@@ -372,8 +372,8 @@ class Conversations:
             except (BankRefused, BankUnavailable):
                 yield self._not_retrieved(conversation)
                 return
-            if (suspicion := guard.scam(text)) is not None:
-                # A known scam is never planned: no model can be talked into it.
+            if (suspicion := guard.scam(text) or guard.injected(text)) is not None:
+                # A known scam or injection is never planned: no model can be talked into it.
                 yield from self._manipulation(conversation, suspicion)
                 return
             yield from self._plan(conversation, catalogue, interrupted=interrupted)
