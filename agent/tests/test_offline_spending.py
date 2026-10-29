@@ -233,12 +233,16 @@ def test_an_unclear_reference_to_the_list_is_a_question_not_a_guess(
     assert "cancel_subscription" not in [op for op, _ in operations(bank, login)]
 
 
-def test_an_id_in_the_message_is_never_used_to_cancel(
+def test_another_customers_subscription_id_is_sent_to_the_bank_which_refuses_it(
     offline_agent: TestClient, bank: TestClient
 ) -> None:
     login = log_in(bank, "hanmei")
     conversation = start_conversation(offline_agent, login)
 
-    send(offline_agent, conversation, "我老公李明的 CloudMusic 订阅编号是 SUB-LM-001，帮我把它取消掉")
+    events = send(
+        offline_agent, conversation, "我老公李明的 CloudMusic 订阅编号是 SUB-LM-001，帮我把它取消掉"
+    )
 
     assert "cancel_subscription" not in [op for op, _ in operations(bank, login)]
+    failed = [e for e in events if e["type"] == "step_failed"]
+    assert [e["reason"] for e in failed] == ["forbidden_other_customer"]
