@@ -632,3 +632,34 @@ def test_when_the_bank_refuses_the_tier_preview_only_the_paused_step_is_covered(
     covered = Conversations._covered(conversation, ReviewedPlan(steps=steps))  # type: ignore[arg-type]
 
     assert [s.id for s in covered] == ["s1"]
+
+
+# --- A first payment to a new Payee is Red ------------------------------------------
+
+
+def test_a_large_first_payment_to_a_new_payee_shows_why_it_is_red(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    model.script(plan(step("s1", "transfer", {"payee_id": "PAY-LM-005", "amount": "600.00"})))
+    conversation = start_conversation(agent, log_in(bank, "liming"))
+
+    events = shown(send(agent, conversation, "给陈静转600"))
+
+    proposed = events[0]
+    assert [(s["id"], s["tier"]) for s in proposed["steps"]] == [("s1", "red")]
+    [warning] = proposed["warnings"]
+    assert (warning["step_id"], warning["reason"]) == ("s1", "first_time_payee")
+    assert "首次" in warning["text"]
+
+
+def test_the_first_payment_reason_is_in_the_customers_language(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    model.script(plan(step("s1", "transfer", {"payee_id": "PAY-LM-005", "amount": "600.00"})))
+    conversation = start_conversation(agent, log_in(bank, "liming"))
+
+    events = shown(send(agent, conversation, "Send 600 yuan to Chen Jing"))
+
+    [warning] = events[0]["warnings"]
+    assert warning["reason"] == "first_time_payee"
+    assert "first transfer to this Payee" in warning["text"]

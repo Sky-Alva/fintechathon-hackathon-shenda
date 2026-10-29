@@ -87,7 +87,7 @@ export type InjectionWarning = {
 // Why a Red step needs Strong Verification, in the Customer's language (#37).
 export type PlanWarning = {
   step_id: string
-  reason: 'daily_transfer_total' | 'strong_verification'
+  reason: 'daily_transfer_total' | 'strong_verification' | 'first_time_payee'
   text: string
 }
 // Who a step pays, as the Bank's Payee lookup found them (#39); `is_new`: never paid before.

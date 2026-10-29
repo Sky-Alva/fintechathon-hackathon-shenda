@@ -46,8 +46,8 @@ The two #6 demos:
 | Tier | Operations |
 |------|------------|
 | 🟢 Green | All queries, bill reports, Unusual Transaction flags, renewal reminders |
-| 🟡 Yellow | Transfers while the Daily Transfer Total stays ≤ ¥1,000; Split-bill Request; cancel Subscription; apply for virtual card; lower Card Limit; Card Lock; reserve / release Reserved Funds |
-| 🔴 Red | Transfers taking the Daily Transfer Total above ¥1,000; raise Card Limit; lift Card Lock; Loss Report / withdraw Loss Report; password change |
+| 🟡 Yellow | Transfers while the Daily Transfer Total stays ≤ ¥1,000 (and, to a Payee never paid before, ≤ ¥500); Split-bill Request; cancel Subscription; apply for virtual card; lower Card Limit; Card Lock; reserve / release Reserved Funds |
+| 🔴 Red | Transfers taking the Daily Transfer Total above ¥1,000; transfers over ¥500 to a First-time Payee (also when scheduled, and again when they run); raise Card Limit; lift Card Lock; Loss Report / withdraw Loss Report; password change |
 
 Rules:
 - A **Scheduled Transfer** gets its tier when it's scheduled, counts toward the total of the day it runs, and is re-checked when it runs.
