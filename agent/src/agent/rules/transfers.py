@@ -273,6 +273,11 @@ def chosen(request: Request) -> str | None:
     return None
 
 
+def names_of(payee: dict[str, Any]) -> set[str]:
+    """The names a Payee goes by (its name and nickname), lower-cased, for matching a term."""
+    return {str(payee.get("name", "")).lower(), str(payee.get("nickname") or "").lower()}
+
+
 def known_payee(request: Request, term: str | None, pronoun: bool = False) -> str | None:
     """The ID of the Payee the Bank's lookup has already found for `term`, if exactly one
     fits; the Customer's pick settles a name that matched several."""
@@ -284,15 +289,14 @@ def known_payee(request: Request, term: str | None, pronoun: bool = False) -> st
         payee = known[pick]
         if pronoun:
             return pick
-        names = {str(payee.get("name", "")).lower(), str(payee.get("nickname") or "").lower()}
-        if term is not None and term.lower() in names:
+        if term is not None and term.lower() in names_of(payee):
             return pick
     if term is None:
         return None
     fits = [
         p["payee_id"]
         for p in request.payees
-        if term.lower() in {str(p.get("name", "")).lower(), str(p.get("nickname") or "").lower()}
+        if term.lower() in names_of(p)
     ]
     return fits[0] if len(fits) == 1 else None
 

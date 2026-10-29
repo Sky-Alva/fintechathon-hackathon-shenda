@@ -93,6 +93,8 @@ def tier_for_outgoing(amount: Decimal, ctx: OperationContext, payee_id: str | No
 def raised_for_first_time_payee(
     tier: Tier, ctx: OperationContext, payee_id: str | None, amount: Decimal
 ) -> Tier:
+    """`tier` raised to Red if `amount` goes to a First-time Payee (see `is_first_time_payee`);
+    otherwise unchanged. The rule only ever raises a tier."""
     if payee_id is not None and is_first_time_payee(ctx, payee_id, amount):
         return Tier.RED
     return tier
