@@ -139,14 +139,6 @@ class BankSession:
         )["output"]
         return output
 
-    def latest_lock(self) -> dict[str, Any] | None:
-        """The session's latest Safety Lock as the Bank's audit trail recorded it
-        (`{trigger, locked_until}`), for when the Bank has said the session is
-        locked without saying until when. Traced: it decides the Safety Lock notice."""
-        output = self._send("post", "/operations/read_audit_trail", json={"input": {}})["output"]
-        locks = [entry["detail"] for entry in output["entries"] if entry["event"] == "safety_lock"]
-        return locks[-1] if locks else None
-
     def take_exchanges(self) -> list[BankExchange]:
         """The traced calls since the last time, oldest first."""
         taken = list(self.exchanges)

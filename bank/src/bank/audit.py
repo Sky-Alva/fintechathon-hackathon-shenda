@@ -36,7 +36,7 @@ CREATE TABLE audit_log (
     outcome TEXT NOT NULL CHECK (outcome IN ('ok', 'refused')),
     reason TEXT,
     detail TEXT NOT NULL,
-    refusal_detail TEXT
+    caller_detail TEXT  -- what the session itself sees instead of `detail`, if not all of it
 );
 """
 
@@ -67,14 +67,15 @@ def record(
     tier: Tier | None,
     reason: RefusalReason | None,
     detail: dict[str, Any] | None = None,
-    refusal_detail: dict[str, Any] | None = None,
+    caller_detail: dict[str, Any] | None = None,
 ) -> None:
-    """`detail` is what Staff Members see; for a refusal, `refusal_detail` is what the
-    caller was told, which is all the session itself sees of it."""
+    """`detail` is what Staff Members see; `caller_detail` is all the session itself sees
+    of it: for a refusal, what the caller was told, and for a Safety Lock set by hand, the
+    lock without who set it or why."""
     conn.execute(
         "INSERT INTO audit_log"
         " (session_id, at, event, operation, input, tier, outcome, reason, detail,"
-        " refusal_detail)"
+        " caller_detail)"
         " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             session_id,
@@ -86,7 +87,9 @@ def record(
             "refused" if reason else "ok",
             reason.value if reason else None,
             json.dumps(detail or {}, ensure_ascii=False, default=str),
-            json.dumps(refusal_detail or {}, ensure_ascii=False, default=str) if reason else None,
+            json.dumps(caller_detail or {}, ensure_ascii=False, default=str)
+            if reason or caller_detail is not None
+            else None,
         ),
     )
 
@@ -96,16 +99,17 @@ def trail(
 ) -> list[dict[str, Any]]:
     """One session's entries in order: as a Staff Member sees them, or `as_caller`, with
     each refusal showing only what the caller was told (never e.g. which token a refused
-    one turned out to be) and no back-office identifiers (`BACK_OFFICE_IDS`)."""
+    one turned out to be), a lock set by hand without who set it or why, and no
+    back-office identifiers (`BACK_OFFICE_IDS`)."""
     rows = conn.execute(
         "SELECT * FROM audit_log WHERE session_id = ? ORDER BY entry_id", (session_id,)
     ).fetchall()
     entries = []
     for row in rows:
         entry = {**dict(row), "input": json.loads(row["input"])}
-        shown = row["refusal_detail"] if as_caller and row["outcome"] == "refused" else None
+        shown = row["caller_detail"] if as_caller else None
         entry["detail"] = json.loads(shown or row["detail"])
-        del entry["refusal_detail"]
+        del entry["caller_detail"]
         if as_caller:
             entry["input"] = _without_ids(entry["input"])
             entry["detail"] = _without_ids(entry["detail"])

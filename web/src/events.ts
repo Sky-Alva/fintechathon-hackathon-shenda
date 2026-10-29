@@ -150,7 +150,7 @@ export type VerificationRequested = {
 }
 export type SessionLocked = {
   type: 'session_locked'
-  trigger: 'wrong_codes' | 'reported_attempts' | 'red_operations'
+  trigger: 'wrong_codes' | 'reported_attempts' | 'red_operations' | 'staff'
   locked_until: string
   text: string
 }

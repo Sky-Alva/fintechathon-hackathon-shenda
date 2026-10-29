@@ -31,6 +31,7 @@ Demo logins: `liming` / `demo1234` and `hanmei` / `demo1234`. Admin calls need t
 | `POST /admin/clock/advance` `{minutes}` | admin | Move the Bank clock forward. |
 | `GET /admin/sessions/{session_id}/audit` | admin | Any session's full audit trail, in order, for the staff console. A session reads its own with the Green Operation `read_audit_trail`. |
 | `GET /admin/sessions/{session_id}/safety-lock` | admin | Whether the session is under a Safety Lock, why, and until when. |
+| `POST /admin/sessions/{session_id}/safety-lock` | admin | A Staff Member puts the session's Customer under a Safety Lock by hand, `{staff, reason?}` (audited). |
 | `DELETE /admin/sessions/{session_id}/safety-lock` | admin | A Staff Member lifts the session's Safety Lock (audited). |
 | `GET /admin/customers/{customer_id}/phone/messages` | admin | A Customer's simulated phone, for the staff console. |
 
