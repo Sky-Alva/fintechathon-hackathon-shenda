@@ -111,8 +111,17 @@ def request_verification(
     client: TestClient, headers: dict[str, str], operation: str, input: dict[str, Any]
 ) -> httpx.Response:
     """Ask the Bank for a Strong Verification challenge for one Red Operation."""
+    return request_verifications(client, headers, (operation, input))
+
+
+def request_verifications(
+    client: TestClient, headers: dict[str, str], *operations: tuple[str, dict[str, Any]]
+) -> httpx.Response:
+    """Ask the Bank for one Strong Verification challenge covering every (operation, input)."""
     response: httpx.Response = client.post(
-        "/verifications", headers=headers, json={"operation": operation, "input": input}
+        "/verifications",
+        headers=headers,
+        json={"operations": [{"operation": name, "input": input} for name, input in operations]},
     )
     return response
 
@@ -154,7 +163,7 @@ def verify(
     challenge_id = challenge.json()["challenge_id"]
     response = submit_code(client, phone, challenge_id, latest_code(client, phone))
     assert response.status_code == 200, response.text
-    token: str = response.json()["verification_token"]
+    token: str = response.json()["verifications"][0]["verification_token"]
     return token
 
 

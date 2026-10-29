@@ -54,7 +54,7 @@ def yellow_then_red_transfer(
     ).json()["challenge_id"]
     code = latest_code(client, phone)
     submit_code(client, phone, challenge_id, wrong_code(code))
-    verification = submit_code(client, phone, challenge_id, code).json()["verification_token"]
+    verification = submit_code(client, phone, challenge_id, code).json()["verifications"][0]["verification_token"]
     response = call(
         client, headers, "transfer", transfer(HUSBAND, "600.00"),
         verification_token=verification,
