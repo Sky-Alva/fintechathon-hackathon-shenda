@@ -83,6 +83,43 @@ def test_a_session_under_a_safety_lock_is_still_listed_so_staff_can_lift_it(
     assert [s["conversation_id"] for s in sessions] == [conversation]
 
 
+TO_MUM = {"payee_id": "PAY-LM-002", "amount": "200.00", "note": ""}
+STAFF_LOCK = {"staff": "王经理", "reason": "客户来电称手机丢失"}
+
+
+def test_after_a_staff_member_locks_the_session_a_transfer_gets_the_notice(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    model.script(plan(step("s1", "transfer", TO_MUM)))
+    login = log_in(bank, "liming")
+    conversation = start_conversation(agent, login)
+    admin(bank, "post", f"/admin/sessions/{login.session_id}/safety-lock", json=STAFF_LOCK)
+
+    events = send(agent, conversation, "给老妈转200")
+
+    assert event_types(events) == ["session_locked"]
+    [locked] = [e for e in events if e["type"] == "session_locked"]
+    assert (locked["trigger"], locked["locked_until"]) == ("staff", "2026-10-20T09:30:00+08:00")
+    assert "银行工作人员已为您的账户设置安全锁定" in locked["text"]
+    assert "安全锁定" in locked["text"] and "查询" in locked["text"]
+    assert "王经理" not in locked["text"] and "手机丢失" not in locked["text"]
+
+
+def test_a_lock_set_by_staff_is_told_in_english_to_an_english_speaking_customer(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    model.script(plan(step("s1", "transfer", TO_MUM)))
+    login = log_in(bank, "liming")
+    conversation = start_conversation(agent, login)
+    admin(bank, "post", f"/admin/sessions/{login.session_id}/safety-lock", json=STAFF_LOCK)
+
+    events = send(agent, conversation, "Send 200 to my mum please")
+
+    [locked] = [e for e in events if e["type"] == "session_locked"]
+    assert "the Bank's staff have put your account under a Safety Lock" in locked["text"]
+    assert "王经理" not in locked["text"]
+
+
 def test_a_conversation_needs_a_session_the_bank_knows(
     agent: TestClient, bank: TestClient
 ) -> None:

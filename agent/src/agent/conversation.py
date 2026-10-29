@@ -956,8 +956,9 @@ class Conversations:
         self, conversation: Conversation, suspicion: guard.Suspicion
     ) -> tuple[bool, dict[str, Any] | None]:
         """Report a suspected attempt to the Bank, quoting the text that raised it: whether
-        the Bank accepted the report, and the Safety Lock it placed if this report locked
-        the session (the second in a session does)."""
+        the Bank accepted the report, and the Safety Lock holding the Customer if one does:
+        the one this report placed (the second for a Customer does), or one set before it,
+        in another of their sessions or by a Staff Member."""
         try:
             report = conversation.bank.call(
                 "report_suspected_attempt",
@@ -965,12 +966,10 @@ class Conversations:
             )
         except (BankRefused, BankUnavailable):
             return False, None
-        if not report["output"]["session_locked"]:
+        output = report["output"]
+        if not output["session_locked"]:
             return True, None
-        try:  # the Bank's trail says until when
-            return True, conversation.bank.latest_lock()
-        except (BankRefused, BankUnavailable):
-            return True, None
+        return True, {"trigger": output["trigger"], "locked_until": output["locked_until"]}
 
     def _screen(
         self, conversation: Conversation, results: list[StepResult]

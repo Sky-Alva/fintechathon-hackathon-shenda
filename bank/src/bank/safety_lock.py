@@ -8,7 +8,8 @@ the lock; this module never refuses anything itself. Each signal and lock also k
 session it came from, for the audit trail and the staff console. A lock ends after 30
 Bank-clock minutes or when a Staff Member lifts it. Signals while a lock holds are not
 counted, and a lock clears the signals of the trigger that tripped it; the others still
-count toward the next lock.
+count toward the next lock. A Staff Member can also lock a Customer by hand, from any of
+their sessions, for the same 30 minutes.
 """
 
 import dataclasses
@@ -37,6 +38,7 @@ class Trigger(StrEnum):
     WRONG_CODES = "wrong_codes"
     REPORTED_ATTEMPTS = "reported_attempts"
     RED_OPERATIONS = "red_operations"
+    STAFF = "staff"  # set by hand from the staff console; no signals to clear
 
 
 @dataclass(frozen=True)
@@ -71,7 +73,9 @@ CREATE TABLE safety_locks (
     locked_at TEXT NOT NULL,
     expires_at TEXT NOT NULL,
     lifted_at TEXT,
-    lifted_by TEXT
+    lifted_by TEXT,
+    set_by TEXT,  -- the Staff Member, for a lock set by hand
+    reason TEXT  -- theirs, if they gave one, never shown to the Customer
 );
 """
 
@@ -85,6 +89,8 @@ class Lock:
     locked_at: datetime
     expires_at: datetime
     lifted_at: datetime | None = None
+    set_by: str | None = None  # the Staff Member, for a lock set by hand
+    reason: str | None = None
 
     def ended_at(self) -> datetime:
         return self.lifted_at or self.expires_at
@@ -99,6 +105,8 @@ def _lock(row: sqlite3.Row) -> Lock:
         locked_at=datetime.fromisoformat(row["locked_at"]),
         expires_at=datetime.fromisoformat(row["expires_at"]),
         lifted_at=datetime.fromisoformat(row["lifted_at"]) if row["lifted_at"] else None,
+        set_by=row["set_by"],
+        reason=row["reason"],
     )
 
 
@@ -176,6 +184,32 @@ def trip_if_due(
     return lock
 
 
+def place(
+    conn: sqlite3.Connection,
+    customer_id: str,
+    session_id: str,
+    now: datetime,
+    by: str,
+    reason: str | None,
+) -> Lock | None:
+    """A Staff Member locks the Customer by hand from `session_id`; None if they are
+    already locked."""
+    if active(conn, customer_id, now) is not None:
+        return None
+    lock = Lock(
+        f"LCK-{secrets.token_hex(6)}", session_id, Trigger.STAFF, 0, now, now + LOCK_DURATION,
+        set_by=by, reason=reason,
+    )
+    conn.execute(
+        "INSERT INTO safety_locks (lock_id, customer_id, session_id, trigger,"
+        " last_signal_id, locked_at, expires_at, set_by, reason)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (lock.lock_id, customer_id, session_id, lock.trigger.value, 0, now.isoformat(),
+         lock.expires_at.isoformat(), by, reason),
+    )
+    return lock
+
+
 def lift(conn: sqlite3.Connection, customer_id: str, now: datetime, by: str) -> Lock | None:
     """End the Customer's lock now; None if they aren't locked."""
     lock = active(conn, customer_id, now)
@@ -196,15 +230,24 @@ class ReportAttemptInput(BaseModel):
 
 class ReportAttemptOutput(BaseModel):
     session_locked: bool
+    trigger: Trigger | None = None
+    """The lock holding the Customer now, from this report or set before it, in any of
+    their sessions or by a Staff Member; with `locked_until`, None if not locked."""
+    locked_until: datetime | None = None
 
 
 def report_attempt(ctx: OperationContext, input: ReportAttemptInput) -> ReportAttemptOutput:
     record(ctx.conn, ctx.customer_id, ctx.session_id, Signal.REPORTED_ATTEMPT, ctx.now)
+    if (lock := active(ctx.conn, ctx.customer_id, ctx.now)) is not None:
+        return ReportAttemptOutput(
+            session_locked=True, trigger=lock.trigger, locked_until=lock.expires_at
+        )
     # When due, the gate trips the lock right after this call, in the same transaction.
-    locked = active(ctx.conn, ctx.customer_id, ctx.now) or due(
-        ctx.conn, ctx.customer_id, ctx.now
-    )
-    return ReportAttemptOutput(session_locked=bool(locked))
+    if (trigger := due(ctx.conn, ctx.customer_id, ctx.now)) is not None:
+        return ReportAttemptOutput(
+            session_locked=True, trigger=trigger, locked_until=ctx.now + LOCK_DURATION
+        )
+    return ReportAttemptOutput(session_locked=False)
 
 
 MODULE = BankModule(

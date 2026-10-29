@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from conftest import (
     BankLink,
+    admin,
     audit_trail,
     bank_audit,
     event_types,
@@ -188,6 +189,36 @@ def test_logging_in_again_gets_the_notice_instead_of_a_plan_card(
     assert events[0]["locked_until"] == "2026-10-20T09:30:00+08:00"
     assert "安全锁定" in events[0]["text"]
     assert "transfer" not in operations_run(bank, login)
+
+
+def test_a_scam_in_another_session_of_a_locked_customer_gets_the_notice_that_turn(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    locked = start_conversation(agent, log_in(bank, "liming"))
+    send(agent, locked, POLICE_SCAM)
+    send(agent, locked, SECOND_SCAM)  # locks the Customer, from this session
+    other = start_conversation(agent, log_in(bank, "liming"))
+
+    events = shown(send(agent, other, POLICE_SCAM))
+
+    assert event_types(events) == ["refusal", "session_locked"]
+    assert events[-1]["trigger"] == "reported_attempts"
+    assert events[-1]["locked_until"] == "2026-10-20T09:30:00+08:00"
+
+
+def test_a_scam_after_a_staff_member_locked_the_customer_gets_the_notice_that_turn(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    login = log_in(bank, "liming")
+    conversation = start_conversation(agent, login)
+    admin(
+        bank, "post", f"/admin/sessions/{login.session_id}/safety-lock", json={"staff": "王经理"}
+    )
+
+    events = shown(send(agent, conversation, POLICE_SCAM))
+
+    assert event_types(events) == ["refusal", "session_locked"]
+    assert events[-1]["trigger"] == "staff"
 
 
 # --- Scams in other words: the Planner recognises them and declines -----------------
