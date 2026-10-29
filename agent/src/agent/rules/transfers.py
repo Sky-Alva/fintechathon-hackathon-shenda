@@ -7,6 +7,7 @@ balance", a date that has passed, shares that don't add up) is a `Clarification`
 """
 
 import re
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -251,8 +252,6 @@ def parse(request: Request) -> Transfer:
 
 def _original_note(original: str, lowered: str) -> str | None:
     """The note as the Customer wrote it (the match was made on a lower-cased copy)."""
-    import unicodedata
-
     plain = unicodedata.normalize("NFKC", original)
     start = plain.lower().rfind(lowered.lower())
     return plain[start : start + len(lowered)] if start >= 0 else None

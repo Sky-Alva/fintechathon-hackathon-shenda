@@ -14,7 +14,7 @@ import re
 from decimal import Decimal
 from typing import Any
 
-from agent import untrusted
+from agent import guard, untrusted
 from agent.events import ClarificationOption, PlanStep
 from agent.language import Language
 from agent.planner import Clarification, Declined, Plan
@@ -128,7 +128,7 @@ def _resolve(request: Request, cards: list[dict[str, Any]], look_back: bool) -> 
     texts = [request.matching]
     if look_back:  # "found it, withdraw the report": the card talked about before
         texts += [
-            slots.normalise(str(m["content"]))
+            guard.normalise(str(m["content"]))
             for m in reversed(request.history[:-1])
             if untrusted.from_customer(m)
         ]

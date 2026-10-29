@@ -9,7 +9,7 @@ Bank.
 How to add an intent (each Scenario has its own module here):
 
 1. Create `agent/rules/<scenario>.py` with `INTENTS: list[Intent]` (see `core.Intent`):
-   trigger patterns (Chinese and English, matched on the lower-cased, half-width message),
+   trigger patterns (Chinese and English, matched on `guard.normalise` of the message: half-width, disguises undone, lower-cased),
    optional `excludes`, `plan(request)` for the first stage and, if later steps need the
    Bank's results, `complete(request)` for the second. Build steps with `PlanStep`.
 2. Extract slots with `rules.slots` (`amounts`, `chinese_number`, ...). Resolve Payees,
@@ -28,7 +28,7 @@ from agent import guard, planner, untrusted
 from agent.events import ClarificationOption
 from agent.language import Language, customer_language
 from agent.rules import balance, cards, orchestration, safety, spending, transfers
-from agent.rules.core import Intent, Reply, Request, matching
+from agent.rules.core import Intent, Reply, Request
 
 log = logging.getLogger(__name__)
 
@@ -80,7 +80,7 @@ def make_plan(
     text = latest_message(history)
     request = Request(
         text=text,
-        matching=matching(text),
+        matching=guard.normalise(text),
         language=language,
         history=history,
         catalogue=catalogue,
