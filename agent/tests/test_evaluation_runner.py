@@ -21,6 +21,7 @@ from evaluation import (
     load_task,
     load_tasks,
     matches,
+    report,
     run_task,
     scoreboard,
 )
@@ -766,3 +767,111 @@ def test_the_offline_provider_runs_a_task_with_no_key_and_no_model(
     assert status == 0
     output = capsys.readouterr().out
     assert "reference-901" in output and "offline" in output and "FAIL" not in output
+
+
+# --- Repeats and the Markdown report ----------------------------------------------------
+
+BALANCE_PLAN = [plan(step("s1", "query_balance")), say("您的活期账户余额为 1180.00 元。")]
+
+
+def script_two_passes_and_a_failure_then_three_passes(model: FakeModel) -> None:
+    model.script(
+        *BALANCE_PLAN,
+        *BALANCE_PLAN,
+        plan(step("s1", "list_cards")),
+        say("您有三张卡。"),
+        *BALANCE_PLAN,
+        *BALANCE_PLAN,
+        *BALANCE_PLAN,
+    )
+
+
+def test_repeat_runs_each_task_that_many_times(
+    agent: TestClient, bank: TestClient, model: FakeModel, tmp_path: Path
+) -> None:
+    write_task(tmp_path, id="cards-901")
+    write_task(tmp_path)
+    script_two_passes_and_a_failure_then_three_passes(model)
+    progress: list[str] = []
+
+    results, _ = evaluate(
+        tmp_path,
+        agent=agent,
+        bank=bank,
+        admin_key=ADMIN_KEY,
+        model="fake",
+        repeat=3,
+        progress=progress.append,
+    )
+
+    assert [(r.task.id, r.passed) for r in results] == [
+        ("cards-901", True),
+        ("cards-901", True),
+        ("cards-901", False),
+        ("reference-901", True),
+        ("reference-901", True),
+        ("reference-901", True),
+    ]
+    assert progress[0] == "cards-901 (1/3): pass"
+
+
+def test_the_report_has_the_header_per_task_counts_totals_and_failures(
+    agent: TestClient, bank: TestClient, model: FakeModel, tmp_path: Path
+) -> None:
+    write_task(tmp_path, id="cards-901", category="attack", attack="prompt_injection")
+    write_task(tmp_path)
+    script_two_passes_and_a_failure_then_three_passes(model)
+    results, _ = evaluate(
+        tmp_path, agent=agent, bank=bank, admin_key=ADMIN_KEY, model="fake", repeat=3
+    )
+
+    text = report(results, model="fake (offline)", repeat=3, date="2026-10-29", commit="abc1234")
+
+    lines = text.splitlines()
+    assert lines[0] == "# Evaluation report"
+    assert "- Model: fake (offline)" in lines
+    assert "- Date: 2026-10-29" in lines
+    assert "- Commit: abc1234" in lines
+    assert "- Runs per task: 3" in lines
+    assert "| cards-901 | attack/prompt_injection | 2/3 |" in lines
+    assert "| reference-901 | normal | 3/3 |" in lines
+    assert "| cards | 2/3 |" in lines
+    assert "| reference | 3/3 |" in lines
+    assert "| attack | 2/3 |" in lines
+    assert "| normal | 3/3 |" in lines
+    assert "| prompt_injection | 2/3 |" in lines
+    for heading in ("## By Scenario", "## By category", "## By attack type", "## Failures"):
+        assert heading in lines
+    failures = text.split("## Failures")[1]
+    assert "### cards-901 (1 of 3 runs failed)" in failures
+    assert "query_balance" in failures
+    assert "reference-901" not in failures
+
+
+def test_without_repeat_or_report_the_output_is_todays_scoreboard(
+    agent: TestClient, bank: TestClient, model: FakeModel, tmp_path: Path
+) -> None:
+    write_task(tmp_path)
+    model.script(*BALANCE_PLAN)
+
+    results, board = evaluate(tmp_path, agent=agent, bank=bank, admin_key=ADMIN_KEY, model="fake")
+
+    assert len(results) == 1
+    assert board == scoreboard(results, model="fake")
+    assert board.splitlines()[0] == "Scoreboard: fake, 1/1 tasks passed"
+
+
+def test_an_extra_section_goes_into_the_report_before_the_failures() -> None:
+    text = report([], model="m", repeat=1, date="d", commit="c", extra_sections=["## Extra\n\nx"])
+
+    assert text.index("## Extra") < text.index("## Failures")
+
+
+def test_the_command_line_help_describes_repeat_and_report(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit):
+        main(["--help"])
+
+    out = capsys.readouterr().out
+    assert "--repeat" in out and "--report" in out

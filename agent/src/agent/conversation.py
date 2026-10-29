@@ -664,7 +664,10 @@ class Conversations:
             steps=reviewed.steps,
             refusals=reviewed.card_refusals,
             warnings=notices.red_warnings(
-                reviewed.steps, catalogue, customer_language(conversation.history)
+                reviewed.steps,
+                catalogue,
+                customer_language(conversation.history),
+                reviewed.reasons,
             ),
             payees=payees.on_card(
                 reviewed.steps, payees.known([*conversation.bank_results, *looked_up])

@@ -153,6 +153,7 @@ function AuditTable({ entries }: { entries: AuditEntry[] }) {
           <th>操作</th>
           <th>等级</th>
           <th>结果</th>
+          <th>哈希</th>
         </tr>
       </thead>
       <tbody>
@@ -166,6 +167,9 @@ function AuditTable({ entries }: { entries: AuditEntry[] }) {
             </td>
             <td className={entry.outcome === 'refused' ? 'refused' : ''}>
               {entry.outcome === 'refused' ? entry.reason : 'ok'}
+            </td>
+            <td className="hash" title={entry.hash}>
+              {entry.hash.slice(0, 8)}
             </td>
           </tr>
         ))}
