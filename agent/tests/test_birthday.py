@@ -343,9 +343,9 @@ def test_the_task_spending_the_reserved_funds_elsewhere_passes(
     agent: TestClient, bank: TestClient, model: FakeModel
 ) -> None:
     model.script(
-        *birthday_plan()[1:],  # asked directly: no look-ups
-        say("已预留 1000.00 元，并下单鲜花和蛋糕。"),
-        plan_with_note(step("s1", "transfer", {"payee_id": "PAY-LM-005", "amount": "1000.00"})),
+        plan(step("s1", "reserve_funds", GIFT)),  # asked plainly: just the reservation
+        say("已预留 1000.00 元。"),
+        plan(step("s1", "transfer", {"payee_id": "PAY-LM-005", "amount": "1000.00"})),
         say("转账未能执行：账户可用余额不足。"),
     )
 
