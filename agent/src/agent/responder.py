@@ -104,6 +104,14 @@ NOT_IN_AN_ID = r"(?<![A-Za-z0-9_-])"
 CARD_ID = re.compile(rf"{NOT_IN_AN_ID}CARD-[A-Z0-9]+(?:-[A-Z0-9]+)*")
 BANK_DATA_BLOCK = re.compile(r"<bank_data>.*?</bank_data>\s*", re.DOTALL | re.IGNORECASE)
 BANK_DATA_TAG = re.compile(r"</?bank_data>\s*", re.IGNORECASE)
+LOCK_ID = re.compile(rf"{NOT_IN_AN_ID}LCK-[A-Za-z0-9]*")
+STEP_ID = re.compile(
+    r"""["'`]s\d+["'`]|(?:(?<![A-Za-z])steps?\s+|步骤\s*)s\d+(?![A-Za-z0-9_-])""", re.IGNORECASE
+)
+"""A step ID as the model would write it out: quoted, or after "step" / "步骤". A bare s2 in
+prose is not one."""
+STEP_ID_PAIR = re.compile(r'"step_id"\s*:\s*"[^"]*"\s*,?\s*')
+JSON_KEY = re.compile(r'"(step_id|operation|refusal|reversal)"\s*:')
 INTERNALS = [
     Internal(re.compile(r"</?bank_data", re.IGNORECASE), "<bank_data> 块 / a <bank_data> block"),
     Internal(
@@ -111,8 +119,8 @@ INTERNALS = [
         "银行结果的 JSON / a Bank result as JSON",
     ),
     Internal(CARD_ID, "卡的银行内部编号 / a card's Bank ID"),
-    Internal(re.compile(rf"{NOT_IN_AN_ID}s\d+(?![A-Za-z0-9_-])"), "步骤编号 / a step ID"),
-    Internal(re.compile(rf"{NOT_IN_AN_ID}LCK-"), "安全锁编号 / a Safety Lock ID"),
+    Internal(STEP_ID, "步骤编号 / a step ID"),
+    Internal(LOCK_ID, "安全锁编号 / a Safety Lock ID"),
 ]
 """What a draft must never contain, checked in order; one more is one more entry."""
 
@@ -216,8 +224,9 @@ def raw(
 
 def for_channel(text: str, cards: dict[str, Card], language: Language) -> str:
     """The answer as it may reach the Channel, whichever way it was written: no
-    `<bank_data>` block, and each card named by its last four digits (`cards`, those the
-    Bank listed) instead of its Bank ID."""
+    `<bank_data>` block, no Safety Lock ID, no Bank JSON key (`"refusal":` becomes
+    `refusal:`; a `step_id` pair goes), and each card named by its last four digits
+    (`cards`, those the Bank listed) instead of its Bank ID."""
     text = BANK_DATA_TAG.sub("", BANK_DATA_BLOCK.sub("", text)).strip()
 
     def name(match: re.Match[str]) -> str:
@@ -226,4 +235,5 @@ def for_channel(text: str, cards: dict[str, Card], language: Language) -> str:
             return A_CARD[language]
         return CARD_ENDING[language].format(last4=card.last4)
 
-    return CARD_ID.sub(name, text)
+    text = LOCK_ID.sub("", STEP_ID_PAIR.sub("", CARD_ID.sub(name, text)))
+    return JSON_KEY.sub(r"\1:", text)
