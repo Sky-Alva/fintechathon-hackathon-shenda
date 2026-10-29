@@ -26,9 +26,10 @@ Demo logins: `liming` / `demo1234` and `hanmei` / `demo1234`. Admin calls need t
 | `POST /verifications/{challenge_id}` `{code}` | `Authorization: Bearer <phone_token>` | Answer the challenge from the simulated phone. The right code returns one verification token per Operation. |
 | `GET /phone/messages` | `Authorization: Bearer <phone_token>` | The Customer's simulated phone (SMS inbox). The session token can neither read it nor answer a challenge. |
 | `GET /clock` | anyone | Read the Bank clock. |
-| `POST /admin/reset` | admin | Restore seed data (also ends every session and clears the audit log). |
+| `POST /admin/reset` | admin | Restore seed data (also ends every session and clears the audit log, which starts a fresh hash chain). |
 | `PUT /admin/clock` `{now}` | admin | Set the Bank clock. |
 | `POST /admin/clock/advance` `{minutes}` | admin | Move the Bank clock forward. |
+| `GET /admin/audit/verify` | admin | Check the audit hash chain, `{ok, entries_checked, first_broken_entry_id}`. Not an Operation. |
 | `GET /admin/sessions/{session_id}/audit` | admin | Any session's full audit trail, in order, for the staff console. A session reads its own with the Green Operation `read_audit_trail`. |
 | `GET /admin/sessions/{session_id}/safety-lock` | admin | Whether the session's Customer is under a Safety Lock, why, and until when. |
 | `POST /admin/sessions/{session_id}/safety-lock` | admin | A Staff Member puts the session's Customer under a Safety Lock by hand, in every session of theirs, `{staff, reason?}` (audited). |
@@ -95,3 +96,7 @@ python -m venv .venv && .venv/bin/pip install -e '.[dev]'
 Tests call the HTTP API only (see `tests/conftest.py`): every test gets a freshly reset Bank with the clock fixed at the seed time, logs in with `login(...)`, calls Operations with `call(...)` and checks responses and state as the Agent would see them. Never import internal functions or read tables in a test. Name each test after a Customer-visible rule.
 
 Scripted test tasks for the Agent's evaluation runner are a separate thing: see [docs/scripted-test-tasks.md](../docs/scripted-test-tasks.md).
+
+## Audit hash chain
+
+The audit log is one hash chain for the whole Bank. Each entry stores `prev_hash` (the previous entry's `hash`; a fixed genesis value of 64 zeros for the first) and `hash`, the SHA-256 of `prev_hash` followed by the canonical JSON (sorted keys, no whitespace) of every other stored column of the entry. An entry is chained in the same transaction as the call it records. `GET /admin/audit/verify` walks the log: an edited or inserted entry is reported as itself, a deleted one as the entry after it (`first_broken_entry_id`). Deleting the newest entries is not detectable, because nothing follows them. Session and admin audit views include each entry's `hash`. A reset starts a fresh chain.

@@ -88,6 +88,17 @@ export function conversationHistory(
   return agent(keys, `/staff/conversations/${encodeURIComponent(conversationId)}`)
 }
 
+export type ChainVerification = {
+  ok: boolean
+  entries_checked: number
+  first_broken_entry_id: number | null
+}
+
+/** Check the Bank's whole audit hash chain. */
+export function verifyAuditChain(keys: StaffKeys): Promise<ChainVerification> {
+  return bankAdmin(keys, '/audit/verify')
+}
+
 export async function auditTrail(keys: StaffKeys, sessionId: string): Promise<AuditEntry[]> {
   return (await bankAdmin<{ entries: AuditEntry[] }>(keys, `/sessions/${sessionId}/audit`))
     .entries
