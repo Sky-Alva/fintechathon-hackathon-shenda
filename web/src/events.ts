@@ -216,6 +216,7 @@ export type AuditEntry = {
   outcome: 'ok' | 'refused'
   reason: string | null
   detail: Record<string, unknown>
+  hash: string // SHA-256 hash chain; shown shortened in the trace panel
 }
 export type Declined =
   | { reason: 'out_of_scope' | 'secret'; can_do: string[] }
