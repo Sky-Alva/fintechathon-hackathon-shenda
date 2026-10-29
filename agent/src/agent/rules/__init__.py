@@ -26,7 +26,7 @@ from typing import Any
 from agent import guard, planner, untrusted
 from agent.events import ClarificationOption
 from agent.language import Language, customer_language
-from agent.rules import balance, cards, orchestration, safety, spending
+from agent.rules import balance, cards, orchestration, safety, spending, transfers
 from agent.rules.core import Intent, Reply, Request, matching
 
 log = logging.getLogger(__name__)
@@ -37,6 +37,7 @@ MODULES: list[Sequence[Intent]] = [
     spending.INTENTS,
     safety.INTENTS,
     orchestration.INTENTS,
+    transfers.INTENTS,
 ]
 """Every module of intents, one per Scenario."""
 

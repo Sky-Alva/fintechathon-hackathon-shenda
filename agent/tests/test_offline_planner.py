@@ -102,7 +102,8 @@ def test_the_rules_take_over_the_second_stage_too(
     events = send(agent, conversation, "把余额的一半转给老妈")
 
     assert not any("没有执行任何操作" in a for a in answers(events))
-    assert next(e for e in events if e["type"] == "refusal")["reason"] == "out_of_scope"
+    # The rules don't work out "half" of anything: they ask for the amount.
+    assert any(e["type"] == "clarification_question" for e in events)
     assert "transfer" not in operations_run(bank, login)
 
 
