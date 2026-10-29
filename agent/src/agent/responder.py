@@ -7,14 +7,16 @@ result instead. So do they when the model can't be asked: what ran is never left
 
 When the turn's queries all failed (the Bank refused them or couldn't be reached), the
 answer may state no figures at all, not even earlier ones, which may be out of date: it
-says the information couldn't be retrieved.
+says the information couldn't be retrieved. A step that would have changed something says
+it couldn't be done, and why: the Bank's reason.
 """
 
 import json
+from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Any
 
-from agent import untrusted
+from agent import failures, untrusted
 from agent.executor import StepResult
 from agent.fact_check import Facts, unsupported
 from agent.language import Language, customer_language
@@ -31,13 +33,13 @@ Payees); never guess or make anything up.
 
 {untrusted}
 
-如果某个步骤失败（有 refusal，没有 output），就说明无法获取该信息，不要猜测。
-If a step failed (it has a `refusal` and no `output`), say that information couldn't be
-retrieved; never guess it.
+如果查询步骤失败（有 refusal，没有 output），就说明无法获取该信息，不要猜测；如果办理步骤失败，就说明没能办成。
+If a query step failed (it has a `refusal` and no `output`), say that information couldn't
+be retrieved; never guess it. If a step that changes something failed, say it couldn't be done.
 
-某个步骤被银行拒绝时，只用银行给出的原因（refusal 的 reason）说明，不要推测其他原因。
-When the Bank refused a step, give only the Bank's reason for it (the refusal's `reason`);
-never suggest any other cause.
+某个步骤被银行拒绝时，只用银行给出的原因（refusal 的 reason，以及 detail.errors 说明的哪个值有什么问题）说明，不要推测其他原因。
+When the Bank refused a step, give only the Bank's reason for it (the refusal's `reason`,
+and what its `detail.errors` say is wrong with which value); never suggest any other cause.
 
 永远不要向客户索要验证码或密码，也不要写出完整卡号（只写后四位）。
 Never ask the Customer for a verification code or a password: codes are typed into their
@@ -94,8 +96,10 @@ def answer(
     history: list[dict[str, Any]],
     results: list[StepResult],
     earlier: list[StepResult],
+    queries: Collection[str] | None = None,
 ) -> Written:
-    """The answer to this turn: `results` are this turn's, `earlier` the conversation's."""
+    """The answer to this turn: `results` are this turn's, `earlier` the conversation's.
+    `queries` are the Operations that only look something up (all of them if None)."""
     language = customer_language(history)
     retrieved = [result.output for result in results if result.output is not None]
     if results and not retrieved:
@@ -121,7 +125,7 @@ def answer(
             return Written(draft)
     except ModelUnavailable:
         pass
-    return Written(raw(results, language), quotes_bank=True)
+    return Written(raw(results, language, queries), quotes_bank=True)
 
 
 def check(draft: str, facts: Facts) -> str | None:
@@ -135,14 +139,26 @@ def check(draft: str, facts: Facts) -> str | None:
     return "\n".join(problems) or None
 
 
-def raw(results: list[StepResult], language: Language) -> str:
-    """The Bank's results, as the Bank returned them, and what couldn't be retrieved."""
-    if all(result.output is None for result in results):
+def raw(
+    results: list[StepResult], language: Language, queries: Collection[str] | None = None
+) -> str:
+    """The Bank's results, as the Bank returned them; what couldn't be retrieved; and what
+    couldn't be done, with the Bank's reason. `queries` are the Operations that only look
+    something up (all of them if None)."""
+
+    def missing(result: StepResult) -> str:
+        if result.refusal is None or queries is None or result.operation in queries:
+            return NOT_RETRIEVED[language]
+        return failures.not_done(result.refusal, language)
+
+    if not results:
         return NOT_RETRIEVED[language]
+    if all(result.output is None for result in results):
+        return "\n".join(dict.fromkeys(missing(result) for result in results))
     lines = [
         f"{result.operation}: {json.dumps(result.output, ensure_ascii=False)}"
         if result.output is not None
-        else f"{result.operation}: {NOT_RETRIEVED[language]}"
+        else f"{result.operation}: {missing(result)}"
         for result in results
     ]
     return "\n".join([RAW_RESULTS[language], *lines])
