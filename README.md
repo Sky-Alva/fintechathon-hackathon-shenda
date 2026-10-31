@@ -80,6 +80,8 @@ Docker Compose reads these from `.env` (see [.env.example](.env.example)); witho
 | `BANK_URL` | Agent | `http://localhost:8000` | Where the Agent finds the Bank (`http://bank:8000` in Docker). |
 | `BANK_DB_PATH` | Bank | `bank.sqlite3` | The Bank's SQLite file (`/data/bank.sqlite3` in Docker). |
 | `BANK_PORT`, `AGENT_PORT` | Bank, Agent | `8000`, `8001` | Ports to listen on. |
+| `PYTHON_IMAGE`, `NODE_IMAGE`, `NGINX_IMAGE` | Docker build | Docker Hub images | Base images, for building through a mirror ([troubleshooting](#troubleshooting)). |
+| `PIP_INDEX_URL`, `NPM_REGISTRY` | Docker build | PyPI, npm | Package registries, for building through a mirror. |
 
 Change the demo keys for anything shared beyond your own machine.
 
@@ -224,7 +226,17 @@ You can also mix the two: run the Bank and Agent with Docker (`docker compose up
 
 ### Troubleshooting
 
-**The build times out pulling images or packages.** The Dockerfiles use Docker Hub images and the default pip and npm registries, which can be slow or blocked on some networks, including in mainland China. Set a registry mirror (`registry-mirrors` in Docker's daemon settings) or a proxy for Docker. If only pip or npm times out, pass your proxy to the build, then start without rebuilding: `docker compose build --build-arg HTTP_PROXY=http://your-proxy:port --build-arg HTTPS_PROXY=http://your-proxy:port`, then `docker compose up`.
+**The build times out pulling images or packages.** By default the build uses Docker Hub and the default pip and npm registries, which can be slow or blocked on some networks, including in mainland China. To build through mirrors, uncomment the five mirror lines at the end of `.env` (from [.env.example](.env.example)) and run `docker compose up --build` again:
+
+```sh
+PYTHON_IMAGE=docker.m.daocloud.io/library/python:3.12-slim
+NODE_IMAGE=docker.m.daocloud.io/library/node:22-alpine
+NGINX_IMAGE=docker.m.daocloud.io/library/nginx:1.27-alpine
+PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+NPM_REGISTRY=https://registry.npmmirror.com
+```
+
+These are public mirrors we don't run. If one is down, replace it with any mirror of the same image or registry. The Docker commands under [Testing](#test-commands) name `python:3.12-slim` and `node:22-alpine` directly, so use the mirrored names there too.
 
 **Every message gets "抱歉，我暂时无法处理这个请求，没有执行任何操作。"** The Agent got no usable reply from a reachable model (a model that can't be reached at all is covered by the built-in rules, which answer what they recognise and decline the rest). Check that the API key is right. `docker compose logs agent` says which. After fixing `.env`, recreate the Agent so it reads the new value: `docker compose up -d --force-recreate agent`.
 
@@ -297,14 +309,14 @@ cd agent
 
 | Report | Passed | Normal | Clarification | Attack |
 |--------|--------|--------|---------------|--------|
-| [`deepseek-chat`, 3 runs per task](docs/evaluation/2026-10-30-deepseek-repeat3-baseline.md) | 193/210 runs | 112/126 | 12/15 | 69/69 |
-| [Offline, built-in rules](docs/evaluation/2026-10-30-offline.md) | 58/70 tasks | 37/42 | 5/5 | 16/23 |
+| [`deepseek-chat`, 3 runs per task](docs/evaluation/2026-10-31-deepseek-repeat3-baseline.md) | 197/210 runs | 116/126 | 12/15 | 69/69 |
+| [Offline, built-in rules](docs/evaluation/2026-10-31-offline.md) | 58/70 tasks | 37/42 | 5/5 | 16/23 |
 
-Attacks that succeeded, out of 69 runs of the 23 attack tasks: a prompt-only agent with the same model and Operations, 9; our Agent with the Bank's enforcement off, 18; our full system, 0 (offline rules: 0 of 23, with enforcement off 2 of 23). These are small counts of a model that varies, not a proof of security.
+Attacks that succeeded, out of 69 runs of the 23 attack tasks: a prompt-only agent with the same model and Operations, 6; our Agent with the Bank's enforcement off, 18; our full system, 0 (offline rules: 0 of 23, with enforcement off 2 of 23). These are small counts of a model that varies, not a proof of security.
 
 ### Known limitations
 
-- **Model variance.** In the committed `deepseek-chat` run, 5 tasks failed all three runs, all of them normal or clarification tasks where the model did not complete the request: `orchestration-001` and `transfers-014` (the birthday Plan), `transfers-003`, `transfers-011` and `transfers-017`.
+- **Model variance.** In the committed `deepseek-chat` run, 4 tasks failed all three runs, all of them normal or clarification tasks with no Bank refusal involved: `spending-002` (a date range ending on the Bank clock's date), `transfers-003` (asks where it should act), `transfers-011` (acts where it should ask) and `transfers-014` (the birthday Plan with a reservation). Which tasks fail changes between runs ([details](docs/evaluation/README.md#reading-the-real-model-report)).
 - **Rules mode.** 12 of the 70 tasks fail offline, including 7 attack tasks. In those, no attack succeeded, but the Bank's or the guard's record that the task requires wasn't produced.
 - **`qwen-plus`.** It's configured but has no committed evaluation.
 - **The Channel.** It only displays the Agent's events, so beyond the lint and build it is checked by hand.
