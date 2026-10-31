@@ -10,7 +10,7 @@ Agreed 2026-10-15. Requirements: [competition/banking-ai-agent.md](competition/b
 Customer ──► Web Channel (React, mobile-styled chat)
                  │   plan cards · Confirmation · Strong Verification · charts · decision trace
                  ▼
-             Agent (Python)  ── LLM: qwen-plus (DashScope), DeepSeek as backup, OpenAI-compatible
+             Agent (Python)  ── LLM: deepseek-chat, qwen-plus as alternative, OpenAI-compatible
                  │   intent → Plan (DAG) → execute → answer only from Bank results
                  ▼
              Bank (FastAPI + DB)   ◄── Staff console (sessions, audit trail, take over, unlock)
@@ -109,7 +109,7 @@ Detection logic (Unusual Transactions, Recurring Charges, unneeded Subscriptions
 
 ## 7. Tooling & workflow
 
-- LLM: `qwen-plus` on one shared team DashScope key in a git-ignored `.env`; DeepSeek configured as backup.
+- LLM: `deepseek-chat` by default, with the key in a git-ignored `.env`; `qwen-plus` on DashScope configured as the alternative.
 - Stack: Python + FastAPI (Bank, Agent), React (web Channel, staff console), Docker Compose.
 - GitHub repo `Sky-Alva/fintechathon-hackathon-shenda`:
   - one issue per deliverable, using the default triage labels;

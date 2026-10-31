@@ -7,11 +7,11 @@ The Banking AI Agent: it turns what the Customer says into a Plan, has the Bank 
 From the repo root, with the Bank and the web Channel:
 
 ```sh
-cp .env.example .env      # then fill in DASHSCOPE_API_KEY (or DEEPSEEK_API_KEY)
+cp .env.example .env      # then fill in DEEPSEEK_API_KEY (or DASHSCOPE_API_KEY)
 docker compose up --build # Channel: http://localhost:8080 · Agent: :8001 · Bank: :8000
 ```
 
-`AGENT_MODEL_PROVIDER` picks the model: `qwen` (`qwen-plus` on DashScope, the default), `deepseek` (`deepseek-chat`, the backup) or `offline` (no model, no key: the built-in rules Planner, `src/agent/rules/`, plans and the Responder quotes the Bank). Both providers go through one OpenAI-compatible client (`src/agent/model.py`). With a provider, the rules plan a turn when the model raises `ModelUnavailable` (no key included); a reachable model's unusable reply (`PlannerFailed`) is not replaced.
+`AGENT_MODEL_PROVIDER` picks the model: `deepseek` (`deepseek-chat`, the default), `qwen` (`qwen-plus` on DashScope) or `offline` (no model, no key: the built-in rules Planner, `src/agent/rules/`, plans and the Responder quotes the Bank). Both providers go through one OpenAI-compatible client (`src/agent/model.py`). With a provider, the rules plan a turn when the model raises `ModelUnavailable` (no key included); a reachable model's unusable reply (`PlannerFailed`) is not replaced.
 
 ## Conversation interface
 
