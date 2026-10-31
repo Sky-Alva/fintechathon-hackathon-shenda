@@ -392,12 +392,16 @@ class Conversations:
         """The model Planner's reply, or the rules Planner's: always the rules offline, and
         for this one call when the model can't be asked (`ModelUnavailable`, no API key
         included). A reachable model's `PlannerFailed` is not covered: the model answered,
-        and the rules don't override it. Records who planned in `conversation.planned_by`."""
-        if not isinstance(self.model, OfflineModel):
+        and the rules don't override it, except for a birthday Plan left without its orders
+        (`rules.birthday_plan_instead`), whose second stage the rules then finish too. Records
+        who planned in `conversation.planned_by`."""
+        second_stage_of_rules = bool(args[2]) and conversation.planned_by == "rules"
+        if not isinstance(self.model, OfflineModel) and not second_stage_of_rules:
             try:
                 reply = planner.make_plan(self.model, *args, **kwargs)
-                conversation.planned_by = "model"
-                return reply
+                instead = rules.birthday_plan_instead(reply, *args, **kwargs)
+                conversation.planned_by = "model" if instead is None else "rules"
+                return reply if instead is None else instead
             except ModelUnavailable:
                 log.warning(
                     "Model unavailable for conversation %s: the rules plan",

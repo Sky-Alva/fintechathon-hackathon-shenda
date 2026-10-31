@@ -5,6 +5,7 @@ declined, the birthday Plan is raised, and a running Plan can be stopped."""
 
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 from conftest import (
@@ -17,6 +18,7 @@ from conftest import (
     send,
     start_conversation,
     traces,
+    updates,
 )
 
 SHORTLY_BEFORE = "2026-10-24T10:00:00+08:00"  # 韩梅梅's birthday is 10-28
@@ -177,6 +179,35 @@ def test_confirming_the_birthday_plan_reserves_and_orders(
         "order_from_merchant",
     ]
     assert "transfer" not in operations(bank, login)
+
+
+@pytest.mark.parametrize("reply", ["好的，帮我安排吧", "好的", "yes please"])
+def test_a_yes_to_the_birthday_reminder_raises_the_birthday_plan(
+    offline_agent: TestClient, bank: TestClient, reply: str
+) -> None:
+    set_clock(bank, SHORTLY_BEFORE)
+    conversation = start_conversation(offline_agent, log_in(bank, "liming"))
+    updates(offline_agent, conversation)
+
+    events = send(offline_agent, conversation, reply)
+
+    assert [s["operation"] for s in plan_card(events)["steps"]] == [
+        "reserve_funds",
+        "order_from_merchant",
+        "order_from_merchant",
+    ]
+
+
+def test_a_no_to_the_birthday_reminder_plans_nothing(
+    offline_agent: TestClient, bank: TestClient
+) -> None:
+    set_clock(bank, SHORTLY_BEFORE)
+    conversation = start_conversation(offline_agent, log_in(bank, "liming"))
+    updates(offline_agent, conversation)
+
+    events = send(offline_agent, conversation, "不用了")
+
+    assert "plan_proposed" not in event_types(events)
 
 
 def test_a_birthday_request_with_an_amount_reserves_that_amount(

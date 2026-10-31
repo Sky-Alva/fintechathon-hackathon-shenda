@@ -139,6 +139,69 @@ def test_saying_yes_to_the_reminder_gets_the_birthday_plan(
     assert reminder["role"] != "system" and reminder["content"].startswith("<bank_data>")
 
 
+def card_operations(events: list[dict[str, Any]]) -> list[str]:
+    [card] = [e for e in events if e["type"] == "plan_proposed"]
+    return [s["operation"] for s in card["steps"]]
+
+
+BIRTHDAY_CARD = ["reserve_funds", "order_from_merchant", "order_from_merchant"]
+
+
+def test_a_model_that_stops_at_the_look_ups_still_gets_the_birthday_plan(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    set_clock(bank, SHORTLY_BEFORE)
+    model.script(plan(step("s1", "query_profile"), step("s2", "list_transactions", LAST_YEAR)))
+    conversation = start_conversation(agent, log_in(bank, "liming"))
+
+    events = shown(send(agent, conversation, ASKED))
+
+    assert card_operations(events) == BIRTHDAY_CARD
+
+
+def test_a_yes_to_the_reminder_gets_both_orders_when_the_model_plans_only_the_reservation(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    set_clock(bank, SHORTLY_BEFORE)
+    conversation = start_conversation(agent, log_in(bank, "liming"))
+    told(agent, conversation)
+    model.script(
+        plan(
+            step("s1", "reserve_funds", GIFT),
+            step("s2", "list_merchants", {"category": "flowers"}),
+        )
+    )
+
+    events = shown(send(agent, conversation, "好的，帮我安排吧"))
+
+    assert card_operations(events) == BIRTHDAY_CARD
+
+
+def test_a_question_about_last_years_birthday_gift_stays_a_question(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    set_clock(bank, SHORTLY_BEFORE)
+    model.script(plan(step("s1", "list_transactions", LAST_YEAR)), say("去年花了 ¥268.00。"))
+    conversation = start_conversation(agent, log_in(bank, "liming"))
+
+    events = shown(send(agent, conversation, "去年梅梅的生日礼物花了多少钱？"))
+
+    assert "plan_proposed" not in event_types(events)
+
+
+def test_another_request_after_the_reminder_is_not_a_yes_to_it(
+    agent: TestClient, bank: TestClient, model: FakeModel
+) -> None:
+    set_clock(bank, SHORTLY_BEFORE)
+    conversation = start_conversation(agent, log_in(bank, "liming"))
+    told(agent, conversation)
+    model.script(plan(step("s1", "query_balance")), say("您的余额是 ¥1,180.00。"))
+
+    events = shown(send(agent, conversation, "好的，先查一下余额"))
+
+    assert "plan_proposed" not in event_types(events)
+
+
 def test_the_agent_brings_up_the_birthday_citing_the_profile_and_last_years_gift(
     agent: TestClient, bank: TestClient, model: FakeModel
 ) -> None:
