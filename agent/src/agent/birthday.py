@@ -20,6 +20,12 @@ GIFTS_BEFORE = timedelta(days=30)
 PROFILE = "query_profile"
 TRANSACTIONS = "list_transactions"
 
+OFFER: dict[Language, str] = {
+    "zh": "需要我帮您预留 ¥1,000，并订好鲜花和蛋糕吗？",
+    "en": "Shall I set ¥1,000 aside for it and order flowers and a cake?",
+}
+"""How the reminder ends: a Customer's plain yes right after it accepts this offer."""
+
 
 def coming(profile: dict[str, Any], now: str) -> date | None:
     """The spouse's next birthday, if it is within `REMIND_WITHIN` of the Bank clock."""
@@ -74,12 +80,12 @@ def reminder(
                 f"Last year, on {gift['occurred_at'][:10]}, you bought a gift at"
                 f" {gift['merchant']} (¥{gift['amount']})."
             )
-        parts.append("Shall I set ¥1,000 aside for it and order flowers and a cake?")
+        parts.append(OFFER["en"])
         return " ".join(parts)
     parts = [f"提醒您：{name}的生日是 {birthday.month}月{birthday.day}日，还有 {days} 天。"]
     if gift is not None:
         parts.append(
             f"去年 {gift['occurred_at'][:10]} 您在 {gift['merchant']} 买过礼物（¥{gift['amount']}）。"
         )
-    parts.append("需要我帮您预留 ¥1,000，并订好鲜花和蛋糕吗？")
+    parts.append(OFFER["zh"])
     return "".join(parts)

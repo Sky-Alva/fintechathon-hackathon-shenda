@@ -43,6 +43,20 @@ def test_a_balance_question_is_answered_from_the_banks_result(
     assert [t["planned_by"] for t in traces(events, "intent")] == ["rules"]
 
 
+def test_a_balance_answer_with_no_model_shows_no_raw_bank_data(
+    offline_agent: TestClient, bank: TestClient
+) -> None:
+    login = log_in(bank, "liming")
+    conversation = start_conversation(offline_agent, login)
+
+    events = send(offline_agent, conversation, "我卡里还有多少钱？")
+
+    answer = answers(events)[0]
+    assert "1180.00" in answer
+    assert "{" not in answer
+    assert "query_balance" not in answer
+
+
 def test_an_unrecognised_request_is_declined_with_what_the_agent_can_do(
     offline_agent: TestClient, bank: TestClient
 ) -> None:

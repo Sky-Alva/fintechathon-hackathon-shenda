@@ -1,6 +1,6 @@
 """The model client: one OpenAI-compatible chat interface for every model the Agent uses.
 
-`qwen-plus` on DashScope is the default and DeepSeek the configured backup, chosen with
+DeepSeek is the default and `qwen-plus` on DashScope the configured alternative, chosen with
 `AGENT_MODEL_PROVIDER`. Both speak the OpenAI chat-completions protocol, so one client
 covers them. Tests use a fake with the same `chat` method (tests/fake_model.py).
 """
@@ -62,7 +62,7 @@ PROVIDERS = {
         requires_tool_choice=True,
     ),
 }
-DEFAULT_PROVIDER = "qwen"
+DEFAULT_PROVIDER = "deepseek"
 
 
 class ModelUnavailable(Exception):
@@ -131,8 +131,8 @@ class OpenAICompatibleModel:
 
 
 def model_from_env(env: Mapping[str, str]) -> OpenAICompatibleModel | OfflineModel:
-    """The model the configuration selects: `AGENT_MODEL_PROVIDER` is `qwen` (default),
-    `deepseek` or `offline` (no model: the built-in rules plan), and a provider's API key
+    """The model the configuration selects: `AGENT_MODEL_PROVIDER` is `deepseek` (default),
+    `qwen` or `offline` (no model: the built-in rules plan), and a provider's API key
     comes from its env variable."""
     name = env.get("AGENT_MODEL_PROVIDER") or DEFAULT_PROVIDER
     if name == OFFLINE:

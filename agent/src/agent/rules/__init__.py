@@ -99,9 +99,33 @@ def make_plan(
     if guard.scam(request.matching) is not None:
         return planner.Declined(reason="manipulation", kind="impersonation")
     candidates = [intent for intent in intents() if intent.matches(request)]
+    if not candidates and orchestration.accepts_the_reminder(history, request.matching):
+        candidates = [intent for intent in intents() if intent.name == "birthday"]
     if not candidates and (asked := the_request_asked_about(history)) is not None:
         return answer_to_question(request, asked)
     return respond(request, candidates)
+
+
+def birthday_plan_instead(
+    reply: Reply,
+    history: list[dict[str, Any]],
+    *args: Any,
+    **kwargs: Any,
+) -> Reply | None:
+    """The birthday Plan, when the Customer clearly asked for it and the model's Plan has no
+    orders in it: a model often stops at the look-ups, and a Plan of Green steps only ends
+    the turn. None keeps the model's reply. The Bank still tiers and confirms the Plan."""
+    if not isinstance(reply, planner.Plan) or kwargs.get("failed") or kwargs.get("interrupted"):
+        return None
+    if any(step.operation == orchestration.ORDER for step in reply.steps):
+        return None
+    matching = guard.normalise(latest_message(history))
+    if not orchestration.asks_for_the_birthday_plan(
+        matching
+    ) and not orchestration.accepts_the_reminder(history, matching):
+        return None
+    instead = make_plan(history, *args, **kwargs)
+    return instead if isinstance(instead, planner.Plan) and instead.steps else None
 
 
 JOINERS = (" ", "给", " to ")

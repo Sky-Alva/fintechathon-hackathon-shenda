@@ -17,6 +17,8 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
+from agent import untrusted
+from agent.birthday import OFFER
 from agent.events import PlanStep
 from agent.planner import Clarification, Declined, Plan
 from agent.rules import slots
@@ -146,6 +148,40 @@ CATEGORY_WORDS = {"flowers": r"花|\bflowers?\b", "cake": r"蛋糕|\bcakes?\b"}
 DELIVERY = r"送到|送达|送去|订|\border\b|deliver"
 """The Customer asked for the orders too, not only for money to be set aside."""
 RESERVE_ONLY = rf"^(?!.*(?:{DELIVERY})).*(?:预留|\breserve)"
+
+ORDER = "order_from_merchant"
+ASKS_FOR_THE_PLAN = (
+    pattern(r"需要我安排|要我安排|有什么(要|需要)?安排"),
+    pattern(r"生日.*(帮我|替我|安排|准备|订)"),
+    pattern(r"birthday.*(arrange|prepare|order|organi[sz]e)"),
+    pattern(r"anything.*(arrange|need me to)"),
+)
+"""Wording that clearly asks for the birthday to be arranged, narrower than the `birthday`
+intent's triggers: a question about a birthday gift is left to the model."""
+ONLY_ASKS_ABOUT = pattern(r"查|多少|哪天|几号|什么时候|转|汇|\b(transfer|send|how much|when)\b")
+PLAIN_YES = pattern(
+    r"(?:好的?|好啊|好呀|行|可以|嗯+|要|需要|是的|对|ok|okay|yes|yep|sure)?[\s,，.。!！~]*"
+    r"(?:(?:帮我|请)?(?:安排|准备|订)(?:一下|好)?|谢谢|please|do it|go ahead|thanks)?[吧呀啊]?[\s,，.。!！~]*"
+)
+
+
+def asks_for_the_birthday_plan(matching: str) -> bool:
+    return (
+        any(p.search(matching) for p in ASKS_FOR_THE_PLAN)
+        and not ONLY_ASKS_ABOUT.search(matching)
+        and not re.search(RESERVE_ONLY, matching, re.IGNORECASE)
+    )
+
+
+def accepts_the_reminder(history: list[dict[str, Any]], matching: str) -> bool:
+    """The Customer's latest message is a plain yes, and nothing but the birthday reminder's
+    offer was shown to them since their message before it. The offer comes from the Agent,
+    never the model or the Customer, and a yes still only gets a Plan card to confirm."""
+    if not re.search(r"\w", matching) or PLAIN_YES.fullmatch(matching.strip()) is None:
+        return False
+    customer = [i for i, m in enumerate(history) if untrusted.from_customer(m)]
+    since = history[customer[-2] + 1 if len(customer) > 1 else 0 : customer[-1]] if customer else []
+    return any(offer in str(m["content"]) for m in since for offer in OFFER.values())
 
 
 def plan_reserve(request: Request) -> Reply:

@@ -81,7 +81,7 @@ cd agent                                   # dev install, see agent/README.md
 .venv/bin/python -m evaluation cards reference-00[1-3] --json results.json
 ```
 
-The model is configuration only, read from the environment or the repo's `.env` like the Agent's: `AGENT_MODEL_PROVIDER=qwen` (`qwen-plus`, default) or `deepseek` (`deepseek-chat`), with that provider's API key. Without `BANK_URL` the runner starts its own Bank in-process; with `BANK_URL` (and `BANK_ADMIN_KEY`) it uses a running one, e.g. Docker Compose's on `http://localhost:8000`, and resets it before every task. The Agent always runs in-process, without the admin key.
+The model is configuration only, read from the environment or the repo's `.env` like the Agent's: `AGENT_MODEL_PROVIDER=deepseek` (`deepseek-chat`, default) or `qwen` (`qwen-plus`), with that provider's API key. Without `BANK_URL` the runner starts its own Bank in-process; with `BANK_URL` (and `BANK_ADMIN_KEY`) it uses a running one, e.g. Docker Compose's on `http://localhost:8000`, and resets it before every task. The Agent always runs in-process, without the admin key.
 
 Results aren't deterministic, so the runner measures and compares; it doesn't gate merges. Run it at least before 26 Oct, before 30 Oct and before submission. Its own checks are tested with the fake model in `agent/tests/test_evaluation_runner.py`, and that suite also checks every committed task file is valid.
 

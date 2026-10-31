@@ -1,0 +1,22 @@
+// Render: dot -Tpng -Gdpi=160 docs/architecture.dot -o docs/architecture.png
+digraph architecture {
+  rankdir=LR;
+  nodesep=0.45;
+  ranksep=0.9;
+  node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=12, margin="0.18,0.12", fillcolor="#f4f6f8", color="#5b6770"];
+  edge [fontname="Helvetica", fontsize=10, color="#5b6770"];
+
+  customer [label="Customer", shape=oval, fillcolor="#ffffff"];
+  staff [label="Staff Member", shape=oval, fillcolor="#ffffff"];
+  web [label=<<b>web :8080</b><br/>nginx + React<br/>Channel, simulated phone,<br/>staff console>, fillcolor="#e8f0fb"];
+  agent [label=<<b>Agent :8001</b><br/>untrusted caller<br/>guard, Planner, Plan reviewer,<br/>executor, Responder + fact check>, fillcolor="#fdf3e0"];
+  bank [label=<<b>Bank :8000</b><br/>policy gate, Permission Tiers,<br/>Safety Lock, hash-chained audit,<br/>SQLite seed data>, fillcolor="#e6f5ea"];
+  model [label=<<b>Model API</b><br/>deepseek-chat (default)<br/>or qwen-plus>, shape=cylinder, fillcolor="#ffffff"];
+
+  customer -> web;
+  staff -> web;
+  web -> agent [label="/agent/*\nchat, NDJSON events"];
+  web -> bank [label="/bank/*\nlog in, SMS codes"];
+  agent -> bank [label="Customer's session\ntoken only"];
+  agent -> model [label="OpenAI-compatible API"];
+}

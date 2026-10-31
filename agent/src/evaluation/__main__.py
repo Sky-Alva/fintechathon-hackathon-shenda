@@ -3,7 +3,7 @@ configured model and print the scoreboard.
 
 Configuration, from the environment, then the repo's `.env` for anything not set there:
 
-- `AGENT_MODEL_PROVIDER` (`qwen`, the default, `deepseek` or `offline`) and that provider's
+- `AGENT_MODEL_PROVIDER` (`deepseek`, the default, `qwen` or `offline`) and that provider's
   API key, exactly as the Agent reads them: switching the model is configuration only.
   `offline` needs no key: only the Agent's built-in rules plan.
 - `BANK_URL` and `BANK_ADMIN_KEY`: a running Bank (e.g. Docker Compose's, on

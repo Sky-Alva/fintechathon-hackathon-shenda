@@ -222,12 +222,44 @@ def raw(
     if all(result.output is None for result in results):
         return "\n".join(dict.fromkeys(missing(result) for result in results))
     lines = [
-        f"{result.operation}: {json.dumps(result.output, ensure_ascii=False)}"
-        if result.output is not None
-        else f"{result.operation}: {missing(result)}"
+        line
         for result in results
+        for line in (readable(result.output) if result.output is not None else [missing(result)])
     ]
     return "\n".join([RAW_RESULTS[language], *lines])
+
+
+def readable(value: Any, indent: str = "") -> list[str]:
+    """A Bank result as plain lines: the Bank's own field names and values, with nothing
+    added or computed."""
+    if isinstance(value, dict) and value:
+        lines = []
+        for key, item in value.items():
+            if isinstance(item, dict | list) and item and not is_flat(item):
+                lines += [f"{indent}{key}:", *readable(item, indent + "  ")]
+            else:
+                lines.append(f"{indent}{key}: {scalar(item)}")
+        return lines
+    if isinstance(value, list) and value and not is_flat(value):
+        lines = []
+        for item in value:
+            first, *rest = readable(item, indent + "  ")
+            lines += [f"{indent}- {first.lstrip()}", *rest]
+        return lines
+    return [f"{indent}{scalar(value)}"]
+
+
+def is_flat(value: Any) -> bool:
+    """A list of plain values, which fits on one line."""
+    return isinstance(value, list) and not any(isinstance(item, dict | list) for item in value)
+
+
+def scalar(value: Any) -> str:
+    if value is None or value == [] or value == {}:
+        return "-"
+    if isinstance(value, list):
+        return ", ".join(scalar(item) for item in value)
+    return json.dumps(value) if isinstance(value, bool) else str(value)
 
 
 def for_channel(text: str, cards: dict[str, Card], language: Language) -> str:
