@@ -1,3 +1,5 @@
+English | [简体中文](README.zh.md)
+
 # Smart Bank AI Agent
 
 A mobile-banking AI assistant (智能银行助手) that does what the Customer asks in plain Chinese or English, while the Bank alone decides whether each Operation may run.
